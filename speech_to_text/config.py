@@ -12,16 +12,16 @@ load_dotenv()
 class STTConfig(BaseSettings):
     """Configuration for Speech-to-Text module."""
     
-    # Google STT API settings
-    google_application_credentials: str = Field(
+    # Google Cloud credentials
+    credentials_file: str = Field(
         default=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
         description="Path to Google Cloud credentials JSON file"
     )
     
     # STT settings
     model_name: str = Field(
-        default="phone_call",
-        description="Google STT model to use"
+        default="latest_long",
+        description="Google Cloud Speech-to-Text model name"
     )
     
     language: str = Field(
@@ -30,7 +30,7 @@ class STTConfig(BaseSettings):
     )
     
     sample_rate: int = Field(
-        default=8000,
+        default=16000,
         description="Audio sample rate in Hz"
     )
     
@@ -40,59 +40,47 @@ class STTConfig(BaseSettings):
         description="Whether to return interim results"
     )
     
-    use_enhanced: bool = Field(
-        default=True, 
-        description="Whether to use enhanced models"
+    enable_automatic_punctuation: bool = Field(
+        default=True,
+        description="Enable automatic punctuation in transcriptions"
     )
     
-    # Voice detection settings
-    vad_events: bool = Field(
+    enable_word_time_offsets: bool = Field(
         default=True,
-        description="Whether to return VAD events"
+        description="Enable word-level timestamps"
     )
     
     # Telephony optimizations
-    utterance_end_ms: int = Field(
-        default=500,
-        description="Milliseconds of silence to consider an utterance complete"
+    use_enhanced_model: bool = Field(
+        default=True,
+        description="Use enhanced model for telephony"
     )
     
-    keywords: list = Field(
+    enable_speaker_diarization: bool = Field(
+        default=False,
+        description="Enable speaker diarization"
+    )
+    
+    diarization_speaker_count: int = Field(
+        default=1,
+        description="Expected number of speakers in the audio"
+    )
+    
+    # Keywords to boost recognition for telephony
+    speech_contexts: list = Field(
         default=["price", "plan", "cost", "subscription", "service", "features", "support"],
         description="Keywords to boost in telephony context"
     )
     
-    alternatives: int = Field(
-        default=1,
-        description="Number of alternative transcripts to return"
-    )
-    
     # Performance settings
-    enable_caching: bool = Field(
+    use_enhanced_telephony: bool = Field(
         default=True,
-        description="Enable caching of STT results"
-    )
-    
-    smart_format: bool = Field(
-        default=True,
-        description="Whether to apply smart formatting to numbers, dates, etc."
+        description="Use telephony model for optimized speech recognition"
     )
     
     profanity_filter: bool = Field(
         default=False,
-        description="Whether to filter profanity"
-    )
-    
-    # Speech contexts - These help Google STT recognize specific phrases better
-    speech_contexts: list = Field(
-        default=[
-            {
-                "phrases": ["price", "plan", "cost", "subscription", "service", "features", "support", 
-                           "help", "agent", "assistant", "voice", "stop", "continue", "yes", "no"],
-                "boost": 15.0
-            }
-        ],
-        description="Speech contexts for improved recognition"
+        description="Filter profanity from transcription results"
     )
     
     class Config:

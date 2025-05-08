@@ -17,16 +17,12 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "60"))  # Increased to 60 seconds
 
 # LLM parameters
-DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))  # Set to 0.0 for deterministic, faster responses
+DEFAULT_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 DEFAULT_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 DEFAULT_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "4096"))
 
 # Add parallel processing flag
 PARALLEL_PROCESSING = os.getenv("PARALLEL_PROCESSING", "True").lower() == "true"
-
-# Set environment variables for better Ollama performance
-os.environ["OLLAMA_NUM_THREADS"] = str(os.cpu_count() or 4)
-os.environ["OLLAMA_MAX_LOADED_MODELS"] = "1"
 
 def check_ollama_availability(base_url: str = OLLAMA_BASE_URL) -> bool:
     """
@@ -53,7 +49,7 @@ def get_ollama_llm(
     **kwargs
 ) -> Ollama:
     """
-    Get Ollama LLM for LlamaIndex integration, optimized for performance.
+    Get Ollama LLM for LlamaIndex integration.
     
     Args:
         model_name: Model name to use (defaults to environment or mistral:7b-instruct)
@@ -69,22 +65,13 @@ def get_ollama_llm(
     base_url = kwargs.pop("base_url", OLLAMA_BASE_URL)
     request_timeout = kwargs.pop("request_timeout", OLLAMA_TIMEOUT)
 
-    # Ensure model uses 4-bit quantization for faster inference
-    if model and not ":q4_" in model and not model.endswith("-q4_0"):
-        model = f"{model}-q4_0"
-        logger.info(f"Using 4-bit quantized model: {model}")
-    
-    # Set temperature=0.0 for deterministic, faster responses
-    if temperature is None:
-        temperature = 0.0  # Greedy decoding for faster responses
-
     # Check if Ollama is available
     if not check_ollama_availability(base_url):
         raise ValueError(f"Ollama not available at {base_url}. Please ensure Ollama is running.")
     
     # Build parameters
     params = {
-        "temperature": temperature,
+        "temperature": temperature if temperature is not None else DEFAULT_TEMPERATURE,
         "max_tokens": max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS,
         **kwargs
     }
@@ -108,15 +95,7 @@ def get_ollama_llm(
             **params
         )
         
-        # Pre-load the model with a warm-up query to avoid cold-start latency
-        try:
-            # Simple warm-up
-            _ = ollama_llm.complete("Hello, this is a warm-up query.")
-            logger.info("Model warm-up completed")
-        except Exception as warm_up_error:
-            logger.warning(f"Model warm-up error (non-critical): {warm_up_error}")
-        
-        logger.info(f"Initialized Ollama LLM with model: {model}, temperature: {temperature}, timeout: {request_timeout}s")
+        logger.info(f"Initialized Ollama LLM with model: {model}, timeout: {request_timeout}s")
         return ollama_llm
         
     except Exception as e:

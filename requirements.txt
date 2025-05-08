@@ -63,7 +63,9 @@ pytest
 pytest-asyncio
 typing-extensions
 
-# Google Cloud TTS
-google-cloud-texttospeech
-google-cloud-speech
-google-auth
+google-cloud-speech>=2.25.0
+google-auth>=2.23.0
+google-api-core>=2.11.0
+google-cloud-core>=2.3.2
+
+elevenlabs==0.2.27

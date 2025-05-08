@@ -1,5 +1,7 @@
+# text_to_speech/config.py
+
 """
-Configuration settings for the Text-to-Speech module using Google Cloud TTS.
+Configuration settings for the Text-to-Speech module.
 """
 import os
 from dotenv import load_dotenv
@@ -10,87 +12,48 @@ from pydantic_settings import BaseSettings
 load_dotenv()
 
 class TTSConfig(BaseSettings):
-    """Configuration for Text-to-Speech module using Google Cloud TTS."""
+    """Configuration for Text-to-Speech module."""
     
-    # Google Cloud TTS settings
-    google_application_credentials: str = Field(
-        default=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
-        description="Path to Google Cloud credentials JSON file"
+    # ElevenLabs API settings
+    elevenlabs_api_key: str = Field(
+        default=os.getenv("ELEVENLABS_API_KEY", ""),
+        description="ElevenLabs API Key for TTS services"
     )
     
-    # TTS settings - Using Standard voice instead of Neural for lower latency
-    voice_name: str = Field(
-        default="en-US-Standard-D",  # Standard voice is 3-4x faster than Neural
-        description="Google TTS voice name to use"
+    # TTS settings
+    model_id: str = Field(
+        default=os.getenv("TTS_MODEL_ID", "eleven_turbo_v2"),  # Upgraded to latest model
+        description="ElevenLabs model ID to use"
     )
     
-    voice_gender: str = Field(
-        default="MALE",
-        description="Voice gender (MALE/FEMALE/NEUTRAL)"
+    voice_id: str = Field(
+        default=os.getenv("TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),  # Default to Rachel voice
+        description="Voice ID for the TTS system"
     )
     
-    language_code: str = Field(
-        default="en-US",
-        description="Language code for TTS"
-    )
-    
-    # Telephony-optimized settings
     sample_rate: int = Field(
-        default=8000,  # 8kHz for telephony
-        description="Audio sample rate in Hz - 8kHz is best for telephony"
+        default=8000,  # Set to 8000Hz for Twilio compatibility
+        description="Audio sample rate in Hz"
     )
     
-    audio_encoding: str = Field(
-        default="LINEAR16",
-        description="Audio encoding format (LINEAR16, MP3, etc.)"
+    container_format: str = Field(
+        default="mulaw",  # mulaw for Twilio compatibility
+        description="Audio container format (mp3, wav, mulaw)"
     )
     
-    audio_profile: str = Field(
-        default="telephony-class-application",
-        description="Audio profile for optimization"
-    )
-    
-    # Voice quality settings - slightly faster rate for telephony
-    speaking_rate: float = Field(
-        default=1.15,  # Slightly faster than default
-        description="Speaking rate in API (1.0 is normal, >1.0 is faster)"
-    )
-    
-    pitch: float = Field(
-        default=0.0,
-        description="Pitch adjustment in semitones (0.0 is normal)"
-    )
-    
-    # SSML settings for extra control
-    ssml_rate: str = Field(
-        default="1.1",  # Slightly faster
-        description="SSML speaking rate value (can be numeric like '1.1' or text like 'medium')"
-    )
-    
-    ssml_pitch: str = Field(
-        default="0",
-        description="SSML pitch adjustment in semitones (e.g. '0', '+2', '-1')"
-    )
-    
-    # Explicitly enable SSML by default
-    use_ssml: bool = Field(
-        default=True,
-        description="Whether to use SSML for all TTS requests"
-    )
-    
-    # Streaming settings - optimized for lower latency
+    # Streaming settings
     chunk_size: int = Field(
-        default=1024,  # Standard chunk size for processing
+        default=1024,
         description="Size of audio chunks to process at once in bytes"
     )
     
     max_text_chunk_size: int = Field(
-        default=150,  # Smaller chunks for faster processing
-        description="Maximum text chunk size to send to Google Cloud at once"
+        default=100,
+        description="Maximum text chunk size to send to ElevenLabs at once"
     )
     
     stream_timeout: float = Field(
-        default=5.0,  # Reduced timeout for better responsiveness
+        default=10.0,
         description="Timeout for streaming operations in seconds"
     )
     
@@ -105,22 +68,10 @@ class TTSConfig(BaseSettings):
         description="Directory for caching TTS results"
     )
     
-    # Fallback settings
-    fallback_message: str = Field(
-        default="I'm sorry, I'm having trouble generating speech at the moment.",
-        description="Fallback message when TTS fails"
-    )
-    
-    # SSML telephony optimizations
-    enable_telephony_optimization: bool = Field(
-        default=True,
-        description="Enable SSML optimizations for telephony"
-    )
-    
-    # Using a simple SSML template without emphasis tags which can cause issues
-    telephony_ssml_template: str = Field(
-        default='<speak><prosody rate="{rate}">{text}</prosody></speak>',
-        description="SSML template for telephony optimization"
+    # Optimization settings for telephony
+    optimize_streaming_latency: int = Field(
+        default=4,  # Maximum optimization
+        description="Streaming latency optimization level (1-4)"
     )
     
     class Config:
