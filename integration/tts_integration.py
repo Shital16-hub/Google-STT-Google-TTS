@@ -2,7 +2,7 @@
 TTS Integration module for Voice AI Agent using Google Cloud TTS.
 
 This module provides classes and functions for integrating text-to-speech
-capabilities with the Voice AI Agent system.
+capabilities with the Voice AI Agent system, optimized for low latency.
 """
 import logging
 import time
@@ -66,29 +66,20 @@ class TTSIntegration:
     
     async def text_to_speech(self, text: str) -> bytes:
         """
-        Convert text to speech with robust fallback mechanisms.
+        Convert text to speech with optimized chunking strategy.
+        
+        Args:
+            text: Text to convert
+            
+        Returns:
+            Audio data as bytes
         """
         if not self.initialized:
             await self.init()
         
         try:
-            # First attempt: Try with plain text (no SSML)
-            try:
-                audio_data = await self.tts_client.synthesize(text, is_ssml=False)
-            except Exception as first_error:
-                logger.warning(f"Plain text TTS failed: {first_error}. Trying with default voice...")
-                
-                # Second attempt: Use a default/standard voice
-                try:
-                    # Create a temporary client with a Standard voice
-                    temp_client = GoogleCloudTTS(voice_name="en-US-Standard-D")
-                    audio_data = await temp_client.synthesize(text, is_ssml=False)
-                except Exception as second_error:
-                    logger.error(f"Both TTS attempts failed: {second_error}")
-                    
-                    # Last resort: Generate 500ms of silence or a simple tone
-                    silence_size = int(16000 * 0.5 * 2)  # 500ms of silence at 16kHz, 16-bit
-                    audio_data = b'\x00' * silence_size
+            # Use the optimized TTS client
+            audio_data = await self.tts_client.text_to_speech(text)
             
             # Ensure even number of bytes & add pause
             if len(audio_data) % 2 != 0:
@@ -108,13 +99,13 @@ class TTSIntegration:
     
     async def text_to_speech_streaming(
         self, 
-        text_generator: AsyncIterator[str]
+        text: str
     ) -> AsyncIterator[bytes]:
         """
-        Stream text to speech conversion.
+        Stream text to speech with optimized chunking for low latency.
         
         Args:
-            text_generator: Async generator yielding text chunks
+            text: Text to convert
             
         Yields:
             Audio data chunks
@@ -122,31 +113,30 @@ class TTSIntegration:
         if not self.initialized:
             await self.init()
         
-        try:
-            # Track if we need to add the final pause
-            needs_final_pause = False
-            
-            async for audio_chunk in self.tts_client.synthesize_streaming(text_generator):
-                # Ensure each chunk has an even number of bytes
-                if len(audio_chunk) % 2 != 0:
-                    audio_chunk = audio_chunk + b'\x00'
+        # Use sentence-based chunking for better streaming
+        sentences = []
+        for sentence in text.replace('!', '.').replace('?', '.').split('.'):
+            if sentence.strip():
+                sentences.append(sentence.strip() + '.')
+        
+        # Create a text generator
+        async def text_generator():
+            for sentence in sentences:
+                yield sentence
                 
-                # Only the last chunk should get the pause
-                needs_final_pause = True
-                yield audio_chunk
+                # Add small delay between sentences for natural flow
+                await asyncio.sleep(0.01)
+        
+        # Use the specialized streaming method
+        async for audio_chunk in self.tts_client.synthesize_streaming(text_generator()):
+            yield audio_chunk
             
-            # Add a pause at the end of the complete audio stream
-            if needs_final_pause and self.add_pause_after_speech:
-                # Generate silence based on pause_duration_ms
-                silence_size = int(16000 * (self.pause_duration_ms / 1000) * 2)  # 16-bit samples
-                silence_data = b'\x00' * silence_size
-                yield silence_data
-                logger.debug(f"Added {self.pause_duration_ms}ms pause at end of streaming audio")
-                
-        except Exception as e:
-            logger.error(f"Error in streaming text to speech: {e}")
-            # Yield silent audio as fallback
-            silence_size = int(16000 * 0.5 * 2)  # 500ms of silence
+            # Short artificial sleep to avoid flooding the output
+            await asyncio.sleep(0.01)
+        
+        # Add final silence for natural pause
+        if self.add_pause_after_speech:
+            silence_size = int(16000 * (self.pause_duration_ms / 1000) * 2)
             yield b'\x00' * silence_size
     
     async def process_realtime_text(
@@ -184,14 +174,8 @@ class TTSIntegration:
                 if not chunk or not chunk.strip():
                     continue
                 
-                # Process the text chunk with simpler SSML
-                try:
-                    simple_chunk = "<speak>" + chunk + "</speak>"
-                    audio_data = await self.tts_client.synthesize(simple_chunk, is_ssml=True)
-                except Exception as ssml_error:
-                    # Fall back to plain text
-                    logger.warning(f"SSML synthesis failed: {ssml_error}. Using plain text.")
-                    audio_data = await self.tts_client.synthesize(chunk, is_ssml=False)
+                # Process the text chunk as SSML
+                audio_data = await self.tts_client.text_to_speech(chunk)
                 
                 # Track statistics
                 total_chunks += 1

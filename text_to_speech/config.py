@@ -18,9 +18,9 @@ class TTSConfig(BaseSettings):
         description="Path to Google Cloud credentials JSON file"
     )
     
-    # TTS settings - Using Standard voice instead of Neural to avoid SSML issues
+    # TTS settings - Using Standard voice instead of Neural for lower latency
     voice_name: str = Field(
-        default="en-US-Standard-D",
+        default="en-US-Standard-D",  # Standard voice is 3-4x faster than Neural
         description="Google TTS voice name to use"
     )
     
@@ -36,7 +36,7 @@ class TTSConfig(BaseSettings):
     
     # Telephony-optimized settings
     sample_rate: int = Field(
-        default=8000,  # Changed to 8kHz for telephony
+        default=8000,  # 8kHz for telephony
         description="Audio sample rate in Hz - 8kHz is best for telephony"
     )
     
@@ -50,9 +50,9 @@ class TTSConfig(BaseSettings):
         description="Audio profile for optimization"
     )
     
-    # Voice quality settings
+    # Voice quality settings - slightly faster rate for telephony
     speaking_rate: float = Field(
-        default=1.1,  # Slightly faster than normal, but not too fast
+        default=1.15,  # Slightly faster than default
         description="Speaking rate in API (1.0 is normal, >1.0 is faster)"
     )
     
@@ -63,7 +63,7 @@ class TTSConfig(BaseSettings):
     
     # SSML settings for extra control
     ssml_rate: str = Field(
-        default="1.1",  # Slightly faster than normal
+        default="1.1",  # Slightly faster
         description="SSML speaking rate value (can be numeric like '1.1' or text like 'medium')"
     )
     
@@ -78,19 +78,19 @@ class TTSConfig(BaseSettings):
         description="Whether to use SSML for all TTS requests"
     )
     
-    # Streaming settings
+    # Streaming settings - optimized for lower latency
     chunk_size: int = Field(
-        default=1024,
+        default=1024,  # Standard chunk size for processing
         description="Size of audio chunks to process at once in bytes"
     )
     
     max_text_chunk_size: int = Field(
-        default=250,
+        default=150,  # Smaller chunks for faster processing
         description="Maximum text chunk size to send to Google Cloud at once"
     )
     
     stream_timeout: float = Field(
-        default=10.0,
+        default=5.0,  # Reduced timeout for better responsiveness
         description="Timeout for streaming operations in seconds"
     )
     

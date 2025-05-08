@@ -348,7 +348,7 @@ class GoogleCloudTTS:
         text_stream: AsyncGenerator[str, None]
     ) -> AsyncGenerator[bytes, None]:
         """
-        Stream text to speech synthesis for real-time applications.
+        Stream text to speech synthesis with optimized chunking strategy.
         
         Takes a streaming text input and returns streaming audio output,
         optimized for low-latency voice applications.
@@ -359,27 +359,47 @@ class GoogleCloudTTS:
         Yields:
             Audio data chunks as they are generated
         """
-        buffer = ""
-        max_chunk_size = min(config.max_text_chunk_size, self.MAX_CHAR_COUNT)
+        # Break text at natural pause points
+        sentence_buffer = ""
+        punctuation_marks = ['.', '!', '?', ',', ';', ':']
         
         try:
             async for text_chunk in text_stream:
                 if not text_chunk:
                     continue
                     
-                # Add to buffer
-                buffer += text_chunk
+                # Add to sentence buffer
+                sentence_buffer += text_chunk
                 
-                # Process buffer if it's large enough or contains sentence-ending punctuation
-                if len(buffer) >= max_chunk_size or any(c in buffer for c in ['.', '!', '?', '\n']):
-                    # Process the buffered text
-                    audio_data = await self.synthesize(buffer)
-                    yield audio_data
-                    buffer = ""
+                # Process buffer if it contains punctuation for natural pauses
+                for punct in punctuation_marks:
+                    if punct in sentence_buffer:
+                        # Split at punctuation
+                        parts = sentence_buffer.split(punct, 1)
+                        complete_part = parts[0] + punct
+                        
+                        # Process the complete part
+                        audio_data = await self.synthesize(complete_part)
+                        yield audio_data
+                        
+                        # Keep remainder for next iteration
+                        sentence_buffer = parts[1] if len(parts) > 1 else ""
+                        break
+                
+                # If buffer exceeds max size, process it even without punctuation
+                max_chunk_size = config.max_text_chunk_size
+                if len(sentence_buffer) > max_chunk_size:
+                    # Find a space to break at
+                    space_index = sentence_buffer.rfind(' ', 0, max_chunk_size)
+                    if space_index > 0:
+                        part = sentence_buffer[:space_index]
+                        audio_data = await self.synthesize(part)
+                        yield audio_data
+                        sentence_buffer = sentence_buffer[space_index+1:]
             
             # Process any remaining text in the buffer
-            if buffer:
-                audio_data = await self.synthesize(buffer)
+            if sentence_buffer:
+                audio_data = await self.synthesize(sentence_buffer)
                 yield audio_data
                 
         except Exception as e:
@@ -404,3 +424,60 @@ class GoogleCloudTTS:
             ssml = f"<speak>{ssml}</speak>"
             
         return await self.synthesize(ssml, is_ssml=True)
+
+    async def text_to_speech(self, text: str) -> bytes:
+        """
+        Convert text to speech with optimized chunking.
+        
+        Args:
+            text: Text to convert to speech
+            
+        Returns:
+            Audio data as bytes
+        """
+        # Check for empty text
+        if not text:
+            logger.warning("Empty text provided to text_to_speech")
+            return b''
+        
+        # Check if we should apply SSML
+        if getattr(config, 'use_ssml', True):
+            # Apply SSML template for optimized speech
+            ssml_template = getattr(config, 'telephony_ssml_template', 
+                                    '<speak><prosody rate="{rate}">{text}</prosody></speak>')
+            rate = getattr(config, 'ssml_rate', '1.1')
+            
+            # Format with SSML optimized for telephony
+            formatted_text = ssml_template.format(rate=rate, text=text)
+            return await self.synthesize(formatted_text, is_ssml=True)
+        else:
+            # Plain text synthesis
+            return await self.synthesize(text, is_ssml=False)
+            
+    async def text_to_speech_streaming(self, text: str) -> AsyncGenerator[bytes, None]:
+        """
+        Stream text to speech with optimized sentence-based chunking.
+        
+        Args:
+            text: Text to convert to speech
+            
+        Yields:
+            Audio chunks as they are generated
+        """
+        # Split text into sentences for optimal chunking
+        sentences = []
+        for sentence in text.replace('!', '.').replace('?', '.').split('.'):
+            if sentence.strip():
+                sentences.append(sentence.strip() + '.')
+        
+        # Create a generator that yields each sentence
+        async def sentence_generator():
+            for sentence in sentences:
+                yield sentence
+                
+                # Add small delay between sentences for natural flow
+                await asyncio.sleep(0.01)
+        
+        # Use the streaming synthesizer with our sentence generator
+        async for audio_chunk in self.synthesize_streaming(sentence_generator()):
+            yield audio_chunk

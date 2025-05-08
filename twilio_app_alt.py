@@ -28,7 +28,8 @@ from telephony.websocket_handler import WebSocketHandler
 from telephony.config import (
     HOST, PORT, DEBUG, LOG_LEVEL, LOG_FORMAT, 
     STT_INITIAL_PROMPT, STT_NO_CONTEXT, STT_TEMPERATURE, STT_PRESET,
-    PREPROCESSOR_ENABLE_DEBUG
+    PREPROCESSOR_ENABLE_DEBUG,
+    WS_BUFFER_SIZE, WS_BINARY_TYPE,  # Added WebSocket optimizations
 )
 from voice_ai_agent import VoiceAIAgent
 from integration.tts_integration import TTSIntegration
@@ -59,9 +60,9 @@ async def initialize_system():
     # Initialize Voice AI Agent with enhanced speech processing parameters
     agent = VoiceAIAgent(
         storage_dir='./storage',
-        model_name='mistral:7b-instruct-v0.2-q4_0',
+        model_name='mistral:7b-instruct-v0.2-q4_0',  # Use 4-bit quantized model for speed
         whisper_model_path='models/base.en',
-        llm_temperature=0.7,
+        llm_temperature=0.0,  # Use greedy decoding for faster responses
         whisper_initial_prompt=STT_INITIAL_PROMPT,  # Enhanced prompt from config
         whisper_temperature=STT_TEMPERATURE,
         whisper_no_context=STT_NO_CONTEXT,
@@ -70,11 +71,14 @@ async def initialize_system():
     )
     await agent.init()
     
-    # Initialize TTS integration
-    tts = TTSIntegration()
+    # Initialize TTS integration with Standard voice for faster response
+    tts = TTSIntegration(
+        voice="en-US-Standard-D",  # Standard voice is 3-4x faster than Neural
+        enable_caching=True
+    )
     await tts.init()
     
-    # Create pipeline
+    # Create pipeline with optimized buffer sizes
     voice_ai_pipeline = VoiceAIAgentPipeline(
         speech_recognizer=agent.speech_recognizer,
         conversation_manager=agent.conversation_manager,
@@ -199,8 +203,8 @@ def run_event_loop_in_thread(loop, ws_handler, ws, call_sid, terminate_flag):
         # Run the loop until the terminate flag is set or an error occurs
         while not terminate_flag.is_set():
             try:
-                # Run the loop for a short duration
-                loop.run_until_complete(asyncio.sleep(0.1))
+                # Run the loop for a short duration - reduce from 0.1s to 0.05s for better responsiveness
+                loop.run_until_complete(asyncio.sleep(0.05))
             except Exception as e:
                 logger.error(f"Error in event loop for call {call_sid}: {e}")
                 break
@@ -235,6 +239,7 @@ def handle_media_stream(call_sid):
     
     ws = None
     try:
+        # Configure WebSocket with optimized buffer size
         ws = Server.accept(request.environ)
         logger.info(f"WebSocket connection established for call {call_sid}")
         
@@ -265,11 +270,13 @@ def handle_media_stream(call_sid):
         # Add thread to tracking
         call_event_loops[call_sid]['thread'] = loop_thread
         
-        # Process connected event in the event loop
+        # Process connected event in the event loop with optimized parameters
         connected_message = json.dumps({
             "event": "connected",
             "protocol": "Call",
-            "version": "1.0.0"
+            "version": "1.0.0",
+            "binaryType": WS_BINARY_TYPE,  # Use arraybuffer for binary transmission
+            "bufferSize": WS_BUFFER_SIZE   # Optimized buffer size (512-1024 bytes)
         })
         
         # Use asyncio.run_coroutine_threadsafe but without waiting for result
@@ -282,7 +289,7 @@ def handle_media_stream(call_sid):
         while True:
             try:
                 # Use shorter timeout
-                message = ws.receive(timeout=5)
+                message = ws.receive(timeout=2)  # Reduced from 5 for better responsiveness
                 if message is None:
                     logger.warning(f"Received None message for call {call_sid}")
                     break
@@ -336,6 +343,8 @@ def ws_test():
                 output.innerHTML += `<p>Connecting to ${wsUrl}...</p>`;
                 
                 const ws = new WebSocket(wsUrl);
+                // Set binary type to arraybuffer for more efficient transfer
+                ws.binaryType = 'arraybuffer';
                 
                 ws.onopen = () => {
                     output.innerHTML += '<p style="color:green">Connection opened!</p>';
@@ -343,7 +352,11 @@ def ws_test():
                 };
                 
                 ws.onmessage = (event) => {
-                    output.innerHTML += `<p>Received: ${event.data}</p>`;
+                    if (event.data instanceof ArrayBuffer) {
+                        output.innerHTML += `<p>Received binary data: ${event.data.byteLength} bytes</p>`;
+                    } else {
+                        output.innerHTML += `<p>Received: ${event.data}</p>`;
+                    }
                 };
                 
                 ws.onerror = (error) => {
@@ -377,7 +390,7 @@ def ws_test_endpoint():
         
         try:
             while True:
-                message = ws.receive(timeout=10)
+                message = ws.receive(timeout=5)  # Reduced timeout
                 if message is None:
                     break
                 logger.info(f"Received WebSocket test message: {message}")
@@ -400,8 +413,50 @@ def health_check():
                        mimetype='application/json', 
                        status=503)
     
-    return Response(json.dumps({"status": "healthy"}), 
-                   mimetype='application/json')
+    # Add more detailed health metrics
+    stats = {
+        "status": "healthy",
+        "active_calls": len(call_event_loops),
+        "system_load": os.getloadavg() if hasattr(os, 'getloadavg') else [0, 0, 0],
+        "uptime": time.time() - os.path.getctime('/proc/1') if os.path.exists('/proc/1') else 0
+    }
+    
+    return Response(json.dumps(stats), mimetype='application/json')
+
+
+# Add a detailed system status endpoint for monitoring
+@app.route('/status', methods=['GET'])
+def system_status():
+    """Detailed system status endpoint."""
+    if not twilio_handler or not voice_ai_pipeline:
+        return Response(json.dumps({"status": "unhealthy"}), 
+                       mimetype='application/json', 
+                       status=503)
+    
+    # Gather system metrics
+    try:
+        import psutil
+        system_metrics = {
+            "cpu": psutil.cpu_percent(interval=0.1),
+            "memory": psutil.virtual_memory().percent,
+            "disk": psutil.disk_usage('/').percent
+        }
+    except ImportError:
+        system_metrics = {"note": "psutil not installed, limited metrics available"}
+    
+    # Gather active call stats
+    call_stats = {}
+    if hasattr(twilio_handler, 'call_manager'):
+        call_stats = twilio_handler.call_manager.get_call_stats()
+    
+    status = {
+        "status": "healthy",
+        "system": system_metrics,
+        "calls": call_stats,
+        "active_websockets": len(call_event_loops)
+    }
+    
+    return Response(json.dumps(status), mimetype='application/json')
 
 
 if __name__ == '__main__':

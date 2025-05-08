@@ -9,7 +9,7 @@ import logging
 import time
 import numpy as np
 import re
-import audioop  # Add this import
+import audioop
 from typing import Dict, Any, Callable, Awaitable, Optional, List, Union, Tuple
 from collections import deque
 
@@ -158,6 +158,11 @@ class WebSocketHandler:
         
         # Track chunks processed since last processing 
         self.chunks_since_last_process = 0
+        
+        # OPTIMIZATION: Add early detection tracking
+        self.chunks_since_speech_start = 0
+        self.early_processing_threshold = 3  # Start after ~100-150ms of speech
+        self.is_early_processing = False
         
         logger.info(f"WebSocketHandler initialized for call {call_sid} with enhanced audio preprocessing")
     
@@ -417,6 +422,15 @@ class WebSocketHandler:
         # Reset startup time
         self.startup_time = time.time()
         
+        # OPTIMIZATION: Specify binary type for efficiency
+        message = {
+            "event": "connected",
+            "protocol": "Call",
+            "version": "1.0.0",
+            "binaryType": "arraybuffer"  # Specify binary type for efficiency
+        }
+        ws.send(json.dumps(message))
+        
         # Start keep-alive task
         if not self.keep_alive_task:
             self.keep_alive_task = asyncio.create_task(self._keep_alive_loop(ws))
@@ -449,6 +463,8 @@ class WebSocketHandler:
         self.consecutive_silent_frames = 0
         self.last_barge_in_time = 0
         self.chunks_since_last_process = 0
+        self.chunks_since_speech_start = 0
+        self.is_early_processing = False
         
         # Reset the audio processor
         self.audio_processor.reset()
@@ -543,6 +559,19 @@ class WebSocketHandler:
                                     self.is_processing = False
                                     self.chunks_since_last_process = 0
             
+            # OPTIMIZATION: Track speech detection for early processing
+            if not self.is_early_processing and self.audio_processor.preprocessor.speech_state == SpeechState.CONFIRMED_SPEECH:
+                self.chunks_since_speech_start += 1
+                
+                # Start early processing after ~100-150ms of speech
+                if self.chunks_since_speech_start >= self.early_processing_threshold:
+                    self.is_early_processing = True
+                    logger.info("Early speech detection - starting processing")
+                    buffer_copy = self.input_buffer.copy()
+                    
+                    # Create task for early processing
+                    asyncio.create_task(self._begin_early_processing(buffer_copy, ws))
+            
             # Limit buffer size to prevent memory issues
             if len(self.input_buffer) > MAX_BUFFER_SIZE:
                 # Keep the most recent portion
@@ -575,6 +604,33 @@ class WebSocketHandler:
             
         except Exception as e:
             logger.error(f"Error processing media payload: {e}", exc_info=True)
+    
+    async def _begin_early_processing(self, buffer_copy, ws):
+        """
+        Begin processing after minimal speech detection (~100-150ms).
+        
+        Args:
+            buffer_copy: Copy of audio buffer
+            ws: WebSocket connection
+        """
+        try:
+            # Only process if we're not already processing
+            async with self.processing_lock:
+                if not self.is_processing:
+                    self.is_processing = True
+                    try:
+                        logger.info(f"Early processing of audio buffer: {len(buffer_copy)} bytes")
+                        # Process this buffer copy
+                        await self._process_audio_buffer(buffer_copy, ws)
+                    finally:
+                        self.is_processing = False
+                        # Reset early processing flag to allow detection again
+                        self.is_early_processing = False
+                        self.chunks_since_speech_start = 0
+        except Exception as e:
+            logger.error(f"Error in early processing: {e}")
+            self.is_early_processing = False
+            self.chunks_since_speech_start = 0
     
     async def _handle_stop(self, data: Dict[str, Any]) -> None:
         """
@@ -618,19 +674,20 @@ class WebSocketHandler:
         name = mark.get('name')
         logger.debug(f"Mark received: {name}")
     
-    async def _process_audio(self, ws) -> None:
+    async def _process_audio_buffer(self, audio_buffer, ws):
         """
-        Simplified process for accumulated audio data through the pipeline with Google Cloud Speech-to-Text.
-        Bypasses extensive preprocessing and avoids unnecessary STT session resets.
+        Process a specific audio buffer through the pipeline.
         
         Args:
+            audio_buffer: Audio buffer to process
             ws: WebSocket connection
         """
         try:
             # Basic conversion without extensive preprocessing
-            mulaw_bytes = bytes(self.input_buffer)
+            mulaw_bytes = bytes(audio_buffer)
             
             try:
+                # OPTIMIZATION: Use smaller 100ms frames for Google STT
                 # Simple conversion to PCM
                 pcm_data = audioop.ulaw2lin(mulaw_bytes, 2)
                 pcm_audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -645,9 +702,6 @@ class WebSocketHandler:
                     
             except Exception as e:
                 logger.error(f"Error converting audio: {e}")
-                # Clear part of buffer and try again next time
-                half_size = len(self.input_buffer) // 2
-                self.input_buffer = self.input_buffer[half_size:]
                 return
                     
             # Create a list to collect transcription results
@@ -673,22 +727,40 @@ class WebSocketHandler:
                 # Convert to bytes format for Google Cloud
                 audio_bytes = (pcm_audio * 32767).astype(np.int16).tobytes()
                 
-                # Process through Google Cloud Speech-to-Text
-                # Google Cloud expects 16-bit PCM audio
-                await self.pipeline.speech_recognizer.process_audio_chunk(
-                    audio_chunk=audio_bytes,
-                    callback=transcription_callback
-                )
+                # OPTIMIZATION: Process in 100ms chunks (1600 bytes at 16kHz, 800 bytes at 8kHz)
+                chunk_size = 800  # 100ms at 8kHz
                 
-                # Check for results in the queue
-                while not self.pipeline.speech_recognizer.result_queue.empty():
-                    try:
-                        result = self.pipeline.speech_recognizer.result_queue.get_nowait()
-                        if result and result not in transcription_results:
-                            transcription_results.append(result)
-                            self.pipeline.speech_recognizer.result_queue.task_done()
-                    except Exception:
-                        break
+                for i in range(0, len(audio_bytes), chunk_size):
+                    chunk = audio_bytes[i:i+chunk_size]
+                    if len(chunk) < chunk_size/2:  # Skip very small final chunks
+                        continue
+                        
+                    # Process through Google Cloud Speech-to-Text
+                    await self.pipeline.speech_recognizer.process_audio_chunk(
+                        audio_chunk=chunk,
+                        callback=transcription_callback
+                    )
+                
+                # Check for any final results after all chunks processed
+                if hasattr(self.pipeline.speech_recognizer, 'stop_streaming') and hasattr(self.pipeline.speech_recognizer, 'start_streaming'):
+                    # Get final transcription
+                    final_text, _ = await self.pipeline.speech_recognizer.stop_streaming()
+                    
+                    # Add to results if not empty
+                    if final_text:
+                        # Create a final result object
+                        final_result = StreamingTranscriptionResult(
+                            text=final_text,
+                            is_final=True,
+                            confidence=1.0,
+                            start_time=0.0,
+                            end_time=time.time(),
+                            chunk_id=0
+                        )
+                        transcription_results.append(final_result)
+                    
+                    # Restart streaming for next utterance
+                    await self.pipeline.speech_recognizer.start_streaming()
                 
                 # Find any final results
                 final_results = [r for r in transcription_results if 
@@ -714,38 +786,87 @@ class WebSocketHandler:
                     
                     # Process if it's a valid transcription
                     if len(transcription.split()) >= 2:  # Only require 2 words minimum
-                        # Now clear the input buffer since we have a valid transcription
-                        self.input_buffer.clear()
-                        
                         # Don't process duplicate transcriptions
                         if transcription == self.last_transcription:
                             logger.info("Duplicate transcription, not processing again")
                             return
                         
-                        # Process through knowledge base
-                        try:
-                            if hasattr(self.pipeline, 'query_engine'):
-                                query_result = await self.pipeline.query_engine.query(transcription)
+                        # OPTIMIZATION: Use parallel tasks for faster processing
+                        # Process query in parallel with TTS preparation
+                        query_task = None
+                        if hasattr(self.pipeline, 'query_engine'):
+                            query_task = asyncio.create_task(
+                                self.pipeline.query_engine.query(transcription)
+                            )
+                        
+                        # While query is processing, prepare TTS
+                        tts_ready_event = asyncio.Event()
+                        tts_ready = False
+                        
+                        if hasattr(self.pipeline, 'tts_integration'):
+                            tts_ready = True
+                            tts_ready_event.set()
+                        
+                        # Wait for query to complete
+                        if query_task:
+                            try:
+                                query_result = await query_task
                                 response = query_result.get("response", "")
                                 
                                 logger.info(f"Generated response: {response}")
                                 
+                                # Wait for TTS to be ready
+                                await tts_ready_event.wait()
+                                
                                 # Convert to speech
-                                if response and hasattr(self.pipeline, 'tts_integration'):
+                                if response and tts_ready:
                                     try:
                                         # Set agent speaking state before sending audio
                                         if hasattr(self.audio_processor, 'set_agent_speaking'):
                                             self.audio_processor.set_agent_speaking(True)
                                         self.speech_cancellation_event.clear()
                                         
-                                        speech_audio = await self.pipeline.tts_integration.text_to_speech(response)
-                                        
-                                        # Convert to mulaw for Twilio
-                                        mulaw_audio = self.audio_processor.pcm_to_mulaw(speech_audio)
-                                        
-                                        # Send back to Twilio
-                                        logger.info(f"Sending audio response ({len(mulaw_audio)} bytes)")
-                                        await self._send_audio(mulaw_audio, ws)
+                                        # OPTIMIZATION: Use sentence-based streaming for faster responses
+                                        if "." in response or "!" in response or "?" in response:
+                                            # Split response into sentences
+                                            sentences = []
+                                            for end_marker in [".", "!", "?"]:
+                                                parts = response.split(end_marker)
+                                                if len(parts) > 1:
+                                                    for i in range(len(parts)-1):
+                                                        if parts[i].strip():
+                                                            sentences.append(parts[i] + end_marker)
+                                                    # Last part might not have punctuation
+                                                    if parts[-1].strip():
+                                                        sentences.append(parts[-1])
+                                            
+                                            # If no sentences detected, use whole response
+                                            if not sentences:
+                                                sentences = [response]
+                                            
+                                            # Process each sentence as soon as possible
+                                            for sentence in sentences:
+                                                if not sentence.strip():
+                                                    continue
+                                                    
+                                                # Check if speech has been cancelled
+                                                if self.speech_cancellation_event.is_set():
+                                                    logger.info("Speech cancelled, stopping sentence streaming")
+                                                    break
+                                                
+                                                # Convert sentence to speech
+                                                speech_audio = await self.pipeline.tts_integration.text_to_speech(sentence)
+                                                
+                                                # Convert to mulaw for Twilio
+                                                mulaw_audio = self.audio_processor.pcm_to_mulaw(speech_audio)
+                                                
+                                                # Send back to Twilio
+                                                await self._send_audio(mulaw_audio, ws)
+                                        else:
+                                            # Process entire response at once if no sentences
+                                            speech_audio = await self.pipeline.tts_integration.text_to_speech(response)
+                                            mulaw_audio = self.audio_processor.pcm_to_mulaw(speech_audio)
+                                            await self._send_audio(mulaw_audio, ws)
                                         
                                     except Exception as tts_error:
                                         logger.error(f"TTS Error: {tts_error}", exc_info=True)
@@ -769,43 +890,22 @@ class WebSocketHandler:
                                     # Update state
                                     self.last_transcription = transcription
                                     self.last_response_time = time.time()
-                        except Exception as e:
-                            logger.error(f"Error processing through knowledge base: {e}", exc_info=True)
-                    else:
-                        # If no valid transcription, reduce buffer size but keep some for context
-                        half_size = len(self.input_buffer) // 2
-                        self.input_buffer = self.input_buffer[half_size:]
-                        logger.debug(f"Transcription too short, reduced buffer to {len(self.input_buffer)} bytes")
-                else:
-                    # If no transcription at all, just reduce buffer size
-                    half_size = len(self.input_buffer) // 2
-                    self.input_buffer = self.input_buffer[half_size:]
-                    logger.debug(f"No transcription found, reduced buffer to {len(self.input_buffer)} bytes")
-                
-                # Don't reset the STT session every time - only reset if we got a valid transcription
-                if transcription and len(transcription.split()) >= 2:
-                    try:
-                        if hasattr(self.pipeline.speech_recognizer, 'stop_streaming'):
-                            await self.pipeline.speech_recognizer.stop_streaming()
+                            except Exception as e:
+                                logger.error(f"Error processing query: {e}", exc_info=True)
                         
-                        await asyncio.sleep(0.2)  # Add delay between stop and start
-                        
-                        if hasattr(self.pipeline.speech_recognizer, 'start_streaming'):
-                            await self.pipeline.speech_recognizer.start_streaming()
-                            await asyncio.sleep(0.1)  # Add a small delay
-                        
-                        logger.info("Reset STT after successful transcription")
-                    except Exception as reset_error:
-                        logger.error(f"Error resetting STT: {reset_error}")
-            
             except Exception as e:
                 logger.error(f"Error during STT processing: {e}", exc_info=True)
-                # If error, clear part of buffer and continue
-                half_size = len(self.input_buffer) // 2
-                self.input_buffer = self.input_buffer[half_size:]
                 
         except Exception as e:
-            logger.error(f"Error processing audio: {e}", exc_info=True)
+            logger.error(f"Error processing audio buffer: {e}", exc_info=True)
+    
+    async def _process_audio(self, ws) -> None:
+        """Process the accumulated audio buffer."""
+        # Use the buffer processing implementation
+        await self._process_audio_buffer(self.input_buffer, ws)
+        
+        # Clear the input buffer after processing
+        self.input_buffer.clear()
     
     async def _send_audio(self, audio_data: bytes, ws, is_interrupt: bool = False) -> None:
         """
@@ -837,8 +937,8 @@ class WebSocketHandler:
                 audio_info = self.audio_processor.get_audio_info(audio_data)
                 logger.debug(f"Sending audio: format={audio_info.get('format', 'unknown')}, size={len(audio_data)} bytes")
             
-            # Split audio into smaller chunks to avoid timeouts
-            chunk_size = 320  # 20ms of 8kHz μ-law mono audio
+            # OPTIMIZATION: Use 512-byte chunks (optimal buffer size)
+            chunk_size = 512  # Optimal buffer size between 512-1024 bytes
             chunks = [audio_data[i:i+chunk_size] for i in range(0, len(audio_data), chunk_size)]
             
             logger.debug(f"Splitting {len(audio_data)} bytes into {len(chunks)} chunks")
