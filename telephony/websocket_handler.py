@@ -682,6 +682,7 @@ class WebSocketHandler:
             audio_buffer: Audio buffer to process
             ws: WebSocket connection
         """
+        
         try:
             # Basic conversion without extensive preprocessing
             mulaw_bytes = bytes(audio_buffer)
