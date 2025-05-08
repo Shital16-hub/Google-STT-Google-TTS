@@ -1,5 +1,3 @@
-# text_to_speech/config.py
-
 """
 Configuration settings for the Text-to-Speech module.
 """
@@ -14,23 +12,23 @@ load_dotenv()
 class TTSConfig(BaseSettings):
     """Configuration for Text-to-Speech module."""
     
-    # ElevenLabs API settings
-    elevenlabs_api_key: str = Field(
-        default=os.getenv("ELEVENLABS_API_KEY", ""),
-        description="ElevenLabs API Key for TTS services"
+    # Google Cloud TTS settings
+    voice_name: str = Field(
+        default=os.getenv("TTS_VOICE_NAME", "en-US-Standard-J"),
+        description="Google Cloud TTS voice name"
     )
     
-    # TTS settings
-    model_id: str = Field(
-        default=os.getenv("TTS_MODEL_ID", "eleven_turbo_v2"),  # Upgraded to latest model
-        description="ElevenLabs model ID to use"
+    voice_gender: str = Field(
+        default=os.getenv("TTS_VOICE_GENDER", "NEUTRAL"),
+        description="Google Cloud TTS voice gender (MALE, FEMALE, NEUTRAL)"
     )
     
-    voice_id: str = Field(
-        default=os.getenv("TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),  # Default to Rachel voice
-        description="Voice ID for the TTS system"
+    language_code: str = Field(
+        default=os.getenv("TTS_LANGUAGE_CODE", "en-US"),
+        description="Google Cloud TTS language code"
     )
     
+    # General TTS settings
     sample_rate: int = Field(
         default=8000,  # Set to 8000Hz for Twilio compatibility
         description="Audio sample rate in Hz"
@@ -41,6 +39,22 @@ class TTSConfig(BaseSettings):
         description="Audio container format (mp3, wav, mulaw)"
     )
     
+    # Legacy ElevenLabs settings (kept for backward compatibility)
+    elevenlabs_api_key: str = Field(
+        default=os.getenv("ELEVENLABS_API_KEY", ""),
+        description="ElevenLabs API Key for TTS services"
+    )
+    
+    model_id: str = Field(
+        default=os.getenv("TTS_MODEL_ID", "eleven_turbo_v2"),
+        description="ElevenLabs model ID to use"
+    )
+    
+    voice_id: str = Field(
+        default=os.getenv("TTS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"),
+        description="Voice ID for the TTS system"
+    )
+    
     # Streaming settings
     chunk_size: int = Field(
         default=1024,
@@ -49,7 +63,7 @@ class TTSConfig(BaseSettings):
     
     max_text_chunk_size: int = Field(
         default=100,
-        description="Maximum text chunk size to send to ElevenLabs at once"
+        description="Maximum text chunk size to send to TTS at once"
     )
     
     stream_timeout: float = Field(

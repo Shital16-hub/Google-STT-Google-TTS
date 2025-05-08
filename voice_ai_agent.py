@@ -1,8 +1,7 @@
 # voice_ai_agent.py
 
 """
-Voice AI Agent main class that coordinates all components with Google Cloud STT integration
-and ElevenLabs TTS.
+Voice AI Agent main class that coordinates all components with Google Cloud STT and TTS integration.
 Generic version that works with any knowledge base.
 """
 import os
@@ -21,13 +20,13 @@ from knowledge_base.llama_index.document_store import DocumentStore
 from knowledge_base.llama_index.index_manager import IndexManager
 from knowledge_base.llama_index.query_engine import QueryEngine
 
-# ElevenLabs TTS imports
-from text_to_speech import ElevenLabsTTS
+# Google Cloud TTS imports
+from text_to_speech import GoogleCloudTTS
 
 logger = logging.getLogger(__name__)
 
 class VoiceAIAgent:
-    """Main Voice AI Agent class that coordinates all components with Google Cloud STT and ElevenLabs TTS."""
+    """Main Voice AI Agent class that coordinates all components with Google Cloud STT and TTS."""
     
     def __init__(
         self,
@@ -37,7 +36,7 @@ class VoiceAIAgent:
         **kwargs
     ):
         """
-        Initialize the Voice AI Agent with Google Cloud STT and ElevenLabs TTS.
+        Initialize the Voice AI Agent with Google Cloud STT and TTS.
         
         Args:
             storage_dir: Directory for persistent storage
@@ -56,11 +55,10 @@ class VoiceAIAgent:
         # Whether to use enhanced model for telephony
         self.enhanced_model = kwargs.get('enhanced_model', True)
         
-        # TTS Parameters for ElevenLabs
-        self.elevenlabs_api_key = kwargs.get('elevenlabs_api_key', os.getenv('ELEVENLABS_API_KEY'))
-        # Updated to use environment variables with better defaults
-        self.elevenlabs_voice_id = kwargs.get('elevenlabs_voice_id', os.getenv('TTS_VOICE_ID', 'EXAVITQu4vr4xnSDxMaL'))  # Bella voice
-        self.elevenlabs_model_id = kwargs.get('elevenlabs_model_id', os.getenv('TTS_MODEL_ID', 'eleven_turbo_v2'))  # Latest model
+        # TTS Parameters for Google Cloud TTS
+        self.tts_voice_name = kwargs.get('tts_voice_name', os.getenv('TTS_VOICE_NAME', 'en-US-Standard-J'))
+        self.tts_voice_gender = kwargs.get('tts_voice_gender', os.getenv('TTS_VOICE_GENDER', 'NEUTRAL'))
+        self.tts_language_code = kwargs.get('tts_language_code', os.getenv('TTS_LANGUAGE_CODE', 'en-US'))
         
         # Component placeholders
         self.speech_recognizer = None
@@ -144,8 +142,8 @@ class VoiceAIAgent:
                 )
         
     async def init(self):
-        """Initialize all components with Google Cloud STT and ElevenLabs TTS."""
-        logger.info("Initializing Voice AI Agent components with Google Cloud STT and ElevenLabs TTS...")
+        """Initialize all components with Google Cloud STT and TTS."""
+        logger.info("Initializing Voice AI Agent components with Google Cloud STT and TTS...")
         
         # Initialize speech recognizer with Google Cloud
         self.speech_recognizer = GoogleCloudStreamingSTT(
@@ -187,26 +185,29 @@ class VoiceAIAgent:
         )
         await self.conversation_manager.init()
         
-        # Initialize ElevenLabs TTS client with optimized parameters
+        # Initialize Google Cloud TTS client with optimized parameters
         try:
-            if not self.elevenlabs_api_key:
-                raise ValueError("ElevenLabs API key is required. Please set ELEVENLABS_API_KEY in environment variables.")
+            # Check for credentials
+            credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            if not credentials_file:
+                logger.warning("GOOGLE_APPLICATION_CREDENTIALS not set. Using default credentials.")
                 
-            self.tts_client = ElevenLabsTTS(
-                api_key=self.elevenlabs_api_key,
-                voice_id=self.elevenlabs_voice_id,
-                model_id=self.elevenlabs_model_id,
+            self.tts_client = GoogleCloudTTS(
+                credentials_file=credentials_file,
+                voice_name=self.tts_voice_name,
+                voice_gender=self.tts_voice_gender,
+                language_code=self.tts_language_code,
                 container_format="mulaw",  # For Twilio compatibility
                 sample_rate=8000,  # For Twilio compatibility
-                optimize_streaming_latency=4  # Maximum optimization for real-time performance
+                enable_caching=True
             )
             
-            logger.info(f"Initialized ElevenLabs TTS with voice ID: {self.elevenlabs_voice_id}, model ID: {self.elevenlabs_model_id}")
+            logger.info(f"Initialized Google Cloud TTS with voice: {self.tts_voice_name}")
         except Exception as e:
-            logger.error(f"Error initializing ElevenLabs TTS: {e}")
+            logger.error(f"Error initializing Google Cloud TTS: {e}")
             raise
         
-        logger.info("Voice AI Agent initialization complete with Google Cloud STT and ElevenLabs TTS")
+        logger.info("Voice AI Agent initialization complete with Google Cloud STT and TTS")
         
     async def process_audio(
         self,
@@ -241,7 +242,7 @@ class VoiceAIAgent:
             # Process through conversation manager
             response = await self.conversation_manager.handle_user_input(transcription)
             
-            # Generate speech using ElevenLabs TTS
+            # Generate speech using Google Cloud TTS
             if response and response.get("response"):
                 try:
                     speech_audio = await self.tts_client.synthesize(response["response"])
@@ -252,7 +253,7 @@ class VoiceAIAgent:
                         "status": "success"
                     }
                 except Exception as e:
-                    logger.error(f"Error synthesizing speech with ElevenLabs: {e}")
+                    logger.error(f"Error synthesizing speech with Google Cloud TTS: {e}")
                     return {
                         "transcription": transcription,
                         "response": response.get("response", ""),
@@ -320,7 +321,7 @@ class VoiceAIAgent:
                             # Get response from conversation manager
                             response = await self.conversation_manager.handle_user_input(transcription)
                             
-                            # Generate speech with ElevenLabs TTS
+                            # Generate speech with Google Cloud TTS
                             speech_audio = None
                             tts_error = None
                             
@@ -328,7 +329,7 @@ class VoiceAIAgent:
                                 try:
                                     speech_audio = await self.tts_client.synthesize(response["response"])
                                 except Exception as e:
-                                    logger.error(f"Error synthesizing speech with ElevenLabs: {e}")
+                                    logger.error(f"Error synthesizing speech with Google Cloud TTS: {e}")
                                     tts_error = str(e)
                             
                             # Format result

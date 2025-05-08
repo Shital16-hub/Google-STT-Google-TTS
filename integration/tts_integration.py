@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import Optional, Dict, Any, List, Union
 
-from text_to_speech import ElevenLabsTTS
+from text_to_speech import GoogleCloudTTS
 
 logger = logging.getLogger(__name__)
 
@@ -17,17 +17,23 @@ class TTSIntegration:
     
     def __init__(
         self,
-        voice_id: Optional[str] = None,
+        voice_name: Optional[str] = None,
+        voice_gender: Optional[str] = None,
+        language_code: Optional[str] = "en-US",
         enable_caching: bool = True
     ):
         """
         Initialize the TTS integration.
         
         Args:
-            voice_id: Voice ID to use for ElevenLabs TTS
+            voice_name: Voice name to use for Google Cloud TTS
+            voice_gender: Voice gender (MALE, FEMALE, NEUTRAL)
+            language_code: Language code (defaults to en-US)
             enable_caching: Whether to enable TTS caching
         """
-        self.voice_id = voice_id
+        self.voice_name = voice_name
+        self.voice_gender = voice_gender
+        self.language_code = language_code
         self.enable_caching = enable_caching
         self.tts_client = None
         self.initialized = False
@@ -47,26 +53,25 @@ class TTSIntegration:
             return
             
         try:
-            # Get API key from environment
+            # Get credentials from environment
             import os
-            api_key = os.environ.get("ELEVENLABS_API_KEY")
-            model_id = os.environ.get("TTS_MODEL_ID", "eleven_turbo_v2")  # Use the latest model
+            credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
             
-            # Initialize the ElevenLabs TTS client with settings optimized for Twilio
-            self.tts_client = ElevenLabsTTS(
-                api_key=api_key,
-                voice_id=self.voice_id, 
-                enable_caching=self.enable_caching,
-                container_format="mulaw",  # Use mulaw for Twilio compatibility
-                sample_rate=8000,  # Set sample rate for telephony
-                model_id=model_id,
-                optimize_streaming_latency=4  # Maximum optimization for real-time performance
+            # Initialize the Google Cloud TTS client with settings optimized for telephony
+            self.tts_client = GoogleCloudTTS(
+                credentials_file=credentials_file,
+                voice_name=self.voice_name,
+                voice_gender=self.voice_gender or "NEUTRAL",
+                language_code=self.language_code or "en-US",
+                container_format="mulaw",  # For Twilio compatibility
+                sample_rate=8000,  # For Twilio compatibility
+                enable_caching=self.enable_caching
             )
             
             self.initialized = True
-            logger.info(f"Initialized TTS with ElevenLabs, voice: {self.voice_id or 'default'}, model: {model_id}")
+            logger.info(f"Initialized TTS with Google Cloud TTS, voice: {self.voice_name or 'default'}")
         except Exception as e:
-            logger.error(f"Error initializing TTS: {e}")
+            logger.error(f"Error initializing Google Cloud TTS: {e}")
             raise
 
     async def cancel_ongoing_tts(self) -> bool:
@@ -199,14 +204,7 @@ class TTSIntegration:
         # For short text, process normally
         if len(sentences) <= 1 or len(text) < 100:
             # Get audio data from TTS client with quality parameters
-            params = {
-                "optimize_streaming_latency": 2,  # Lower for better quality (0-4)
-                "stability": 0.5,  # Balanced stability
-                "clarity": 0.75,  # Improved clarity
-                "style": 0.25,  # Some speaking style variation
-            }
-            
-            audio_data = await self.tts_client.synthesize(text, **params)
+            audio_data = await self.tts_client.synthesize(text)
             
             # Ensure the audio data has an even number of bytes
             if len(audio_data) % 2 != 0:
@@ -236,14 +234,8 @@ class TTSIntegration:
                 logger.info("Barge-in detected during speech generation, stopping")
                 break
                 
-            # Generate speech for this sentence with enhanced quality
-            params = {
-                "optimize_streaming_latency": 2,
-                "stability": 0.5,
-                "clarity": 0.75,
-                "style": 0.25,
-            }
-            sentence_audio = await self.tts_client.synthesize(sentence, **params)
+            # Generate speech for this sentence
+            sentence_audio = await self.tts_client.synthesize(sentence)
             
             # Ensure even byte count
             if len(sentence_audio) % 2 != 0:

@@ -196,15 +196,10 @@ def split_audio_into_chunks_with_silence_detection(audio_data: bytes) -> list:
     return chunks
 
 async def initialize_system():
-    """Initialize all system components with ElevenLabs TTS integration."""
+    """Initialize all system components with Google Cloud TTS integration."""
     global twilio_handler, voice_ai_pipeline, base_url
     
-    logger.info("Initializing Voice AI Agent with ElevenLabs TTS integration...")
-    
-    # Verify ElevenLabs API key is set
-    elevenlabs_api_key = os.environ.get("ELEVENLABS_API_KEY")
-    if not elevenlabs_api_key:
-        logger.warning("ELEVENLABS_API_KEY not set in environment, attempting to proceed without it")
+    logger.info("Initializing Voice AI Agent with Google Cloud TTS integration...")
     
     # Define a generic telephony-optimized prompt
     telephony_prompt = (
@@ -223,7 +218,7 @@ async def initialize_system():
     
     logger.info(f"Using BASE_URL: {base_url}")
     
-    # Initialize Voice AI Agent with optimized parameters
+    # Initialize Voice AI Agent with Google Cloud TTS
     agent = VoiceAIAgent(
         storage_dir='./storage',
         model_name='mistral:7b-instruct-v0.2-q4_0',
@@ -233,17 +228,19 @@ async def initialize_system():
         whisper_temperature=0.0,  # Greedy decoding for more reliable transcription
         whisper_no_context=True,  # Each utterance is independent
         whisper_preset="default",
-        # Pass ElevenLabs parameters
-        elevenlabs_api_key=elevenlabs_api_key,
-        elevenlabs_voice_id=os.getenv('TTS_VOICE_ID', 'EXAVITQu4vr4xnSDxMaL'),  # Default to Bella voice
-        elevenlabs_model_id=os.getenv('TTS_MODEL_ID', 'eleven_turbo_v2')  # Latest model
+        # Pass Google Cloud TTS parameters
+        tts_voice_name=os.getenv('TTS_VOICE_NAME', 'en-US-Standard-J'),
+        tts_voice_gender=os.getenv('TTS_VOICE_GENDER', 'NEUTRAL'),
+        tts_language_code=os.getenv('TTS_LANGUAGE_CODE', 'en-US')
     )
     await agent.init()
     
-    # Initialize TTS integration with ElevenLabs
+    # Initialize TTS integration with Google Cloud TTS
     from integration.tts_integration import TTSIntegration
     tts = TTSIntegration(
-        voice_id=os.getenv('TTS_VOICE_ID', 'EXAVITQu4vr4xnSDxMaL'),
+        voice_name=os.getenv('TTS_VOICE_NAME', 'en-US-Standard-J'),
+        voice_gender=os.getenv('TTS_VOICE_GENDER', 'NEUTRAL'),
+        language_code=os.getenv('TTS_LANGUAGE_CODE', 'en-US'),
         enable_caching=True
     )
     await tts.init()
@@ -260,7 +257,7 @@ async def initialize_system():
     twilio_handler = TwilioHandler(voice_ai_pipeline, base_url)
     await twilio_handler.start()
     
-    logger.info("System initialized successfully with ElevenLabs TTS integration")
+    logger.info("System initialized successfully with Google Cloud TTS integration")
 
 @app.route('/', methods=['GET'])
 def index():

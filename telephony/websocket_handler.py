@@ -1,6 +1,6 @@
 """
 WebSocket handler for Twilio media streams with Google Cloud Speech integration
-and ElevenLabs TTS with enhanced barge-in detection.
+and Google Cloud TTS with enhanced barge-in detection.
 """
 import json
 import base64
@@ -16,6 +16,9 @@ from google.cloud.speech import SpeechClient, StreamingRecognitionConfig, Recogn
 from google.cloud.speech_v1p1beta1 import SpeechAsyncClient
 from google.api_core.exceptions import GoogleAPIError
 
+# Import Google Cloud TTS client
+from google.cloud import texttospeech
+
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT
 from speech_to_text.simple_google_stt import SimpleGoogleSTT
 from speech_to_text.utils.speech_detector import SpeechActivityDetector
@@ -25,10 +28,12 @@ from telephony.config import CHUNK_SIZE, AUDIO_BUFFER_SIZE, SILENCE_THRESHOLD, S
 import concurrent.futures
 import threading
 
-# Import ElevenLabs TTS
-from text_to_speech import ElevenLabsTTS
+# Import Google Cloud TTS instead of ElevenLabs
+from text_to_speech import GoogleCloudTTS
 
 logger = logging.getLogger(__name__)
+
+# Rest of the class definitions remain unchanged...
 
 # Enhanced patterns for non-speech annotations
 NON_SPEECH_PATTERNS = [
@@ -994,6 +999,7 @@ class WebSocketHandler:
             self.keep_alive_task = asyncio.create_task(self._keep_alive_loop(ws))
     
     async def _handle_start(self, data: Dict[str, Any], ws) -> None:
+        
         """
         Handle stream start event with barge-in configuration.
         
@@ -1049,27 +1055,26 @@ class WebSocketHandler:
         self.google_speech_active = False  # Reset Google Speech session state
         self.recent_system_responses = []  # Reset system responses
         
-        # Initialize ElevenLabs TTS if not already
+        # Initialize Google Cloud TTS if not already
         if self.elevenlabs_tts is None:
             try:
-                # Get API key from environment if not explicitly provided
+                # Check for Google Cloud credentials
                 import os
-                api_key = os.environ.get("ELEVENLABS_API_KEY")
-                voice_id = os.environ.get("TTS_VOICE_ID", "EXAVITQu4vr4xnSDxMaL")  # Default to Bella voice
-                model_id = os.environ.get("TTS_MODEL_ID", "eleven_turbo_v2")  # Use the latest model
+                credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
                 
-                # Create ElevenLabs TTS client with improved parameters for telephony
-                self.elevenlabs_tts = ElevenLabsTTS(
-                    api_key=api_key,
-                    voice_id=voice_id,
-                    model_id=model_id,
+                # Create Google Cloud TTS client with settings optimized for telephony
+                self.elevenlabs_tts = GoogleCloudTTS(
+                    credentials_file=credentials_file,
+                    voice_name=os.environ.get("TTS_VOICE_NAME", "en-US-Standard-J"),
+                    voice_gender=os.environ.get("TTS_VOICE_GENDER", "NEUTRAL"),
+                    language_code=os.environ.get("TTS_LANGUAGE_CODE", "en-US"),
                     container_format="mulaw",  # For Twilio compatibility
                     sample_rate=8000,  # For Twilio compatibility
-                    optimize_streaming_latency=4  # Maximum optimization for real-time performance
+                    enable_caching=True
                 )
-                logger.info(f"Initialized ElevenLabs TTS with voice ID: {voice_id}, model ID: {model_id}")
+                logger.info(f"Initialized Google Cloud TTS with voice: {os.environ.get('TTS_VOICE_NAME', 'en-US-Standard-J')}")
             except Exception as e:
-                logger.error(f"Error initializing ElevenLabs TTS: {e}")
+                logger.error(f"Error initializing Google Cloud TTS: {e}")
                 # Will fall back to pipeline TTS integration
         
         # Send a welcome message
@@ -1437,7 +1442,7 @@ class WebSocketHandler:
     async def _process_audio(self, ws) -> None:
         """
         Process accumulated audio data through the pipeline with Google Cloud Speech
-        and ElevenLabs TTS.
+        and Google Cloud TTS.
         
         Args:
             ws: WebSocket connection
@@ -1543,13 +1548,13 @@ class WebSocketHandler:
                             
                             logger.info(f"Generated response: {response}")
                             
-                            # Convert to speech with ElevenLabs TTS
+                            # Convert to speech with Google Cloud TTS
                             if response:
-                                # Try using direct ElevenLabs TTS first, fall back to pipeline TTS integration
+                                # Try using direct Google Cloud TTS first, fall back to pipeline TTS integration
                                 try:
                                     if self.elevenlabs_tts:
                                         speech_audio = await self.elevenlabs_tts.synthesize(response)
-                                        logger.info(f"Generated speech with ElevenLabs TTS: {len(speech_audio)} bytes")
+                                        logger.info(f"Generated speech with Google Cloud TTS: {len(speech_audio)} bytes")
                                     else:
                                         # Fall back to pipeline's TTS integration
                                         speech_audio = await self.pipeline.tts_integration.text_to_speech(response)
@@ -1559,7 +1564,7 @@ class WebSocketHandler:
                                     if not self.elevenlabs_tts or self.elevenlabs_tts.container_format != "mulaw":
                                         mulaw_audio = self.audio_processor.convert_to_mulaw(speech_audio)
                                     else:
-                                        # Already in mulaw format from ElevenLabs
+                                        # Already in mulaw format from Google Cloud TTS
                                         mulaw_audio = speech_audio
                                     
                                     # Track this response for echo detection
@@ -1575,7 +1580,7 @@ class WebSocketHandler:
                                     self.last_transcription = transcription
                                     self.last_response_time = time.time()
                                 except Exception as tts_error:
-                                    logger.error(f"Error with ElevenLabs TTS, falling back to pipeline TTS: {tts_error}")
+                                    logger.error(f"Error with Google Cloud TTS, falling back to pipeline TTS: {tts_error}")
                                     
                                     # Fall back to pipeline's TTS integration
                                     speech_audio = await self.pipeline.tts_integration.text_to_speech(response)
@@ -1823,7 +1828,7 @@ class WebSocketHandler:
     
     async def send_text_response(self, text: str, ws) -> None:
         """
-        Send a text response by converting to speech with ElevenLabs first.
+        Send a text response by converting to speech with Google Cloud TTS first.
         
         Args:
             text: Text to send
@@ -1835,12 +1840,12 @@ class WebSocketHandler:
             if len(self.recent_system_responses) > 5:  # Keep last 5 responses
                 self.recent_system_responses.pop(0)
                 
-            # Convert text to speech with ElevenLabs
+            # Convert text to speech with Google Cloud TTS
             if self.elevenlabs_tts:
                 try:
-                    # Use direct ElevenLabs TTS
+                    # Use direct Google Cloud TTS
                     speech_audio = await self.elevenlabs_tts.synthesize(text)
-                    logger.info(f"Generated speech with ElevenLabs TTS: {len(speech_audio)} bytes")
+                    logger.info(f"Generated speech with Google Cloud TTS: {len(speech_audio)} bytes")
                     
                     # If already in mulaw format, send directly
                     if self.elevenlabs_tts.container_format == "mulaw":
@@ -1851,13 +1856,13 @@ class WebSocketHandler:
                         
                     # Send audio
                     await self._send_audio(mulaw_audio, ws)
-                    logger.info(f"Sent text response using ElevenLabs: '{text}'")
+                    logger.info(f"Sent text response using Google Cloud TTS: '{text}'")
                     
                     # Update last response time to add pause
                     self.last_response_time = time.time()
                     return
                 except Exception as e:
-                    logger.error(f"Error with ElevenLabs TTS, falling back to pipeline TTS: {e}")
+                    logger.error(f"Error with Google Cloud TTS, falling back to pipeline TTS: {e}")
             
             # Fall back to pipeline's TTS integration
             if hasattr(self.pipeline, 'tts_integration'):
