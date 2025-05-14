@@ -17,6 +17,8 @@ from simple_websocket import Server
 from dotenv import load_dotenv
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 
+import simple_websocket
+
 # Import your modules
 from speech_to_text.utils.speech_detector import SpeechActivityDetector
 from telephony.audio_processor import MulawBufferProcessor, AudioProcessor
@@ -432,6 +434,7 @@ def test_barge_in_detection():
 @app.route('/ws/stream/<call_sid>', websocket=True)
 def handle_media_stream(call_sid):
     """Handle WebSocket media stream with enhanced barge-in detection."""
+    logger.info(f"WebSocket connection attempt for call {call_sid} - AT START OF HANDLER")
     logger.info(f"WebSocket connection attempt for call {call_sid}")
     
     if not twilio_handler or not voice_ai_pipeline:
@@ -520,6 +523,14 @@ def handle_media_stream(call_sid):
                     ws_handler.handle_message(message, ws),
                     loop
                 )
+            except ConnectionError as e:
+                # Handle normal connection closure
+                logger.info(f"WebSocket connection closed for call {call_sid}: {e}")
+                break
+            except simple_websocket.ws.ConnectionClosed as e:
+                # Specific handling for simple_websocket ConnectionClosed exception
+                logger.info(f"WebSocket connection closed by client for call {call_sid}: {e}")
+                break
             except Exception as e:
                 logger.error(f"Error receiving WebSocket message: {e}", exc_info=True)
                 break

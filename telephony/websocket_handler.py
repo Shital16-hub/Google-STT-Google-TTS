@@ -1383,24 +1383,26 @@ class WebSocketHandler:
     
     def _split_audio_into_chunks_with_silence_detection(self, audio_data: bytes) -> list:
         """
-        Split audio into chunks with silence detection for improved barge-in.
-        Add longer pauses at sentence boundaries for better barge-in opportunities.
+        Split audio into chunks with silence detection for better responsiveness and barge-in.
+        Modified to avoid popping by removing explicit silence insertion.
         
         Args:
             audio_data: Audio data to split
             
         Returns:
-            List of chunks with appropriate silences
+            List of chunks with smooth transitions
         """
+        # Create an AudioProcessor instance
+        audio_processor = AudioProcessor()
+        
         # Convert to PCM for analysis
-        pcm_data = self.audio_processor.mulaw_to_pcm(audio_data)
+        pcm_data = audio_processor.mulaw_to_pcm(audio_data)
         
         # Check if we have enough data to process
         if len(pcm_data) < 3200:  # Less than 200ms at 16kHz
             return [audio_data]  # Return original if too short
         
-        # Simple sentence boundary detection from audio (rough approximation)
-        # Looking for prolonged drops in energy that might represent pauses
+        # Simple sentence boundary detection from audio
         frame_size = 1600  # 100ms at 16kHz
         frames = [pcm_data[i:i+frame_size] for i in range(0, len(pcm_data), frame_size) if i+frame_size <= len(pcm_data)]
         
@@ -1415,8 +1417,8 @@ class WebSocketHandler:
             if frame_energies[i] < frame_energies[i-1] * 0.3:  # 70% drop in energy
                 boundaries.append(i * frame_size)
         
-        # Now split the audio with extended silence at these boundaries
-        chunk_size = 400  # Reduced from 800 for more frequent checks
+        # Use larger chunk size for more stable audio
+        chunk_size = 800  # Increased from 400 but not too large
         chunks = []
         last_pos = 0
         
@@ -1426,9 +1428,8 @@ class WebSocketHandler:
                 end = min(i + chunk_size, boundary, len(audio_data))
                 chunks.append(audio_data[i:end])
             
-            # Add explicit silence at sentence boundaries (100ms)
-            silence_chunk = b'\x00' * 800  # 100ms of silence at 8kHz
-            chunks.append(silence_chunk)
+            # NO EXPLICIT SILENCE INSERTION - Just continue to the next boundary
+            # Natural pauses in speech should provide sufficient silence
             
             last_pos = min(boundary, len(audio_data))
         
