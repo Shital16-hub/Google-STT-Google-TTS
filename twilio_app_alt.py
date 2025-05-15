@@ -23,11 +23,10 @@ import simple_websocket
 from speech_to_text.utils.speech_detector import SpeechActivityDetector
 from telephony.audio_processor import MulawBufferProcessor, AudioProcessor
 from telephony.twilio_handler import TwilioHandler
-from telephony.websocket_handler import WebSocketHandler, AudioFingerprinter, SpeechPatternDetector
+from telephony.websocket_handler import WebSocketHandler
 from telephony.config import HOST, PORT, DEBUG, LOG_LEVEL, LOG_FORMAT
 from voice_ai_agent import VoiceAIAgent
 from integration.pipeline import VoiceAIAgentPipeline
-from text_to_speech import ElevenLabsTTS
 
 # Load environment variables
 load_dotenv()
@@ -87,7 +86,7 @@ base_url = None
 # Dictionary to store event loops and state for each call
 call_event_loops = {}
 
-# Helper function to detect speech vs echo
+# Helper function to detect speech vs echo - improved with lower thresholds
 def detect_barge_in_during_speech(audio_data: np.ndarray, time_since_output: float) -> bool:
     """
     Enhanced barge-in detection during system speech with lower thresholds for faster detection.
@@ -225,11 +224,6 @@ async def initialize_system():
         storage_dir='./storage',
         model_name='mistral:7b-instruct-v0.2-q4_0',
         llm_temperature=0.7,
-        # Pass optimized telephony parameters
-        whisper_initial_prompt=telephony_prompt,
-        whisper_temperature=0.0,  # Greedy decoding for more reliable transcription
-        whisper_no_context=True,  # Each utterance is independent
-        whisper_preset="default",
         # Pass Google Cloud TTS parameters
         tts_voice_name=os.getenv('TTS_VOICE_NAME', 'en-US-Standard-J'),
         tts_voice_gender=os.getenv('TTS_VOICE_GENDER', 'NEUTRAL'),
@@ -264,7 +258,7 @@ async def initialize_system():
 @app.route('/', methods=['GET'])
 def index():
     """Simple test endpoint."""
-    return "Voice AI Agent is running with ElevenLabs TTS integration and enhanced barge-in support!"
+    return "Voice AI Agent is running with Google Cloud TTS integration and enhanced barge-in support!"
 
 @app.route('/voice/incoming', methods=['POST'])
 def handle_incoming_call():
@@ -434,7 +428,6 @@ def test_barge_in_detection():
 @app.route('/ws/stream/<call_sid>', websocket=True)
 def handle_media_stream(call_sid):
     """Handle WebSocket media stream with enhanced barge-in detection."""
-    logger.info(f"WebSocket connection attempt for call {call_sid} - AT START OF HANDLER")
     logger.info(f"WebSocket connection attempt for call {call_sid}")
     
     if not twilio_handler or not voice_ai_pipeline:
@@ -446,39 +439,8 @@ def handle_media_stream(call_sid):
         ws = Server.accept(request.environ)
         logger.info(f"WebSocket connection established for call {call_sid}")
         
-        # Create improved speech detector with conservative settings
-        speech_detector = SpeechActivityDetector(
-            energy_threshold=0.10,  # Increased threshold
-            consecutive_frames=5,   # Require more frames
-            frame_duration=0.02     # 20ms frames
-        )
-        
-        # Initialize WebSocketHandler with better barge-in handling
+        # Initialize WebSocketHandler with modular components
         ws_handler = WebSocketHandler(call_sid=call_sid, pipeline=voice_ai_pipeline)
-        
-        # IMPROVED CONFIGURATION
-        # Set speech detector
-        ws_handler.speech_detector = speech_detector
-        
-        # Enhance echo detection
-        ws_handler.audio_fingerprinter = AudioFingerprinter(max_fingerprints=50)
-        ws_handler.audio_fingerprinter.similarity_threshold = 0.65
-        
-        # Conservative barge-in settings
-        ws_handler.barge_in_enabled = True
-        ws_handler.barge_in_energy_threshold = 0.12
-        ws_handler.post_speech_dead_zone = 0.5  # 500ms dead zone after speech
-        ws_handler.barge_in_min_duration = 0.6  # 600ms minimum speech duration
-        ws_handler.barge_in_debounce_time = 6.0  # 6s between barge-in attempts
-        
-        # Increase pause after system response
-        ws_handler.pause_after_response = 0.8  # Longer pause between turns
-        
-        # Create speech pattern detector
-        ws_handler.speech_pattern_detector = SpeechPatternDetector()
-        
-        # Set minimum words for a valid query
-        ws_handler.min_words_for_valid_query = 2  # Increased from 1 for more reliable detection
         
         # Create a new event loop for this WebSocket connection
         loop = asyncio.new_event_loop()
@@ -568,7 +530,7 @@ def init_system():
 
 # Starting point of the application
 if __name__ == '__main__':
-    print("Starting Voice AI Agent with ElevenLabs TTS integration and enhanced barge-in support...")
+    print("Starting Voice AI Agent with Google Cloud TTS integration and enhanced barge-in support...")
     
     # Initialize the system before starting the Flask app
     init_system()
