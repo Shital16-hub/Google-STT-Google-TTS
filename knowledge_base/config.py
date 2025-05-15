@@ -1,117 +1,73 @@
+# knowledge_base/config.py
 """
-Configuration settings for the knowledge base component.
+Configuration settings for OpenAI LLM + Pinecone vector store.
+Optimized for minimal latency.
 """
 import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 
-# Vector database settings
-VECTOR_DB_HOST = os.getenv("VECTOR_DB_HOST", "localhost")
-VECTOR_DB_PORT = int(os.getenv("VECTOR_DB_PORT", "6333"))
-VECTOR_DB_GRPC_PORT = int(os.getenv("VECTOR_DB_GRPC_PORT", "6334"))
-VECTOR_DB_COLLECTION = os.getenv("VECTOR_DB_COLLECTION", "company_knowledge")
-VECTOR_DIMENSION = 384  # For sentence-transformers/all-MiniLM-L6-v2
+# OpenAI Configuration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # Fastest model
+OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.7"))
+OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "256"))  # Shorter for speed
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "5.0"))  # 5 second timeout
 
-# Embedding model settings
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-MiniLM-L3-v2")  # Smaller model
-EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "cpu")  # Set to "cuda" for GPU
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
+# Pinecone Configuration  
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1-aws")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "voice-ai-knowledge")
+PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "default")
 
-# Document processing settings
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "50"))
-MAX_DOCUMENT_SIZE_MB = int(os.getenv("MAX_DOCUMENT_SIZE_MB", "10"))
+# Embedding Configuration
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")  # Fastest OpenAI embedding
+EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "1536"))
 
-# Retrieval settings
-DEFAULT_RETRIEVE_COUNT = int(os.getenv("DEFAULT_RETRIEVE_COUNT", "3"))
-MINIMUM_RELEVANCE_SCORE = float(os.getenv("MINIMUM_RELEVANCE_SCORE", "0.6"))
-RERANKING_ENABLED = os.getenv("RERANKING_ENABLED", "False").lower() == "true"
+# Retrieval Configuration - Optimized for speed
+DEFAULT_RETRIEVE_COUNT = int(os.getenv("DEFAULT_RETRIEVE_COUNT", "2"))  # Reduced for speed
+MINIMUM_RELEVANCE_SCORE = float(os.getenv("MINIMUM_RELEVANCE_SCORE", "0.5"))
 
-# Conversation context settings
-MAX_CONVERSATION_HISTORY = int(os.getenv("MAX_CONVERSATION_HISTORY", "5"))
-CONTEXT_WINDOW_SIZE = int(os.getenv("CONTEXT_WINDOW_SIZE", "4096"))
+# Document Processing - Smaller chunks for faster processing
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "256"))  # Smaller chunks
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "25"))
 
-# LlamaIndex settings
-PERSIST_DIR = os.getenv("PERSIST_DIR", "./storage")
-USE_GPU = os.getenv("USE_GPU", "False").lower() == "true"
+# Performance Settings
+ENABLE_CACHING = os.getenv("ENABLE_CACHING", "True").lower() == "true"
+PARALLEL_PROCESSING = os.getenv("PARALLEL_PROCESSING", "True").lower() == "true"
 
-# Supported file types
-SUPPORTED_DOCUMENT_TYPES = [
-    # Text files
-    ".txt", ".md", ".csv", ".json",
-    
-    # Office documents
-    ".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
-    
-    # Web content
-    ".html", ".htm", ".xml",
-]
-
-def get_llama_index_config() -> Dict[str, Any]:
-    """
-    Get LlamaIndex configuration.
-    
-    Returns:
-        Dictionary with LlamaIndex configuration
-    """
+def get_openai_config() -> Dict[str, Any]:
+    """Get OpenAI configuration optimized for telephony."""
     return {
-        "persist_dir": PERSIST_DIR,
-        "use_gpu": USE_GPU,
-        "embedding_model": EMBEDDING_MODEL,
-        "embedding_device": EMBEDDING_DEVICE
+        "api_key": OPENAI_API_KEY,
+        "model": OPENAI_MODEL,
+        "temperature": OPENAI_TEMPERATURE,
+        "max_tokens": OPENAI_MAX_TOKENS,
+        "timeout": OPENAI_TIMEOUT,
+        "stream": True  # Always stream for better perceived latency
     }
 
-def get_document_processor_config() -> Dict[str, Any]:
-    """
-    Get document processor configuration.
-    
-    Returns:
-        Dictionary with document processor configuration
-    """
+def get_pinecone_config() -> Dict[str, Any]:
+    """Get Pinecone configuration."""
     return {
-        "chunk_size": CHUNK_SIZE,
-        "chunk_overlap": CHUNK_OVERLAP,
-        "max_document_size_mb": MAX_DOCUMENT_SIZE_MB,
-        "supported_types": SUPPORTED_DOCUMENT_TYPES
+        "api_key": PINECONE_API_KEY,
+        "environment": PINECONE_ENVIRONMENT,
+        "index_name": PINECONE_INDEX_NAME,
+        "namespace": PINECONE_NAMESPACE,
+        "dimension": EMBEDDING_DIMENSION
     }
 
 def get_embedding_config() -> Dict[str, Any]:
-    """
-    Get embedding generator configuration.
-    
-    Returns:
-        Dictionary with embedding configuration
-    """
+    """Get embedding configuration."""
     return {
-        "model_name": EMBEDDING_MODEL,
-        "device": EMBEDDING_DEVICE,
-        "batch_size": EMBEDDING_BATCH_SIZE,
-        "dimension": VECTOR_DIMENSION
+        "model": EMBEDDING_MODEL,
+        "api_key": OPENAI_API_KEY,
+        "dimension": EMBEDDING_DIMENSION
     }
 
-def get_vector_db_config() -> Dict[str, Any]:
-    """
-    Get vector database configuration.
-    
-    Returns:
-        Dictionary with vector database configuration
-    """
-    return {
-        "host": VECTOR_DB_HOST,
-        "port": VECTOR_DB_PORT,
-        "grpc_port": VECTOR_DB_GRPC_PORT,
-        "collection_name": VECTOR_DB_COLLECTION,
-        "vector_size": VECTOR_DIMENSION
-    }
-
-def get_retriever_config() -> Dict[str, Any]:
-    """
-    Get retriever configuration.
-    
-    Returns:
-        Dictionary with retriever configuration
-    """
+def get_retrieval_config() -> Dict[str, Any]:
+    """Get retrieval configuration optimized for speed."""
     return {
         "top_k": DEFAULT_RETRIEVE_COUNT,
         "min_score": MINIMUM_RELEVANCE_SCORE,
-        "reranking_enabled": RERANKING_ENABLED
+        "enable_caching": ENABLE_CACHING
     }
