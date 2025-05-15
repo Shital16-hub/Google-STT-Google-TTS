@@ -1,7 +1,8 @@
 """
-Optimized configuration settings for telephony integration with improved noise handling.
+Simplified configuration settings for telephony integration.
 """
 import os
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,41 +17,37 @@ HOST = os.getenv('HOST', '0.0.0.0')
 PORT = int(os.getenv('PORT', 5000))
 DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
-# Audio Configuration
-SAMPLE_RATE_TWILIO = 8000  # Twilio's sample rate
-SAMPLE_RATE_AI = 16000     # Our AI system's sample rate
-CHUNK_SIZE = 320           # 20ms at 8kHz
-# Increased buffer size for better noise detection and filtering
-AUDIO_BUFFER_SIZE = 32000  # 2 second buffer - increased for better noise analysis
-MAX_BUFFER_SIZE = 48000    # 3 seconds maximum buffer
+# Audio Configuration - Simplified for direct Google STT v2
+SAMPLE_RATE = 8000              # 8kHz for Twilio
+CHUNK_SIZE = 800                # 100ms at 8kHz
+ENCODING = "MULAW"              # Twilio encoding
 
-# WebSocket Configuration
-WS_PING_INTERVAL = 20
-WS_PING_TIMEOUT = 10
-WS_MAX_MESSAGE_SIZE = 1048576  # 1MB
+# Google Cloud STT v2 Configuration
+STT_PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT')
+if not STT_PROJECT_ID:
+    # Try to extract from credentials file
+    credentials_file = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+    if credentials_file and os.path.exists(credentials_file):
+        try:
+            with open(credentials_file, 'r') as f:
+                creds_data = json.load(f)
+                STT_PROJECT_ID = creds_data.get('project_id')
+        except Exception:
+            pass
 
-# Performance Settings - Optimized for noise handling
-# Increased silence threshold to better distinguish speech from noise
-SILENCE_THRESHOLD = 0.008   # Increased from 0.005 to avoid detecting noise as speech
-SILENCE_DURATION = 1.2      # Increased to ensure proper pauses are detected
-MAX_CALL_DURATION = 3600    # 1 hour
-MAX_PROCESSING_TIME = 5.0   # Maximum time to spend processing audio (seconds)
+STT_LANGUAGE = os.getenv('STT_LANGUAGE', 'en-US')
+STT_MODEL = "telephony"  # Optimized for phone calls
 
-# Response Settings
-RESPONSE_TIMEOUT = 4.0      # Maximum time to wait for a response (seconds)
-MIN_TRANSCRIPTION_LENGTH = 3  # Increased from 2 to avoid processing noise/short utterances
+# TTS Configuration
+TTS_VOICE_NAME = os.getenv('TTS_VOICE_NAME', 'en-US-Neural2-C')
+TTS_VOICE_GENDER = os.getenv('TTS_VOICE_GENDER', 'NEUTRAL')
+TTS_LANGUAGE_CODE = os.getenv('TTS_LANGUAGE_CODE', 'en-US')
 
-# Noise Filtering Settings
-HIGH_PASS_FILTER = 80       # High-pass filter cutoff frequency in Hz
-NOISE_GATE_THRESHOLD = 0.015  # Noise gate threshold
-ENABLE_NOISE_FILTERING = True  # Enable enhanced noise filtering
+# Performance Settings
+MAX_CALL_DURATION = 3600        # 1 hour
+RESPONSE_TIMEOUT = 5.0          # 5 seconds
+MIN_TRANSCRIPTION_LENGTH = 2    # Minimum words
 
 # Logging Configuration
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-
-# STT Optimization Settings
-STT_INITIAL_PROMPT = "This is a clear business conversation. Transcribe the exact words spoken, ignoring background noise."
-STT_NO_CONTEXT = True      # Disable context to prevent false additions in noisy environments
-STT_TEMPERATURE = 0.0      # Use greedy decoding for less hallucination
-STT_PRESET = "default"     # Use default preset with noise handling optimizations

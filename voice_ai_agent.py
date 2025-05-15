@@ -1,16 +1,13 @@
-# voice_ai_agent.py
-
 """
-Voice AI Agent main class that coordinates all components with Google Cloud STT and TTS integration.
-Generic version that works with any knowledge base.
+Voice AI Agent main class updated to pass credentials file to STT component.
+This ensures both STT and TTS use the same credentials handling approach.
 """
 import os
 import logging
 import asyncio
 import time
+import json
 from typing import Optional, Dict, Any, Union, Callable, Awaitable
-import numpy as np
-from scipy import signal
 
 # Google Cloud STT imports
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT
@@ -21,44 +18,82 @@ from knowledge_base.llama_index.index_manager import IndexManager
 from knowledge_base.llama_index.query_engine import QueryEngine
 
 # Google Cloud TTS imports
-from text_to_speech import GoogleCloudTTS
+from text_to_speech.google_cloud_tts import GoogleCloudTTS
+
+# Ensure project ID is set
+if not os.environ.get("GOOGLE_CLOUD_PROJECT"):
+    os.environ["GOOGLE_CLOUD_PROJECT"] = "my-tts-project-458404"
 
 logger = logging.getLogger(__name__)
 
 class VoiceAIAgent:
-    """Main Voice AI Agent class that coordinates all components with Google Cloud STT and TTS."""
+    """Main Voice AI Agent class optimized for telephony with consistent credentials handling."""
     
     def __init__(
         self,
         storage_dir: str = './storage',
         model_name: str = 'mistral:7b-instruct-v0.2-q4_0',
         llm_temperature: float = 0.7,
+        credentials_file: Optional[str] = None,  # Added credentials_file parameter
         **kwargs
     ):
         """
-        Initialize the Voice AI Agent with Google Cloud STT and TTS.
-        
-        Args:
-            storage_dir: Directory for persistent storage
-            model_name: LLM model name for knowledge base
-            llm_temperature: LLM temperature for response generation
-            **kwargs: Additional parameters for customization
+        Initialize the Voice AI Agent with Google Cloud STT v2 and TTS.
+        Both components now use the same credentials handling approach.
         """
         self.storage_dir = storage_dir
         self.model_name = model_name
         self.llm_temperature = llm_temperature
         
+        # Credentials handling - find the file if not provided
+        self.credentials_file = credentials_file
+        if not self.credentials_file:
+            # Try common locations
+            possible_paths = [
+                os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
+                '/workspace/credentials/my-tts-project-458404-8ab56bac7265.json',
+                './credentials/my-tts-project-458404-8ab56bac7265.json',
+            ]
+            for path in possible_paths:
+                if path and os.path.exists(path):
+                    self.credentials_file = path
+                    logger.info(f"Found credentials file: {path}")
+                    break
+        
         # STT Parameters
         self.stt_language = kwargs.get('language', 'en-US')
-        self.stt_keywords = kwargs.get('keywords', ['price', 'plan', 'cost', 'subscription', 'service'])
-        
-        # Whether to use enhanced model for telephony
-        self.enhanced_model = kwargs.get('enhanced_model', True)
         
         # TTS Parameters for Google Cloud TTS
-        self.tts_voice_name = kwargs.get('tts_voice_name', os.getenv('TTS_VOICE_NAME', 'en-US-Standard-J'))
+        self.tts_voice_name = kwargs.get('tts_voice_name', os.getenv('TTS_VOICE_NAME', 'en-US-Neural2-C'))
         self.tts_voice_gender = kwargs.get('tts_voice_gender', os.getenv('TTS_VOICE_GENDER', 'NEUTRAL'))
         self.tts_language_code = kwargs.get('tts_language_code', os.getenv('TTS_LANGUAGE_CODE', 'en-US'))
+        
+        # Get project ID from environment or credentials file
+        self.project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        
+        # If not in environment, try to extract from credentials file
+        if not self.project_id and self.credentials_file and os.path.exists(self.credentials_file):
+            try:
+                with open(self.credentials_file, 'r') as f:
+                    creds_data = json.load(f)
+                    self.project_id = creds_data.get('project_id')
+                    # Set environment variable for consistency
+                    if self.project_id:
+                        os.environ["GOOGLE_CLOUD_PROJECT"] = self.project_id
+                        logger.info(f"Extracted and set project ID: {self.project_id}")
+            except Exception as e:
+                logger.error(f"Error reading credentials file: {e}")
+        
+        if not self.project_id:
+            raise ValueError(
+                "Google Cloud project ID is required. Set GOOGLE_CLOUD_PROJECT environment variable "
+                "or ensure your credentials file contains a project_id field."
+            )
+        
+        # Set the environment variable for Google Cloud clients
+        if self.credentials_file:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = self.credentials_file
+            logger.info(f"Set GOOGLE_APPLICATION_CREDENTIALS to: {self.credentials_file}")
         
         # Component placeholders
         self.speech_recognizer = None
@@ -67,100 +102,30 @@ class VoiceAIAgent:
         self.query_engine = None
         self.tts_client = None
         
-        # Noise floor tracking for adaptive threshold
-        self.noise_floor = 0.005
-        self.noise_samples = []
-        self.max_noise_samples = 20
-        
-    def _process_audio(self, audio: np.ndarray) -> np.ndarray:
-        """
-        Process audio for better speech recognition.
-        
-        Args:
-            audio: Audio data as numpy array
-            
-        Returns:
-            Processed audio data
-        """
-        try:
-            # Update noise floor from quiet sections
-            self._update_noise_floor(audio)
-            
-            # Apply high-pass filter to remove low-frequency noise
-            b, a = signal.butter(6, 100/(16000/2), 'highpass')
-            audio = signal.filtfilt(b, a, audio)
-            
-            # Apply band-pass filter for telephony frequency range
-            b, a = signal.butter(4, [300/(16000/2), 3400/(16000/2)], 'band')
-            audio = signal.filtfilt(b, a, audio)
-            
-            # Apply pre-emphasis to boost high frequencies
-            audio = np.append(audio[0], audio[1:] - 0.97 * audio[:-1])
-            
-            # Apply noise gate with adaptive threshold
-            threshold = self.noise_floor * 3.0
-            audio = np.where(np.abs(audio) < threshold, 0, audio)
-            
-            # Normalize audio level
-            max_val = np.max(np.abs(audio))
-            if max_val > 0:
-                audio = audio * (0.9 / max_val)
-                
-            return audio
-        except Exception as e:
-            logger.error(f"Error processing audio: {e}")
-            return audio  # Return original if processing fails
-    
-    def _update_noise_floor(self, audio: np.ndarray) -> None:
-        """Update noise floor estimate from quiet sections."""
-        # Find quiet sections (bottom 10% of energy)
-        frame_size = min(len(audio), int(0.02 * 16000))  # 20ms frames
-        if frame_size <= 1:
-            return
-            
-        frames = [audio[i:i+frame_size] for i in range(0, len(audio), frame_size)]
-        frame_energies = [np.mean(np.square(frame)) for frame in frames]
-        
-        if len(frame_energies) > 0:
-            # Sort energies and take bottom 10%
-            sorted_energies = sorted(frame_energies)
-            quiet_count = max(1, len(sorted_energies) // 10)
-            quiet_energies = sorted_energies[:quiet_count]
-            
-            # Update noise samples
-            self.noise_samples.extend(quiet_energies)
-            
-            # Limit sample count
-            if len(self.noise_samples) > self.max_noise_samples:
-                self.noise_samples = self.noise_samples[-self.max_noise_samples:]
-            
-            # Update noise floor with safety limits
-            if self.noise_samples:
-                self.noise_floor = max(
-                    0.001,  # Minimum
-                    min(0.02, np.percentile(self.noise_samples, 90) * 1.5)  # Maximum
-                )
+        logger.info("VoiceAIAgent initialized for telephony with consistent credentials handling")
         
     async def init(self):
-        """Initialize all components with Google Cloud STT and TTS."""
-        logger.info("Initializing Voice AI Agent components with Google Cloud STT and TTS...")
+        """Initialize all components with optimal telephony settings and consistent credentials."""
+        logger.info("Initializing Voice AI Agent components with Google Cloud STT v2 and TTS...")
         
-        # Initialize speech recognizer with Google Cloud
+        # Initialize speech recognizer with Google Cloud v2 and explicit credentials
         self.speech_recognizer = GoogleCloudStreamingSTT(
             language=self.stt_language,
-            sample_rate=16000,
-            encoding="LINEAR16",
+            sample_rate=8000,  # Match Twilio exactly
+            encoding="MULAW",  # Match Twilio exactly
             channels=1,
-            interim_results=True,
-            speech_context_phrases=self.stt_keywords,
-            enhanced_model=self.enhanced_model
+            interim_results=False,  # Only final results for better accuracy
+            project_id=self.project_id,
+            location="global",
+            credentials_file=self.credentials_file  # Pass credentials file explicitly
         )
         
-        # Initialize STT integration 
+        # Initialize STT integration with zero preprocessing
         self.stt_integration = STTIntegration(
             speech_recognizer=self.speech_recognizer,
             language=self.stt_language
         )
+        await self.stt_integration.init(project_id=self.project_id)
         
         # Initialize document store and index manager
         doc_store = DocumentStore()
@@ -175,31 +140,27 @@ class VoiceAIAgent:
         )
         await self.query_engine.init()
         
-        # Initialize conversation manager with optimized parameters
+        # Initialize conversation manager (skip greeting for telephony)
         self.conversation_manager = ConversationManager(
             query_engine=self.query_engine,
             llm_model_name=self.model_name,
             llm_temperature=self.llm_temperature,
-            # Skip greeting for better telephone experience
-            skip_greeting=True
+            skip_greeting=True  # Better for telephony
         )
         await self.conversation_manager.init()
         
-        # Initialize Google Cloud TTS client with optimized parameters
+        # Initialize Google Cloud TTS with telephony optimization and explicit credentials
         try:
-            # Check for credentials
-            credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-            if not credentials_file:
-                logger.warning("GOOGLE_APPLICATION_CREDENTIALS not set. Using default credentials.")
-                
+            # Initialize with telephony-optimized settings and explicit credentials
             self.tts_client = GoogleCloudTTS(
-                credentials_file=credentials_file,
+                credentials_file=self.credentials_file,  # Pass credentials file explicitly
                 voice_name=self.tts_voice_name,
                 voice_gender=self.tts_voice_gender,
                 language_code=self.tts_language_code,
                 container_format="mulaw",  # For Twilio compatibility
                 sample_rate=8000,  # For Twilio compatibility
-                enable_caching=True
+                enable_caching=True,
+                voice_type="NEURAL2"  # Use Neural2 for best quality
             )
             
             logger.info(f"Initialized Google Cloud TTS with voice: {self.tts_voice_name}")
@@ -207,31 +168,22 @@ class VoiceAIAgent:
             logger.error(f"Error initializing Google Cloud TTS: {e}")
             raise
         
-        logger.info("Voice AI Agent initialization complete with Google Cloud STT and TTS")
+        # Mark as initialized
+        self._initialized = True
+        logger.info("Voice AI Agent initialization complete (optimized for telephony)")
         
     async def process_audio(
         self,
-        audio_data: Union[bytes, np.ndarray],
+        audio_data: Union[bytes],
         callback: Optional[Callable[[Any], Awaitable[None]]] = None
     ) -> Dict[str, Any]:
         """
-        Process audio data with Google Cloud STT.
-        
-        Args:
-            audio_data: Audio data as numpy array or bytes
-            callback: Optional callback function
-            
-        Returns:
-            Processing result
+        Process audio data with ZERO preprocessing - pass directly to Google Cloud STT v2.
         """
         if not self.initialized:
             raise RuntimeError("Voice AI Agent not initialized")
         
-        # Process audio for better speech recognition
-        if isinstance(audio_data, np.ndarray):
-            audio_data = self._process_audio(audio_data)
-        
-        # Use STT integration for processing with Google Cloud
+        # Pass audio directly to STT with no modifications
         result = await self.stt_integration.transcribe_audio_data(audio_data, callback=callback)
         
         # Only process valid transcriptions
@@ -274,116 +226,10 @@ class VoiceAIAgent:
                 "error": "No valid speech detected"
             }
     
-    async def process_streaming_audio(
-        self,
-        audio_stream,
-        result_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
-    ) -> Dict[str, Any]:
-        """
-        Process streaming audio with real-time response.
-        
-        Args:
-            audio_stream: Async iterator of audio chunks
-            result_callback: Callback for streaming results
-            
-        Returns:
-            Final processing stats
-        """
-        if not self.initialized:
-            raise RuntimeError("Voice AI Agent not initialized")
-            
-        # Track stats
-        start_time = time.time()
-        chunks_processed = 0
-        results_count = 0
-        
-        # Start streaming session
-        await self.speech_recognizer.start_streaming()
-        
-        try:
-            # Process each audio chunk
-            async for chunk in audio_stream:
-                chunks_processed += 1
-                
-                # Process audio for better recognition if it's numpy array
-                if isinstance(chunk, np.ndarray):
-                    chunk = self._process_audio(chunk)
-                
-                # Process through Google Cloud STT
-                async def process_result(result):
-                    # Only handle final results
-                    if result.is_final:
-                        # Clean up transcription
-                        transcription = self.stt_integration.cleanup_transcription(result.text)
-                        
-                        # Process if valid
-                        if transcription and self.stt_integration.is_valid_transcription(transcription):
-                            # Get response from conversation manager
-                            response = await self.conversation_manager.handle_user_input(transcription)
-                            
-                            # Generate speech with Google Cloud TTS
-                            speech_audio = None
-                            tts_error = None
-                            
-                            if response and response.get("response"):
-                                try:
-                                    speech_audio = await self.tts_client.synthesize(response["response"])
-                                except Exception as e:
-                                    logger.error(f"Error synthesizing speech with Google Cloud TTS: {e}")
-                                    tts_error = str(e)
-                            
-                            # Format result
-                            result_data = {
-                                "transcription": transcription,
-                                "response": response.get("response", ""),
-                                "speech_audio": speech_audio,
-                                "tts_error": tts_error,
-                                "confidence": result.confidence,
-                                "is_final": True
-                            }
-                            
-                            nonlocal results_count
-                            results_count += 1
-                            
-                            # Call callback if provided
-                            if result_callback:
-                                await result_callback(result_data)
-                
-                # Process chunk
-                await self.speech_recognizer.process_audio_chunk(chunk, process_result)
-                
-            # Stop streaming session
-            await self.speech_recognizer.stop_streaming()
-            
-            # Return stats
-            return {
-                "status": "complete",
-                "chunks_processed": chunks_processed,
-                "results_count": results_count,
-                "total_time": time.time() - start_time
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing streaming audio: {e}")
-            
-            # Stop streaming session
-            await self.speech_recognizer.stop_streaming()
-            
-            return {
-                "status": "error",
-                "error": str(e),
-                "chunks_processed": chunks_processed,
-                "results_count": results_count,
-                "total_time": time.time() - start_time
-            }
-    
     @property
     def initialized(self) -> bool:
         """Check if all components are initialized."""
-        return (self.speech_recognizer is not None and 
-                self.conversation_manager is not None and 
-                self.query_engine is not None and
-                self.tts_client is not None)
+        return getattr(self, '_initialized', False)
                 
     async def shutdown(self):
         """Shut down all components properly."""
@@ -396,3 +242,6 @@ class VoiceAIAgent:
         # Reset conversation if active
         if self.conversation_manager:
             self.conversation_manager.reset()
+        
+        # Mark as not initialized
+        self._initialized = False
