@@ -1,55 +1,71 @@
-# requirements_fixed.txt
-# Fixed requirements file for OpenAI + Pinecone Voice AI Agent
+# requirements.txt
 
 # Core dependencies
 aiohttp>=3.8.0
-asyncio  # Part of standard library
+aiohttp-retry>=2.8.3
+asyncio
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
 flask>=2.3.0
+flask-sockets>=0.2.1
+gevent>=22.10.0
+gevent-websocket>=0.10.1
 simple-websocket>=0.10.0
 
 # Audio processing
+audioread>=3.0.0
+librosa>=0.10.0
+soundfile>=0.12.0
 numpy>=1.24.0
 scipy>=1.10.0
-soundfile>=0.12.0
-# audioop is part of Python standard library
 
-# OpenAI integration
-openai>=1.3.0
-tiktoken>=0.5.0
+# AI/ML components - UPDATED for OpenAI and Pinecone
+llama-index>=0.10.0
+llama-index-core>=0.10.0
+llama-index-embeddings-openai>=0.1.5  # OpenAI embeddings
+llama-index-llms-openai>=0.1.5        # OpenAI LLM
+llama-index-vector-stores-pinecone>=0.1.3  # Pinecone vector store
+openai>=1.5.0                         # OpenAI API
+pinecone-client>=3.0.0                # Pinecone client
+transformers>=4.30.0
+torch>=2.0.0
 
-# Pinecone vector database
-pinecone>=5.0.0
-
-# Google Cloud services
-google-cloud-speech>=2.27.0
-google-cloud-texttospeech>=2.16.0 
-google-auth>=2.23.0
-google-api-core>=2.11.0
-grpcio>=1.56.0
-protobuf>=4.25.0,<5.0.0
+# Language processing
+spacy>=3.6.0
+nltk>=3.8.0
+langdetect>=1.0.9
 
 # Twilio integration
 twilio>=8.8.0
 
+# Google Cloud Speech API - Updated for v2 API with proper protobuf support
+google-cloud-speech>=2.27.0
+google-auth>=2.23.0
+google-api-core>=2.11.0
+google-cloud-core>=2.3.2
+grpcio>=1.56.0
+protobuf>=4.25.0,<5.0.0  # Ensure compatible protobuf version
+
+# Google Cloud TTS
+google-cloud-texttospeech>=2.16.0 
+
 # Document processing
-PyMuPDF>=1.23.0
-python-docx>=0.8.11
 beautifulsoup4>=4.12.0
+pdfplumber>=0.7.0
+PyMuPDF>=1.23.0
+pypdf>=3.12.0
+python-docx>=0.8.11
+openpyxl>=3.1.0
+lxml>=4.9.0
 
 # Utilities
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
 requests>=2.31.0
-
-# Async support
-aiofiles>=23.0.0
-
-# Performance monitoring
-psutil>=5.9.0
-
-# Testing
+websockets>=11.0.0
+websocket-client>=1.6.0
+pandas>=2.0.0
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
+typing-extensions>=4.7.0

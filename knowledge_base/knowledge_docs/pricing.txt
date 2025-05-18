@@ -1,46 +1,21 @@
-VoiceAssist Pricing Plans
+VoiceAssist Pricing Plans:
 
-STARTER PLAN - $299/month
-- Up to 1,000 conversations per month
-- Basic speech recognition
+Basic Plan: $499/month
+- Up to 1,000 conversations/day
 - Email support
-- 3 language options (English, Spanish, French)
-- Standard analytics dashboard
-- API access included
+- 3 language options
+- Basic analytics
 
-PRO PLAN - $799/month
-- Up to 5,000 conversations per month
-- Advanced speech recognition with 97% accuracy
-- Priority phone and email support
-- All language options (15+ languages)
-- Advanced analytics and reporting
-- Custom integrations available
-- Real-time monitoring dashboard
+Professional Plan: $999/month
+- Up to 5,000 conversations/day
+- Priority email and phone support
+- All language options
+- Advanced analytics
+- Custom integrations
 
-ENTERPRISE PLAN - Custom pricing
+Enterprise Plan: Custom pricing
 - Unlimited conversations
-- 24/7 dedicated support team
+- 24/7 dedicated support
 - All features included
-- On-premises deployment options
-- Custom model training
-- White-label solutions
-- SLA guarantees
-- Advanced security features
-- Dedicated account manager
-
-ADD-ON SERVICES:
-- Professional Services: $150/hour
-- Custom Model Training: $5,000 one-time
-- Additional Languages: $99/month per language
-- Premium Support: $299/month
-
-FEATURES COMPARISON:
-All plans include:
-- Real-time speech recognition
-- Natural language understanding
-- Seamless human handoff
-- Cloud-based deployment
-- Data encryption
-- Basic reporting
-
-Volume discounts available for annual subscriptions. Contact our sales team for custom enterprise pricing and deployment options.
+- On-premises deployment
+- Customized training

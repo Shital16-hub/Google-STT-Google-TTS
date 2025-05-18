@@ -1,163 +1,260 @@
-# integration/kb_integration.py
 """
-Knowledge Base integration optimized for OpenAI + Pinecone.
-Simplified for minimal latency in telephony applications.
+Knowledge Base integration module for Voice AI Agent.
+
+This module provides classes and functions for integrating knowledge base
+capabilities with the Voice AI Agent system.
 """
 import logging
 import time
 import asyncio
 from typing import Optional, Dict, Any, AsyncIterator, List
 
-from knowledge_base.query_engine import QueryEngine
-from knowledge_base.conversation_manager import ConversationManager
+from knowledge_base.conversation_manager import ConversationManager, ConversationState
+from knowledge_base.llama_index.query_engine import QueryEngine
+from knowledge_base.utils.cache_utils import StreamingResponseCache
 
 logger = logging.getLogger(__name__)
 
 class KnowledgeBaseIntegration:
     """
-    Simplified Knowledge Base integration for OpenAI + Pinecone.
-    Optimized for sub-2-second response times.
+    Knowledge Base integration for Voice AI Agent.
+    
+    Provides an abstraction layer for knowledge base functionality,
+    handling query processing and response generation.
     """
     
     def __init__(
         self,
-        query_engine: Optional[QueryEngine] = None,
-        conversation_manager: Optional[ConversationManager] = None,
-        max_response_time: float = 2.0  # 2 second max response time
+        query_engine: QueryEngine,
+        conversation_manager: ConversationManager,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        use_cache: bool = True
     ):
-        """Initialize KB integration with fast components."""
-        self.query_engine = query_engine or QueryEngine()
-        self.conversation_manager = conversation_manager or ConversationManager(
-            query_engine=self.query_engine
-        )
-        self.max_response_time = max_response_time
-        self.initialized = True
+        """
+        Initialize the Knowledge Base integration.
         
-        logger.info("Initialized KnowledgeBaseIntegration with OpenAI + Pinecone")
+        Args:
+            query_engine: Initialized QueryEngine instance
+            conversation_manager: Initialized ConversationManager instance
+            temperature: Temperature for response generation
+            max_tokens: Maximum tokens for response generation
+            use_cache: Whether to use response caching
+        """
+        self.query_engine = query_engine
+        self.conversation_manager = conversation_manager
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.initialized = True
+        self.use_cache = use_cache
+        
+        # Initialize response cache
+        if self.use_cache:
+            self.response_cache = StreamingResponseCache()
     
     async def query(self, text: str, include_context: bool = False) -> Dict[str, Any]:
         """
-        Query the knowledge base with timeout protection.
+        Query the knowledge base and generate a response, with caching for improved latency.
+        
+        Args:
+            text: Query text
+            include_context: Whether to include context in the response
+            
+        Returns:
+            Dictionary with query response information
         """
         if not self.initialized:
-            return {"error": "Knowledge Base not initialized"}
+            logger.error("Knowledge Base integration not properly initialized")
+            return {"error": "Knowledge Base integration not initialized"}
         
+        # Reset conversation manager state if needed
+        if self.conversation_manager.current_state != ConversationState.WAITING_FOR_QUERY:
+            self.conversation_manager.current_state = ConversationState.WAITING_FOR_QUERY
+        
+        # Track timing
         start_time = time.time()
         
+        # Check cache first for fast responses
+        if self.use_cache:
+            cached_result = self.response_cache.get(text)
+            if cached_result:
+                logger.info(f"Cache hit for query: '{text}'")
+                # Add timing information
+                cached_result["total_time"] = time.time() - start_time
+                cached_result["cache_hit"] = True
+                return cached_result
+        
         try:
-            # Use asyncio.wait_for to enforce timeout
-            result = await asyncio.wait_for(
-                self.conversation_manager.handle_user_input(text),
-                timeout=self.max_response_time
-            )
+            # Use a timeout for the entire process to ensure responsiveness
+            try:
+                # Wrap the query process in a timeout to ensure it doesn't take too long
+                # Instead of asyncio.timeout, use asyncio.wait_for
+                retrieval_task = asyncio.create_task(self.query_engine.retrieve_with_sources(text))
+                
+                # Get relevant context with timeout
+                retrieval_results = await asyncio.wait_for(retrieval_task, timeout=55.0)
+                retrieval_start = time.time()
+                results = retrieval_results.get("results", [])
+                context = self.query_engine.format_retrieved_context(results)
+                retrieval_time = time.time() - retrieval_start
+                
+                # Generate response with timeout
+                llm_start = time.time()
+                query_task = asyncio.create_task(self.query_engine.query(text))
+                direct_result = await asyncio.wait_for(query_task, timeout=55.0)
+                response = direct_result.get("response", "")
+                llm_time = time.time() - llm_start
+                
+            except asyncio.TimeoutError:
+                logger.warning(f"Knowledge base query timed out for: '{text}'")
+                # Provide a reasonable fallback response
+                response = "I'm processing your question, but it's taking longer than expected. Could you please rephrase your question or be more specific?"
+                retrieval_time = time.time() - start_time
+                llm_time = 0.0
+                
+                # Try to still include any retrieved results we might have
+                if not 'context' in locals() or not context:
+                    context = ""
+                    if 'results' in locals() and isinstance(results, list) and results:
+                        context = f"I found some relevant information but need more time to process it fully: {results[0].get('text', '')[:100]}..."
             
-            # Add timing information
-            result["total_time"] = time.time() - start_time
-            result["cache_hit"] = False
+            # Prepare the result
+            result = {
+                "query": text,
+                "response": response,
+                "total_time": time.time() - start_time,
+                "retrieval_time": retrieval_time,
+                "llm_time": llm_time
+            }
             
             # Include context if requested
-            if include_context and "sources" in result:
-                # Format context from sources
-                context_parts = []
-                for i, source in enumerate(result["sources"]):
-                    context_parts.append(f"Source {i+1}: {source.get('name', 'Unknown')}")
-                result["context"] = "\n".join(context_parts)
+            if include_context:
+                result["context"] = context
+                result["sources"] = []
+                
+                # Extract source information
+                if 'results' in locals() and isinstance(results, list):
+                    for i, doc in enumerate(results):
+                        metadata = doc.get("metadata", {})
+                        source = metadata.get("source", f"Source {i+1}")
+                        result["sources"].append({
+                            "id": i,
+                            "source": source,
+                            "metadata": metadata
+                        })
+            
+            # Store in cache for future queries
+            if self.use_cache:
+                self.response_cache.set(text, result)
             
             return result
             
-        except asyncio.TimeoutError:
-            logger.warning(f"Query timed out after {self.max_response_time}s: '{text}'")
-            return {
-                "error": f"Response timed out after {self.max_response_time} seconds",
-                "query": text,
-                "total_time": time.time() - start_time,
-                "response": "I'm sorry, that's taking too long to process. Could you rephrase your question?"
-            }
         except Exception as e:
-            logger.error(f"Error in KB query: {e}")
+            logger.error(f"Error in Knowledge Base query: {e}")
             return {
                 "error": str(e),
                 "query": text,
-                "total_time": time.time() - start_time,
-                "response": "I'm sorry, I encountered an error. Please try again."
+                "total_time": time.time() - start_time
             }
     
     async def query_streaming(self, text: str) -> AsyncIterator[Dict[str, Any]]:
         """
-        Query with streaming response for real-time applications.
+        Query the knowledge base with streaming response generation.
+        
+        Args:
+            text: Query text
+            
+        Yields:
+            Response chunks
         """
         if not self.initialized:
-            yield {"error": "Knowledge Base not initialized", "done": True}
+            logger.error("Knowledge Base integration not properly initialized")
+            yield {"error": "Knowledge Base integration not initialized", "done": True}
             return
         
+        # Reset conversation manager state if needed
+        if self.conversation_manager.current_state != ConversationState.WAITING_FOR_QUERY:
+            self.conversation_manager.current_state = ConversationState.WAITING_FOR_QUERY
+        
+        # Check cache for fast responses
+        if self.use_cache:
+            cached_result = self.response_cache.get(text)
+            if cached_result and "response" in cached_result:
+                # For cached responses, yield the entire response as a single chunk
+                yield {
+                    "chunk": cached_result["response"],
+                    "done": False,
+                    "cache_hit": True
+                }
+                yield {
+                    "chunk": "",
+                    "full_response": cached_result["response"],
+                    "done": True,
+                    "cache_hit": True,
+                    "sources": cached_result.get("sources", [])
+                }
+                return
+        
         try:
-            # Stream response with timeout protection
-            timeout_task = asyncio.create_task(asyncio.sleep(self.max_response_time))
-            
-            async for chunk in self.conversation_manager.generate_streaming_response(text):
-                # Cancel timeout if we got response
-                if not timeout_task.done():
-                    timeout_task.cancel()
-                
+            # Use the query engine's streaming capability
+            async for chunk in self.query_engine.query_with_streaming(text):
                 yield chunk
-                
-                # Create new timeout for next chunk
-                if not chunk.get("done", False):
-                    timeout_task = asyncio.create_task(asyncio.sleep(1.0))  # 1s timeout between chunks
-                else:
-                    break
-                    
-        except asyncio.TimeoutError:
-            logger.warning(f"Streaming query timed out: '{text}'")
-            yield {
-                "chunk": "",
-                "done": True,
-                "full_response": "I'm sorry, that's taking too long. Could you rephrase?",
-                "error": "timeout"
-            }
         except Exception as e:
-            logger.error(f"Error in streaming KB query: {e}")
+            logger.error(f"Error in streaming Knowledge Base query: {e}")
             yield {
-                "chunk": "",
-                "done": True,
-                "full_response": "I'm sorry, I encountered an error. Please try again.",
-                "error": str(e)
+                "error": str(e),
+                "done": True
             }
     
     def reset_conversation(self) -> None:
-        """Reset conversation state."""
+        """Reset the conversation state."""
         if self.conversation_manager:
             self.conversation_manager.reset()
-            logger.info("Reset conversation state")
+            # Always set to WAITING_FOR_QUERY for voice interaction
+            self.conversation_manager.current_state = ConversationState.WAITING_FOR_QUERY
     
     def get_conversation_history(self) -> List[Dict[str, Any]]:
-        """Get conversation history."""
+        """
+        Get conversation history.
+        
+        Returns:
+            List of conversation turns
+        """
         if not self.conversation_manager:
             return []
+        
         return self.conversation_manager.get_history()
     
     async def get_stats(self) -> Dict[str, Any]:
-        """Get KB integration statistics."""
+        """
+        Get statistics about the knowledge base.
+        
+        Returns:
+            Dictionary with statistics
+        """
+        if not self.query_engine:
+            return {"error": "Query engine not initialized"}
+        
+        # Get stats from query engine
+        kb_stats = await self.query_engine.get_stats()
+        
+        # Add integration-specific stats
         stats = {
-            "initialized": self.initialized,
-            "max_response_time": self.max_response_time
+            "kb_stats": kb_stats,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
         }
         
-        # Add query engine stats
-        if self.query_engine:
-            qe_stats = await self.query_engine.get_stats()
-            stats["query_engine"] = qe_stats
+        # Add cache stats if enabled
+        if self.use_cache:
+            stats["cache_stats"] = self.response_cache.get_stats()
         
-        # Add conversation stats
-        if self.conversation_manager:
-            conv_stats = self.conversation_manager.get_stats()
-            stats["conversation"] = conv_stats
+        # Add conversation stats if available
+        if self.conversation_manager and self.conversation_manager.history:
+            conversation_stats = {
+                "total_turns": len(self.conversation_manager.history),
+                "current_state": self.conversation_manager.current_state
+            }
+            stats["conversation"] = conversation_stats
         
         return stats
-    
-    async def add_documents(self, documents) -> List[str]:
-        """Add documents to the knowledge base."""
-        if not self.query_engine:
-            raise RuntimeError("Query engine not initialized")
-        
-        return await self.query_engine.add_documents(documents)

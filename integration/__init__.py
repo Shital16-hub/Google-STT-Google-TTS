@@ -1,8 +1,9 @@
-# integration/__init__.py
 """
 Integration package for Voice AI Agent.
 
-Updated for OpenAI + Pinecone architecture with optimized latency.
+This package provides integration between the various components 
+of the Voice AI Agent system including speech-to-text, 
+knowledge base, and text-to-speech.
 """
 
 from integration.tts_integration import TTSIntegration
@@ -12,7 +13,7 @@ from integration.pipeline import VoiceAIAgentPipeline
 
 __all__ = [
     'TTSIntegration',
-    'STTIntegration', 
+    'STTIntegration',
     'KnowledgeBaseIntegration',
     'VoiceAIAgentPipeline'
 ]
