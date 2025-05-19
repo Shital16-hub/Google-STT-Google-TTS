@@ -72,7 +72,7 @@ async def initialize_system():
     # Initialize Voice AI Agent with conversation-optimized settings
     agent = VoiceAIAgent(
         storage_dir='./storage',
-        model_name='mistral:7b-instruct-v0.2-q4_0',
+        model_name='gpt-3.5-turbo',
         llm_temperature=0.7,
         credentials_file=google_creds  # Pass credentials explicitly
     )

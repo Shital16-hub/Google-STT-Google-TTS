@@ -53,7 +53,19 @@ class VoiceAIAgent:
         
         # Get OpenAI config
         openai_config = get_openai_config()
-        self.model_name = model_name or openai_config.get("model")
+        
+        # Ensure we use a valid OpenAI model
+        # If model_name is provided but is a Mistral model, override it with a valid OpenAI model
+        if model_name and ("mistral" in model_name.lower() or "7b" in model_name.lower()):
+            logger.warning(f"Replacing invalid model '{model_name}' with valid OpenAI model 'gpt-3.5-turbo'")
+            self.model_name = "gpt-3.5-turbo"
+        else:
+            # Use provided model or default from config
+            self.model_name = model_name or openai_config.get("model", "gpt-3.5-turbo")
+            
+        # Log the model we're using for clarity
+        logger.info(f"Using OpenAI model: {self.model_name}")
+        
         self.llm_temperature = llm_temperature
         
         # Set API keys if provided
@@ -131,69 +143,81 @@ class VoiceAIAgent:
         """Initialize all components with OpenAI, Pinecone, and Google Cloud services."""
         logger.info("Initializing Voice AI Agent components...")
         
-        # Initialize speech recognizer with Google Cloud v2 and explicit credentials
-        self.speech_recognizer = GoogleCloudStreamingSTT(
-            language=self.stt_language,
-            sample_rate=8000,  # Match Twilio exactly
-            encoding="MULAW",  # Match Twilio exactly
-            channels=1,
-            interim_results=False,  # Only final results for better accuracy
-            project_id=self.project_id,
-            location="global",
-            credentials_file=self.credentials_file  # Pass credentials file explicitly
-        )
-        
-        # Initialize STT integration with zero preprocessing
-        self.stt_integration = STTIntegration(
-            speech_recognizer=self.speech_recognizer,
-            language=self.stt_language
-        )
-        await self.stt_integration.init(project_id=self.project_id)
-        
-        # Initialize document store and index manager with Pinecone
-        doc_store = DocumentStore()
-        index_manager = IndexManager(storage_dir=self.storage_dir)
-        await index_manager.init()
-        
-        # Initialize query engine with OpenAI
-        self.query_engine = QueryEngine(
-            index_manager=index_manager, 
-            llm_model_name=self.model_name,  # OpenAI model name
-            llm_temperature=self.llm_temperature
-        )
-        await self.query_engine.init()
-        
-        # Initialize conversation manager with OpenAI
-        self.conversation_manager = ConversationManager(
-            query_engine=self.query_engine,
-            llm_model_name=self.model_name,  # OpenAI model name
-            llm_temperature=self.llm_temperature,
-            skip_greeting=True  # Better for telephony
-        )
-        await self.conversation_manager.init()
-        
-        # Initialize Google Cloud TTS with telephony optimization and explicit credentials
         try:
-            # Initialize with telephony-optimized settings and explicit credentials
-            self.tts_client = GoogleCloudTTS(
-                credentials_file=self.credentials_file,  # Pass credentials file explicitly
-                voice_name=self.tts_voice_name,
-                voice_gender=self.tts_voice_gender,
-                language_code=self.tts_language_code,
-                container_format="mulaw",  # For Twilio compatibility
-                sample_rate=8000,  # For Twilio compatibility
-                enable_caching=True,
-                voice_type="NEURAL2"  # Use Neural2 for best quality
+            # Initialize speech recognizer with Google Cloud v2 and explicit credentials
+            self.speech_recognizer = GoogleCloudStreamingSTT(
+                language=self.stt_language,
+                sample_rate=8000,  # Match Twilio exactly
+                encoding="MULAW",  # Match Twilio exactly
+                channels=1,
+                interim_results=False,  # Only final results for better accuracy
+                project_id=self.project_id,
+                location="global",
+                credentials_file=self.credentials_file  # Pass credentials file explicitly
             )
             
-            logger.info(f"Initialized Google Cloud TTS with voice: {self.tts_voice_name}")
+            # Initialize STT integration with zero preprocessing
+            self.stt_integration = STTIntegration(
+                speech_recognizer=self.speech_recognizer,
+                language=self.stt_language
+            )
+            await self.stt_integration.init(project_id=self.project_id)
+            
+            # Initialize document store and index manager with Pinecone
+            doc_store = DocumentStore()
+            index_manager = IndexManager(storage_dir=self.storage_dir)
+            await index_manager.init()
+            
+            # Initialize query engine with OpenAI
+            self.query_engine = QueryEngine(
+                index_manager=index_manager, 
+                llm_model_name=self.model_name,  # Now using a valid OpenAI model
+                llm_temperature=self.llm_temperature
+            )
+            await self.query_engine.init()
+            
+            # Initialize conversation manager with OpenAI
+            self.conversation_manager = ConversationManager(
+                query_engine=self.query_engine,
+                llm_model_name=self.model_name,  # Now using a valid OpenAI model
+                llm_temperature=self.llm_temperature,
+                skip_greeting=True  # Better for telephony
+            )
+            await self.conversation_manager.init()
+            
+            # Initialize Google Cloud TTS with telephony optimization and explicit credentials
+            try:
+                # Initialize with telephony-optimized settings and explicit credentials
+                self.tts_client = GoogleCloudTTS(
+                    credentials_file=self.credentials_file,  # Pass credentials file explicitly
+                    voice_name=self.tts_voice_name,
+                    voice_gender=self.tts_voice_gender,
+                    language_code=self.tts_language_code,
+                    container_format="mulaw",  # For Twilio compatibility
+                    sample_rate=8000,  # For Twilio compatibility
+                    enable_caching=True,
+                    voice_type="NEURAL2"  # Use Neural2 for best quality
+                )
+                
+                logger.info(f"Initialized Google Cloud TTS with voice: {self.tts_voice_name}")
+            except Exception as e:
+                logger.error(f"Error initializing Google Cloud TTS: {e}")
+                raise
+            
+            # Mark as initialized
+            self._initialized = True
+            logger.info("Voice AI Agent initialization complete with OpenAI, Pinecone, and Google Cloud services")
+            
         except Exception as e:
-            logger.error(f"Error initializing Google Cloud TTS: {e}")
+            logger.error(f"Error during Voice AI Agent initialization: {e}", exc_info=True)
+            # Add more specific error handling for common issues
+            if "Unknown model" in str(e):
+                logger.error(f"The model '{self.model_name}' is not a valid OpenAI model. Please check your configuration.")
+            elif "authentication" in str(e).lower() or "api key" in str(e).lower():
+                logger.error("Authentication error with OpenAI. Please check your API key.")
+            elif "connection" in str(e).lower():
+                logger.error("Connection error. Please check your internet connection and API endpoint.")
             raise
-        
-        # Mark as initialized
-        self._initialized = True
-        logger.info("Voice AI Agent initialization complete with OpenAI, Pinecone, and Google Cloud services")
         
     async def process_audio(
         self,
@@ -214,33 +238,56 @@ class VoiceAIAgent:
             transcription = result["transcription"]
             logger.info(f"Valid transcription: {transcription}")
             
-            # Process through conversation manager (using OpenAI)
-            response = await self.conversation_manager.handle_user_input(transcription)
-            
-            # Generate speech using Google Cloud TTS
-            if response and response.get("response"):
-                try:
-                    speech_audio = await self.tts_client.synthesize(response["response"])
+            try:
+                # Process through conversation manager (using OpenAI)
+                response = await self.conversation_manager.handle_user_input(transcription)
+                
+                # Generate speech using Google Cloud TTS
+                if response and response.get("response"):
+                    try:
+                        speech_audio = await self.tts_client.synthesize(response["response"])
+                        return {
+                            "transcription": transcription,
+                            "response": response.get("response", ""),
+                            "speech_audio": speech_audio,
+                            "status": "success"
+                        }
+                    except Exception as e:
+                        logger.error(f"Error synthesizing speech with Google Cloud TTS: {e}")
+                        return {
+                            "transcription": transcription,
+                            "response": response.get("response", ""),
+                            "error": f"Speech synthesis error: {str(e)}",
+                            "status": "tts_error"
+                        }
+                else:
                     return {
                         "transcription": transcription,
                         "response": response.get("response", ""),
-                        "speech_audio": speech_audio,
                         "status": "success"
                     }
-                except Exception as e:
-                    logger.error(f"Error synthesizing speech with Google Cloud TTS: {e}")
+            except Exception as e:
+                logger.error(f"Error processing transcription: {e}", exc_info=True)
+                # Provide a fallback response in case of errors
+                fallback_response = "I'm having trouble processing your request right now. Could you try again?"
+                try:
+                    # Try to synthesize the fallback response
+                    speech_audio = await self.tts_client.synthesize(fallback_response)
                     return {
                         "transcription": transcription,
-                        "response": response.get("response", ""),
-                        "error": f"Speech synthesis error: {str(e)}",
-                        "status": "tts_error"
+                        "response": fallback_response,
+                        "speech_audio": speech_audio,
+                        "status": "error_with_fallback",
+                        "error": str(e)
                     }
-            else:
-                return {
-                    "transcription": transcription,
-                    "response": response.get("response", ""),
-                    "status": "success"
-                }
+                except:
+                    # If even that fails, return without speech audio
+                    return {
+                        "transcription": transcription,
+                        "response": fallback_response,
+                        "status": "error_with_fallback",
+                        "error": str(e)
+                    }
         else:
             logger.info("Invalid or empty transcription")
             return {
