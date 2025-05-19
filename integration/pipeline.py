@@ -1,9 +1,5 @@
 """
-End-to-end pipeline orchestration for Voice AI Agent.
-
-This module provides high-level functions for running the complete
-STT -> Knowledge Base -> TTS pipeline with Google Cloud STT integration
-and Google Cloud TTS.
+End-to-end pipeline orchestration for Voice AI Agent with streaming support.
 """
 import os
 import asyncio
@@ -15,8 +11,8 @@ import numpy as np
 
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT
 from speech_to_text.stt_integration import STTIntegration
-from knowledge_base.conversation_manager import ConversationManager
-from knowledge_base.llama_index.query_engine import QueryEngine
+from knowledge_base.conversation_manager import ConversationManager, ConversationState
+from knowledge_base.query_engine import QueryEngine
 
 from integration.tts_integration import TTSIntegration
 
@@ -27,11 +23,7 @@ logger = logging.getLogger(__name__)
 
 class VoiceAIAgentPipeline:
     """
-    End-to-end pipeline orchestration for Voice AI Agent.
-    
-    Provides a high-level interface for running the complete
-    STT -> Knowledge Base -> TTS pipeline with Google Cloud STT v2
-    and Google Cloud TTS.
+    End-to-end pipeline orchestration for Voice AI Agent with streaming support.
     """
     
     def __init__(
@@ -45,7 +37,7 @@ class VoiceAIAgentPipeline:
         Initialize the pipeline with existing components.
         
         Args:
-            speech_recognizer: Initialized STT component (Google Cloud v2)
+            speech_recognizer: Initialized STT component
             conversation_manager: Initialized conversation manager
             query_engine: Initialized query engine
             tts_integration: Initialized TTS integration
@@ -58,9 +50,9 @@ class VoiceAIAgentPipeline:
         # Create a helper for filtering out non-speech transcriptions
         self.stt_helper = STTIntegration(speech_recognizer)
         
-        # Determine if we're using Google Cloud STT v2
+        # Determine if we're using Google Cloud STT
         self.using_google_cloud = isinstance(speech_recognizer, GoogleCloudStreamingSTT)
-        logger.info(f"Pipeline initialized with {'Google Cloud v2' if self.using_google_cloud else 'Other'} STT and Google Cloud TTS")
+        logger.info(f"Pipeline initialized with {'Google Cloud' if self.using_google_cloud else 'Other'} STT")
     
     async def _is_valid_transcription(self, transcription: str) -> bool:
         """
@@ -107,10 +99,6 @@ class VoiceAIAgentPipeline:
         timings = {}
         start_time = time.time()
         
-        # Reset conversation state
-        if self.conversation_manager:
-            self.conversation_manager.reset()
-        
         # STAGE 1: Speech-to-Text
         logger.info("STAGE 1: Speech-to-Text")
         stt_start = time.time()
@@ -123,7 +111,7 @@ class VoiceAIAgentPipeline:
         
         # Load audio file
         try:
-            audio, sample_rate = load_audio_file(audio_file_path, target_sr=8000)  # Changed to 8000 for Twilio
+            audio, sample_rate = load_audio_file(audio_file_path, target_sr=8000)
             logger.info(f"Loaded audio: {len(audio)} samples, {sample_rate}Hz")
         except Exception as e:
             logger.error(f"Error loading audio file: {e}", exc_info=True)
@@ -142,14 +130,13 @@ class VoiceAIAgentPipeline:
         timings["stt"] = time.time() - stt_start
         logger.info(f"Transcription completed in {timings['stt']:.2f}s: {transcription}")
         
-        # STAGE 2: Knowledge Base Query
-        logger.info("STAGE 2: Knowledge Base Query")
+        # STAGE 2: Knowledge Base Query with streaming
+        logger.info("STAGE 2: Knowledge Base Query with streaming")
         kb_start = time.time()
         
         try:
-            # Retrieve context and generate response
-            retrieval_results = await self.query_engine.retrieve_with_sources(transcription)
-            query_result = await self.query_engine.query(transcription)
+            # Process query with conversation context
+            query_result = await self.conversation_manager.handle_user_input(transcription)
             response = query_result.get("response", "")
             
             if not response:
@@ -167,7 +154,7 @@ class VoiceAIAgentPipeline:
         tts_start = time.time()
         
         try:
-            # Convert response to speech using Google Cloud TTS
+            # Convert response to speech
             speech_audio = await self.tts_integration.text_to_speech(response)
             
             # Save speech audio if output file specified
@@ -222,10 +209,6 @@ class VoiceAIAgentPipeline:
         # Record start time for tracking
         start_time = time.time()
         
-        # Reset conversation state
-        if self.conversation_manager:
-            self.conversation_manager.reset()
-        
         try:
             # Ensure audio is in the right format
             if isinstance(audio_data, bytes):
@@ -249,29 +232,51 @@ class VoiceAIAgentPipeline:
             logger.error(f"Error in transcription: {e}")
             return {"error": f"Transcription error: {str(e)}"}
         
-        # Stream the response with Google Cloud TTS
+        # Stream the response with streaming response generation and TTS
         try:
-            # Stream the response directly to TTS
+            # Track statistics
             total_chunks = 0
             total_audio_bytes = 0
             response_start_time = time.time()
             full_response = ""
             
-            # Use the query engine's streaming method
-            async for chunk in self.query_engine.query_with_streaming(transcription):
-                chunk_text = chunk.get("chunk", "")
+            # Use streaming response generation
+            word_buffer = ""
+            
+            # Stream through conversation manager
+            async for result in self.conversation_manager.generate_streaming_response(transcription):
+                chunk_text = result.get("chunk", "")
                 
                 if chunk_text:
                     # Add to full response
                     full_response += chunk_text
+                    word_buffer += chunk_text
                     
-                    # Convert to speech with Google Cloud TTS and send to callback
-                    audio_data = await self.tts_integration.text_to_speech(chunk_text)
+                    # Check for natural break points
+                    if any(c in word_buffer for c in ['.', ',', '?', '!', ';', ':', ' ']):
+                        # Process accumulated buffer
+                        if word_buffer.strip():
+                            # Convert to speech with Google Cloud TTS
+                            audio_data = await self.tts_integration.text_to_speech(word_buffer)
+                            await audio_callback(audio_data)
+                            
+                            # Update stats
+                            total_chunks += 1
+                            total_audio_bytes += len(audio_data)
+                            
+                            # Reset buffer
+                            word_buffer = ""
+                
+                # Handle final result
+                if result.get("done", False) and word_buffer.strip():
+                    # Process any remaining text
+                    audio_data = await self.tts_integration.text_to_speech(word_buffer)
                     await audio_callback(audio_data)
                     
                     # Update stats
                     total_chunks += 1
                     total_audio_bytes += len(audio_data)
+                    word_buffer = ""
             
             # Calculate stats
             response_time = time.time() - response_start_time
@@ -297,7 +302,7 @@ class VoiceAIAgentPipeline:
     
     async def _transcribe_audio(self, audio: np.ndarray) -> tuple[str, float]:
         """
-        Transcribe audio data using Google Cloud STT v2.
+        Transcribe audio data using Google Cloud STT.
         
         Args:
             audio: Audio data as numpy array
@@ -316,7 +321,7 @@ class VoiceAIAgentPipeline:
     
     async def _transcribe_audio_google_cloud(self, audio: np.ndarray) -> tuple[str, float]:
         """
-        Transcribe audio using Google Cloud STT v2.
+        Transcribe audio using Google Cloud STT.
         
         Args:
             audio: Audio data as numpy array
@@ -367,7 +372,6 @@ class VoiceAIAgentPipeline:
             
             # Clean up the transcription
             transcription = self.stt_helper.cleanup_transcription(transcription)
-            
             return transcription, duration
             
         except Exception as e:

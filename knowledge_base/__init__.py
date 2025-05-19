@@ -1,22 +1,23 @@
 """
-Knowledge base component for the Voice AI Agent.
-"""
-# Reorganized to prevent circular imports
+Knowledge base package for Voice AI Agent.
 
-# Define exports but don't import them here
-__version__ = "0.2.0"
+This package provides RAG (Retrieval-Augmented Generation) functionality
+using the latest LlamaIndex with OpenAI and Pinecone.
+"""
+
+from knowledge_base.rag_config import rag_config
+from knowledge_base.conversation_manager import ConversationManager, ConversationState
+from knowledge_base.query_engine import QueryEngine
+from knowledge_base.index_manager import IndexManager
+from knowledge_base.document_processor import DocumentProcessor
+
+__version__ = "0.3.0"
 
 __all__ = [
-    "Document",
-    "DocumentMetadata",
-    "DocumentStore",
-    "get_embedding_model",
-    "IndexManager",
-    "QueryEngine",
+    "rag_config",
     "ConversationManager",
     "ConversationState",
-    "ConversationTurn",
+    "QueryEngine",
+    "IndexManager",
+    "DocumentProcessor"
 ]
-
-# Import conversation components directly since they don't cause circular imports
-from knowledge_base.conversation_manager import ConversationManager, ConversationState, ConversationTurn
