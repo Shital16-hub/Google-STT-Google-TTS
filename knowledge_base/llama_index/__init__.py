@@ -1,12 +1,9 @@
 """
 LlamaIndex integration components for knowledge base.
 """
-from knowledge_base.llama_index.document_store import DocumentStore
-from knowledge_base.llama_index.embedding_setup import get_embedding_model
-from knowledge_base.llama_index.index_manager import IndexManager
-from knowledge_base.llama_index.query_engine import QueryEngine
-from knowledge_base.llama_index.schema import Document, DocumentMetadata
+# Reorganized to prevent circular imports
 
+# Define exports but don't import them here
 __all__ = [
     "DocumentStore",
     "get_embedding_model",
@@ -15,3 +12,5 @@ __all__ = [
     "Document",
     "DocumentMetadata"
 ]
+
+# Don't import directly in __init__ to avoid circular imports
