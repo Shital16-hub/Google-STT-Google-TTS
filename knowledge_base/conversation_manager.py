@@ -14,7 +14,7 @@ from llama_index.core import Settings
 from llama_index.core.schema import NodeWithScore
 
 from knowledge_base.llama_index.query_engine import QueryEngine
-from knowledge_base.llama_index.llm_setup import get_ollama_llm, format_system_prompt, create_chat_messages
+from knowledge_base.llama_index.llm_setup import get_openai_llm, format_system_prompt, create_chat_messages
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class ConversationManager:
         
         # Initialize LLM with telephony-optimized settings
         if not Settings.llm:
-            self.llm = get_ollama_llm(
+            self.llm = get_openai_llm(
                 model_name=self.llm_model_name,
                 temperature=self.llm_temperature,
                 max_tokens=512,  # Shorter responses for telephony

@@ -20,7 +20,7 @@ OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")  # Optional API base URL
 # Pinecone configuration
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "gcp-starter")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "voice-ai-agent")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "voice-ai-knowledge")
 PINECONE_NAMESPACE = os.getenv("PINECONE_NAMESPACE", "voice-assistant")
 PINECONE_DIMENSION = int(os.getenv("PINECONE_DIMENSION", "1536"))  # 1536 for text-embedding-ada-002
 PINECONE_METRIC = os.getenv("PINECONE_METRIC", "cosine")
