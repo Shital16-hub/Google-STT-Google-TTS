@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from pydantic import BaseModel
+from starlette.websockets import WebSocketState
 
 # Twilio imports
 from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
@@ -375,6 +376,7 @@ async def cleanup_sessions():
 @app.websocket("/ws/stream/{call_sid}")
 async def handle_media_stream(websocket: WebSocket, call_sid: str):
     """Handle WebSocket media stream with optimized binary data transfer."""
+    logger.info(f"Starting WebSocket handler for call {call_sid} with pipeline: {voice_ai_pipeline is not None}")
     logger.info(f"WebSocket connection request for call {call_sid}")
     
     # Wait for initialization to complete with timeout
@@ -394,7 +396,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
     handler = None
     
     try:
-        # Accept the WebSocket connection with binary mode
+        # Accept the WebSocket connection
         await websocket.accept()
         logger.info(f"WebSocket connection established for call {call_sid}")
         
@@ -410,54 +412,13 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
         # Process incoming messages
         while True:
             try:
-                # Check for both text and binary messages with timeout
-                message_type = "text"
-                try:
-                    # Wait for either text or binary with timeout
-                    done, pending = await asyncio.wait([
-                        asyncio.create_task(websocket.receive_text()),
-                        asyncio.create_task(websocket.receive_bytes())
-                    ], return_when=asyncio.FIRST_COMPLETED, timeout=30.0)
-                    
-                    # Cancel pending tasks
-                    for task in pending:
-                        task.cancel()
-                    
-                    if not done:
-                        # Timeout occurred
-                        logger.debug("WebSocket receive timeout, checking connection status")
-                        continue
-                    
-                    # Get the result from the completed task
-                    message_task = list(done)[0]
-                    try:
-                        message = message_task.result()
-                        # Determine message type
-                        if isinstance(message, bytes):
-                            message_type = "binary"
-                    except Exception as e:
-                        logger.error(f"Error getting message result: {e}")
-                        continue
-                    
-                except asyncio.TimeoutError:
-                    # Check if we should still be connected
-                    logger.debug("WebSocket receive timeout, checking connection status")
-                    continue
+                # Use receive() which handles both text and binary messages
+                message = await asyncio.wait_for(websocket.receive(), timeout=30.0)
                 
-                if not message:
-                    logger.debug("Received empty message, continuing...")
-                    continue
-                
-                # Parse and handle message
-                if message_type == "binary":
-                    # Handle binary message (client-side optimization)
-                    # For now, we don't expect binary from client, but could implement in future
-                    logger.debug("Received binary message from client")
-                    continue
-                else:
-                    # Handle text message (standard Twilio format)
+                if "text" in message:
+                    # Handle text message
                     try:
-                        data = json.loads(message)
+                        data = json.loads(message["text"])
                         event_type = data.get('event')
                         
                         if event_type == 'connected':
@@ -497,10 +458,30 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                     except Exception as e:
                         logger.error(f"Error processing message: {e}")
                         continue
+                        
+                elif "bytes" in message:
+                    # Handle binary message - log for now
+                    logger.warning("Received binary message from client - not handling yet")
+                    continue
+                    
+                else:
+                    logger.warning(f"Received unexpected message type: {message.keys()}")
+                    
+            except asyncio.TimeoutError:
+                # Check if we should still be connected
+                logger.debug("WebSocket receive timeout, checking connection status")
+                
+                # Check if WebSocket is still connected
+                if websocket.client_state != WebSocketState.CONNECTED:
+                    logger.info("WebSocket no longer connected, exiting loop")
+                    break
+                    
+                continue
                 
             except WebSocketDisconnect:
                 logger.info(f"WebSocket connection closed for call {call_sid}")
                 break
+                
             except Exception as e:
                 logger.error(f"Error in WebSocket loop: {e}")
                 break
@@ -524,7 +505,8 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
             call_sessions[call_sid]["ws_disconnected_time"] = time.time()
         
         try:
-            await websocket.close()
+            if websocket.client_state == WebSocketState.CONNECTED:
+                await websocket.close()
         except:
             pass
         

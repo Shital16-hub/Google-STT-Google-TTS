@@ -1,15 +1,11 @@
 # speech_to_text/google_cloud_stt.py
 
-"""
-Optimized Google Cloud Speech-to-Text v2 implementation with streaming, early response,
-and low-latency configuration for real-time voice applications.
-"""
 import logging
 import asyncio
 import time
 import os
 import json
-import queue
+import queue  # Make sure this import is at the top
 import threading
 import uuid
 from typing import Dict, Any, Optional, List, Callable, Awaitable, Union, Iterator, Set
@@ -89,6 +85,10 @@ class GoogleCloudStreamingSTT:
         self.is_streaming = False
         self.is_speaking = False  # Flag to prevent processing during TTS output
         self.audio_queue = asyncio.Queue(maxsize=50)  # Smaller queue for faster processing
+        
+        # Initialize sync queue here for thread-safety
+        self._sync_queue = queue.Queue(maxsize=50)
+        
         self.stream_thread = None
         self.stop_event = threading.Event()
         self.session_id = str(uuid.uuid4())
@@ -192,9 +192,6 @@ class GoogleCloudStreamingSTT:
             )
         )
         
-        # Adding adaptation in a compatible way - removed the complex adaptation structure
-        # because it's causing compatibility issues with the library version
-        
         # Configure streaming for lower latency with faster end-of-speech detection
         self.streaming_config = cloud_speech.StreamingRecognitionConfig(
             config=self.recognition_config,
@@ -243,16 +240,16 @@ class GoogleCloudStreamingSTT:
         # Send initial config
         yield self.config_request
         
+        # Variables to track empty audio timeout
+        last_audio_time = time.time()
+        heartbeat_count = 0
+        max_empty_heartbeats = 3  # Only send a few empty heartbeats
+        
         # Process audio chunks
         while not self.stop_event.is_set():
             try:
                 # Get audio chunk with blocking but short timeout
                 try:
-                    # Use Queue.Queue instead of asyncio.Queue to avoid coroutine issues
-                    if not hasattr(self, '_sync_queue'):
-                        # Create a synchronized queue if it doesn't exist
-                        self._sync_queue = queue.Queue(maxsize=50)
-                    
                     # Check if there's audio in the queue with a short timeout
                     audio_chunk = self._sync_queue.get(timeout=0.05)
                     
@@ -269,12 +266,21 @@ class GoogleCloudStreamingSTT:
                     yield cloud_speech.StreamingRecognizeRequest(audio=audio_chunk)
                     self._sync_queue.task_done()
                     self.last_audio_time = time.time()
+                    last_audio_time = time.time()
+                    heartbeat_count = 0  # Reset heartbeat count when we get real audio
                     
                 except queue.Empty:
                     # Check if we should stop due to inactivity
-                    if time.time() - self.last_audio_time > 10.0:  # 10 second absolute timeout
-                        logger.info("No audio for 10s, stopping stream")
+                    if time.time() - last_audio_time > 5.0:  # Reduced from 10s to 5s
+                        logger.info("No audio for 5s, stopping stream")
                         break
+                        
+                    # Don't send empty audio chunks - Google doesn't like them
+                    # Instead, just continue the loop and try to get more audio
+                    if heartbeat_count < max_empty_heartbeats:
+                        # Just a short wait instead of sending empty audio
+                        time.sleep(0.1)
+                        heartbeat_count += 1
                     continue
                     
             except Exception as e:
@@ -284,12 +290,19 @@ class GoogleCloudStreamingSTT:
     
     def _run_streaming(self):
         """Run streaming with optimized error handling for low latency."""
+        consecutive_empty_queues = 0
+        max_empty_queues = 5  # Only restart after 5 consecutive empty queues
+        no_activity_count = 0
+        max_no_activity = 3  # Number of cycles with no activity before restarting
+        
         while self.is_streaming and not self.stop_event.is_set():
             try:
                 logger.info(f"Starting optimized low-latency streaming session: {self.session_id}")
                 self.stream_start_time = time.time()
                 self.consecutive_errors = 0
                 self.pending_results.clear()
+                consecutive_empty_queues = 0  # Reset counter
+                no_activity_count = 0  # Reset inactivity counter
                 
                 # Create streaming call with timeout
                 self.current_stream = self.client.streaming_recognize(
@@ -308,6 +321,7 @@ class GoogleCloudStreamingSTT:
                             continue
                             
                         self._process_response(response)
+                        no_activity_count = 0  # Reset inactivity counter when we get responses
                         
                 except StopIteration:
                     logger.debug("Stream iteration completed normally")
@@ -315,10 +329,24 @@ class GoogleCloudStreamingSTT:
                     logger.error(f"Error processing stream responses: {e}")
                     self.consecutive_errors += 1
                     
-                # If we reach here and still streaming, restart session for continuous operation
+                # If we reach here and still streaming, check if we should restart
                 if self.is_streaming and not self.stop_event.is_set():
-                    logger.info("Stream ended, restarting for continuous operation")
-                    time.sleep(0.1)  # Very short delay
+                    # Check if queue is empty but without immediately restarting
+                    if self._sync_queue.empty():
+                        consecutive_empty_queues += 1
+                        no_activity_count += 1
+                        
+                        if consecutive_empty_queues < max_empty_queues and no_activity_count < max_no_activity:
+                            # Just wait longer before restarting
+                            logger.debug(f"Queue empty ({consecutive_empty_queues}/{max_empty_queues}), waiting before restart")
+                            time.sleep(1.0)  # Wait longer between restarts (1 second)
+                            continue
+                    
+                    # Only log restart if we're actually restarting due to errors
+                    # This reduces log noise
+                    if self.consecutive_errors > 0 or no_activity_count >= max_no_activity:
+                        logger.info("Stream ended, restarting for continuous operation")
+                    time.sleep(0.5)  # Longer delay between restarts
                     continue
                     
             except Exception as e:
@@ -335,7 +363,7 @@ class GoogleCloudStreamingSTT:
                 
                 # Quick recovery for continuous operation
                 if self.is_streaming and not self.stop_event.is_set():
-                    time.sleep(0.1)  # Very short delay
+                    time.sleep(0.5)  # Longer delay before retrying
                     # Only give up after many consecutive errors
                     if self.consecutive_errors > 10:
                         logger.error("Too many consecutive errors, stopping")
@@ -345,6 +373,8 @@ class GoogleCloudStreamingSTT:
                     break
         
         logger.info(f"Streaming thread ended (session: {self.session_id})")
+    
+
     
     def _process_response(self, response):
         """Process response with optimized early-result handling."""
@@ -439,6 +469,18 @@ class GoogleCloudStreamingSTT:
             except asyncio.QueueEmpty:
                 break
         
+        # Clear sync queue
+        if hasattr(self, '_sync_queue'):
+            try:
+                while True:
+                    self._sync_queue.get_nowait()
+                    self._sync_queue.task_done()
+            except queue.Empty:
+                pass
+        else:
+            # Ensure the sync queue exists
+            self._sync_queue = queue.Queue(maxsize=50)
+        
         # Start streaming thread
         self.stream_thread = threading.Thread(target=self._run_streaming, daemon=True)
         self.stream_thread.start()
@@ -456,6 +498,13 @@ class GoogleCloudStreamingSTT:
         self.stop_event.set()
         
         # Signal end to request generator
+        if hasattr(self, '_sync_queue'):
+            try:
+                self._sync_queue.put(None, block=False)
+            except queue.Full:
+                pass
+        
+        # Signal async queue too
         try:
             await self.audio_queue.put(None)
         except:
@@ -505,17 +554,26 @@ class GoogleCloudStreamingSTT:
             if len(audio_chunk) < 32:  # Minimal size check
                 return None
             
-            # Put audio in the synchronized queue instead of asyncio queue
-            if not hasattr(self, '_sync_queue'):
-                import queue
-                self._sync_queue = queue.Queue(maxsize=50)
-                
+            # Use a more robust method to put in queue
             try:
-                # Use non-blocking put with a short timeout
-                self._sync_queue.put(audio_chunk, block=True, timeout=0.05)
-            except queue.Full:
-                # Queue full - we're getting backed up, drop the chunk
-                logger.warning("Audio queue full, dropping chunk")
+                # Update last audio time before queuing
+                self.last_audio_time = time.time()
+                
+                # Try to put in queue with timeout
+                if not self._sync_queue.full():
+                    self._sync_queue.put(audio_chunk, block=False)
+                else:
+                    # Queue is full, try to make space
+                    try:
+                        self._sync_queue.get_nowait()  # Remove oldest item
+                        self._sync_queue.task_done()
+                        self._sync_queue.put(audio_chunk, block=False)  # Add new item
+                    except queue.Empty:
+                        # Shouldn't happen since we checked full()
+                        pass
+                        
+            except Exception as e:
+                logger.warning(f"Error adding to audio queue: {e}")
                 return None
             
             return None  # Results come through callbacks

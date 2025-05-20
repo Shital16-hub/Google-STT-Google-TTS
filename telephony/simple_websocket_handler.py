@@ -165,7 +165,7 @@ class SimpleWebSocketHandler:
         logger.warning("Using fallback project ID - this should be configured properly")
         return "my-tts-project-458404"
     
-    async def _handle_audio(self, data: Dict[str, Any], ws: fastapi.WebSocket):
+    async def _handle_audio(self, data: Dict[str, Any], ws: WebSocket):
         """Handle audio with optimized state management."""
         # Skip audio processing if call has ended
         if self.call_ended:
@@ -186,6 +186,7 @@ class SimpleWebSocketHandler:
             audio_data = base64.b64decode(payload)
             self.audio_received += 1
             self.last_audio_time = time.time()
+            logger.debug(f"Received audio chunk: {len(audio_data)} bytes")
         except Exception as e:
             logger.error(f"Error decoding audio: {e}")
             return
@@ -196,6 +197,15 @@ class SimpleWebSocketHandler:
         
         # Process audio directly through STT with early response processing
         try:
+            # Log every 50th audio chunk for debugging
+            if self.audio_received % 50 == 0:
+                logger.info(f"Processing audio chunk #{self.audio_received}, size: {len(audio_data)} bytes")
+                
+            # Ensure STT integration exists
+            if not self.stt_integration:
+                logger.error("STT integration not available")
+                return
+                
             await self.stt_integration.process_stream_chunk(
                 audio_data, 
                 callback=self._handle_transcription_result
@@ -461,27 +471,16 @@ class SimpleWebSocketHandler:
             ws = self._ws
         
         try:
-            # For FastAPI WebSocket, use binary mode
-            if isinstance(ws, WebSocket):
-                # Create binary packet with minimal overhead
-                # Format: [streamSid length][streamSid string][audio data]
-                sid_bytes = self.stream_sid.encode('utf-8')
-                sid_len = len(sid_bytes)
-                
-                # Create header with streamSid length (2 bytes) and streamSid
-                header = struct.pack('!H', sid_len) + sid_bytes
-                
-                # Send binary message
-                await ws.send_bytes(header + audio_data)
-            else:
-                # Legacy text mode fallback (less efficient)
-                audio_base64 = base64.b64encode(audio_data).decode('utf-8')
-                message = {
-                    "event": "media",
-                    "streamSid": self.stream_sid,
-                    "media": {"payload": audio_base64}
+            # Create a properly formatted message for Twilio Media Streams
+            message = {
+                "event": "media",
+                "streamSid": self.stream_sid,
+                "media": {
+                    "payload": base64.b64encode(audio_data).decode('utf-8')
                 }
-                ws.send(json.dumps(message))
+            }
+            # Send as text - this is what Twilio expects
+            await ws.send_text(json.dumps(message))
                 
         except Exception as e:
             logger.error(f"Error sending audio chunk: {e}")
@@ -490,6 +489,9 @@ class SimpleWebSocketHandler:
         """Start conversation with optimized welcome message."""
         # Store WebSocket reference
         self._ws = ws
+        
+        # Log WebSocket type
+        logger.info(f"WebSocket type: {type(ws).__name__}")
         
         # Start STT streaming
         if hasattr(self.stt_integration, 'start_streaming'):
