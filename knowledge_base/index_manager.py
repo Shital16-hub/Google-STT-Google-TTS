@@ -4,10 +4,11 @@ Index manager for RAG with latest LlamaIndex and Pinecone v3.
 import os
 import logging
 import time
+import asyncio
 from typing import List, Dict, Any, Optional
 
-from llama_index.core import Document, ServiceContext, StorageContext, Settings
-from llama_index.core.embeddings import BaseEmbedding
+from llama_index.core import Document, Settings
+from llama_index.core.storage import StorageContext
 from llama_index.vector_stores.pinecone import PineconeVectorStore
 from llama_index.core.indices.vector_store import VectorStoreIndex
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -41,14 +42,18 @@ class IndexManager:
         self.pinecone_index = None
         self.vector_store = None
         self.embed_model = None
-        self.service_context = None
+        self.llm = None
         self.storage_context = None
         self.index = None
         self.document_processor = DocumentProcessor(self.config)
         
         self.initialized = False
         
-        logger.info(f"IndexManager initialized with storage_dir={self.storage_dir}")
+        # Log the index and namespace that will be used
+        logger.info(f"IndexManager initialized with:")
+        logger.info(f"- storage_dir: {self.storage_dir}")
+        logger.info(f"- pinecone_index_name: {self.config.pinecone_index_name}")
+        logger.info(f"- pinecone_namespace: {self.config.pinecone_namespace}")
     
     async def init(self):
         """Initialize the index manager asynchronously."""
@@ -65,18 +70,16 @@ class IndexManager:
                 dimensions=1536  # Default for text-embedding-ada-002
             )
             
-            # Set embedding model in global settings
-            Settings.embed_model = self.embed_model
-            
             # Initialize OpenAI LLM for completions
-            llm = OpenAI(
+            self.llm = OpenAI(
                 model=self.config.openai_model,
                 temperature=self.config.llm_temperature,
                 api_key=self.config.openai_api_key
             )
             
-            # Set LLM in global settings
-            Settings.llm = llm
+            # Set up global Settings instead of ServiceContext (which is deprecated)
+            Settings.embed_model = self.embed_model
+            Settings.llm = self.llm
             
             # Initialize Pinecone with v3 API
             self.pinecone_client = Pinecone(
@@ -88,6 +91,8 @@ class IndexManager:
             
             # List indexes using the new API
             index_names = [index.name for index in self.pinecone_client.list_indexes()]
+            
+            logger.info(f"Found existing Pinecone indexes: {', '.join(index_names) if index_names else 'None'}")
             
             if index_name not in index_names:
                 logger.info(f"Creating new Pinecone index: {index_name}")
@@ -113,14 +118,19 @@ class IndexManager:
                         pass
                     logger.info("Waiting for index to be ready...")
                     await asyncio.sleep(10)
+            else:
+                logger.info(f"Using existing Pinecone index: {index_name}")
             
             # Connect to the Pinecone index with the new API
             self.pinecone_index = self.pinecone_client.Index(index_name)
             
-            # Create vector store
+            # Create vector store with explicit namespace
+            namespace = self.config.pinecone_namespace
+            logger.info(f"Creating vector store with namespace: {namespace}")
+            
             self.vector_store = PineconeVectorStore(
                 pinecone_index=self.pinecone_index,
-                namespace=self.config.pinecone_namespace
+                namespace=namespace
             )
             
             # Create storage context
@@ -128,25 +138,31 @@ class IndexManager:
                 vector_store=self.vector_store
             )
             
-            # Create service context
-            self.service_context = ServiceContext.from_defaults(
-                llm=llm,
-                embed_model=self.embed_model
-            )
-            
-            # Create vector store index
+            # Create vector store index - no need to pass ServiceContext anymore
+            # as we've set the global Settings
             self.index = VectorStoreIndex.from_documents(
                 documents=[],  # Empty initially
-                storage_context=self.storage_context,
-                service_context=self.service_context
+                storage_context=self.storage_context
             )
             
             # Get index stats
             try:
                 stats = self.pinecone_index.describe_index_stats()
-                namespace_stats = stats.get("namespaces", {}).get(self.config.pinecone_namespace, {})
+                namespaces = stats.get("namespaces", {})
+                
+                # Log all namespaces in the index
+                logger.info(f"Available namespaces in Pinecone index '{index_name}':")
+                if namespaces:
+                    for ns_name, ns_stats in namespaces.items():
+                        vector_count = ns_stats.get("vector_count", 0)
+                        logger.info(f"  - '{ns_name}': {vector_count} vectors")
+                else:
+                    logger.info("  No namespaces found (empty index)")
+                
+                # Log stats for our specific namespace
+                namespace_stats = namespaces.get(namespace, {})
                 doc_count = namespace_stats.get("vector_count", 0)
-                logger.info(f"Connected to Pinecone index '{index_name}' with {doc_count} vectors in namespace '{self.config.pinecone_namespace}'")
+                logger.info(f"Connected to Pinecone index '{index_name}' with {doc_count} vectors in namespace '{namespace}'")
             except Exception as e:
                 logger.warning(f"Could not get index stats: {e}")
             
@@ -156,8 +172,6 @@ class IndexManager:
         except Exception as e:
             logger.error(f"Error initializing index manager: {e}")
             raise
-    
-    # Rest of the methods remain largely the same but updating any Pinecone API calls to v3
     
     async def add_documents(self, documents: List[Document]) -> List[str]:
         """
@@ -200,7 +214,61 @@ class IndexManager:
             logger.error(f"Error adding documents to index: {e}")
             raise
     
-    # The add_files and add_directory methods remain the same
+    async def add_files(self, file_paths: List[str]) -> List[str]:
+        """
+        Add files to the index.
+        
+        Args:
+            file_paths: List of file paths
+            
+        Returns:
+            List of document IDs
+        """
+        if not self.initialized:
+            await self.init()
+            
+        try:
+            documents = []
+            
+            # Process each file
+            for file_path in file_paths:
+                try:
+                    docs = self.document_processor.process_file(file_path)
+                    documents.extend(docs)
+                except Exception as e:
+                    logger.error(f"Error processing file {file_path}: {e}")
+                    continue
+            
+            # Add documents to index
+            return await self.add_documents(documents)
+            
+        except Exception as e:
+            logger.error(f"Error adding files to index: {e}")
+            raise
+    
+    async def add_directory(self, directory_path: str) -> List[str]:
+        """
+        Add all files in a directory to the index.
+        
+        Args:
+            directory_path: Path to the directory
+            
+        Returns:
+            List of document IDs
+        """
+        if not self.initialized:
+            await self.init()
+            
+        try:
+            # Process documents from directory
+            documents = self.document_processor.process_directory(directory_path)
+            
+            # Add documents to index
+            return await self.add_documents(documents)
+            
+        except Exception as e:
+            logger.error(f"Error adding directory to index: {e}")
+            raise
     
     async def count_documents(self) -> int:
         """
@@ -249,3 +317,53 @@ class IndexManager:
         except Exception as e:
             logger.error(f"Error clearing index: {e}")
             return False
+            
+    async def get_index_info(self) -> Dict[str, Any]:
+        """
+        Get detailed information about the Pinecone index and namespace.
+        
+        Returns:
+            Dictionary with index information
+        """
+        if not self.initialized:
+            await self.init()
+            
+        index_name = self.config.pinecone_index_name
+        namespace = self.config.pinecone_namespace
+        
+        info = {
+            "index_name": index_name,
+            "namespace": namespace,
+            "vector_count": 0,
+            "namespaces": []
+        }
+        
+        try:
+            stats = self.pinecone_index.describe_index_stats()
+            namespaces = stats.get("namespaces", {})
+            
+            # Get all namespaces
+            for ns_name, ns_stats in namespaces.items():
+                info["namespaces"].append({
+                    "name": ns_name,
+                    "vector_count": ns_stats.get("vector_count", 0)
+                })
+            
+            # Get vector count for our namespace
+            namespace_stats = namespaces.get(namespace, {})
+            info["vector_count"] = namespace_stats.get("vector_count", 0)
+            
+            # Get index metadata
+            index_info = self.pinecone_client.describe_index(index_name)
+            if hasattr(index_info, "dimension"):
+                info["dimension"] = index_info.dimension
+            if hasattr(index_info, "metric"):
+                info["metric"] = index_info.metric
+            if hasattr(index_info, "status"):
+                info["status"] = index_info.status.ready
+                
+        except Exception as e:
+            logger.error(f"Error getting index info: {e}")
+            info["error"] = str(e)
+            
+        return info

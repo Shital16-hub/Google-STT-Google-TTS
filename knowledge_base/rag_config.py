@@ -35,7 +35,7 @@ class RAGConfig(BaseSettings):
         description="Enable streaming responses"
     )
     
-    # Pinecone Configuration
+    # Pinecone Configuration - Updated for Free Tier
     pinecone_api_key: str = Field(
         default=os.getenv("PINECONE_API_KEY", ""),
         description="Pinecone API key"
@@ -56,7 +56,16 @@ class RAGConfig(BaseSettings):
         default=os.getenv("PINECONE_NAMESPACE", "voice-assistant"),
         description="Pinecone namespace"
     )
-
+    
+    # Retrieval Configuration
+    retrieval_top_k: int = Field(
+        default=int(os.getenv("RETRIEVAL_TOP_K", "3")),
+        description="Number of top documents to retrieve"
+    )
+    similarity_threshold: float = Field(
+        default=float(os.getenv("SIMILARITY_THRESHOLD", "0.7")),
+        description="Minimum similarity threshold for retrieval"
+    )
     
     # Conversation Configuration
     max_conversation_history: int = Field(

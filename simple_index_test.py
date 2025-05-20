@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def test_index():
     # Import after configuring logging
-    from llama_index.core import Document, ServiceContext, StorageContext
+    from llama_index.core import Document, ServiceContext, StorageContext, QueryBundle
     from llama_index.core.indices.vector_store import VectorStoreIndex
     from llama_index.embeddings.openai import OpenAIEmbedding
     from llama_index.vector_stores.pinecone import PineconeVectorStore
@@ -92,11 +92,11 @@ async def test_index():
     # Test simple query
     retriever = index.as_retriever(similarity_top_k=1)
     
-    # Query
+    # Create a QueryBundle directly (instead of calling retriever.query_bundle)
     query_text = "What is this document about?"
-    query_bundle = retriever.query_bundle(query_text)
+    query_bundle = QueryBundle(query_str=query_text)
     
-    # Retrieve
+    # Use the retriever with the query bundle
     nodes = retriever.retrieve(query_bundle)
     
     logger.info(f"Query: {query_text}")

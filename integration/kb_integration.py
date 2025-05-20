@@ -2,7 +2,8 @@
 Knowledge Base integration module for Voice AI Agent.
 
 This module provides classes and functions for integrating knowledge base
-capabilities with the Voice AI Agent system.
+capabilities with the Voice AI Agent system, updated for the latest
+LlamaIndex, Pinecone, and OpenAI APIs.
 """
 import logging
 import time
@@ -10,8 +11,9 @@ import asyncio
 from typing import Optional, Dict, Any, AsyncIterator, List
 
 from knowledge_base.conversation_manager import ConversationManager, ConversationState
-from knowledge_base.llama_index.query_engine import QueryEngine
+from knowledge_base.query_engine import QueryEngine
 from knowledge_base.utils.cache_utils import StreamingResponseCache
+from knowledge_base.rag_config import rag_config
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +23,17 @@ class KnowledgeBaseIntegration:
     
     Provides an abstraction layer for knowledge base functionality,
     handling query processing and response generation.
+    Compatible with latest LlamaIndex, Pinecone and OpenAI APIs.
     """
     
     def __init__(
         self,
-        query_engine: QueryEngine,
-        conversation_manager: ConversationManager,
+        query_engine: Optional[QueryEngine] = None,
+        conversation_manager: Optional[ConversationManager] = None,
         temperature: float = 0.7,
-        max_tokens: int = 1024,
-        use_cache: bool = True
+        max_tokens: int = 256,
+        use_cache: bool = True,
+        config = None
     ):
         """
         Initialize the Knowledge Base integration.
@@ -40,17 +44,49 @@ class KnowledgeBaseIntegration:
             temperature: Temperature for response generation
             max_tokens: Maximum tokens for response generation
             use_cache: Whether to use response caching
+            config: Optional configuration object
         """
         self.query_engine = query_engine
         self.conversation_manager = conversation_manager
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.initialized = True
+        self.config = config or rag_config
         self.use_cache = use_cache
+        
+        # We'll initialize components lazily if not provided
+        self.initialized = self.query_engine is not None and self.conversation_manager is not None
         
         # Initialize response cache
         if self.use_cache:
             self.response_cache = StreamingResponseCache()
+            
+        # Log the initialization
+        logger.info(f"KnowledgeBaseIntegration initialized - Pinecone index: {self.config.pinecone_index_name}, "
+                   f"namespace: {self.config.pinecone_namespace}")
+    
+    async def init(self):
+        """Initialize components if not already provided."""
+        if self.initialized:
+            return
+            
+        logger.info("Initializing KnowledgeBaseIntegration components")
+        
+        # Initialize query engine if not provided
+        if not self.query_engine:
+            self.query_engine = QueryEngine(config=self.config)
+            await self.query_engine.init()
+            
+        # Initialize conversation manager if not provided
+        if not self.conversation_manager:
+            self.conversation_manager = ConversationManager(
+                query_engine=self.query_engine,
+                config=self.config,
+                skip_greeting=True  # Better for voice interaction
+            )
+            await self.conversation_manager.init()
+            
+        self.initialized = True
+        logger.info("KnowledgeBaseIntegration initialization complete")
     
     async def query(self, text: str, include_context: bool = False) -> Dict[str, Any]:
         """
@@ -64,8 +100,7 @@ class KnowledgeBaseIntegration:
             Dictionary with query response information
         """
         if not self.initialized:
-            logger.error("Knowledge Base integration not properly initialized")
-            return {"error": "Knowledge Base integration not initialized"}
+            await self.init()
         
         # Reset conversation manager state if needed
         if self.conversation_manager.current_state != ConversationState.WAITING_FOR_QUERY:
@@ -87,21 +122,19 @@ class KnowledgeBaseIntegration:
         try:
             # Use a timeout for the entire process to ensure responsiveness
             try:
-                # Wrap the query process in a timeout to ensure it doesn't take too long
-                # Instead of asyncio.timeout, use asyncio.wait_for
-                retrieval_task = asyncio.create_task(self.query_engine.retrieve_with_sources(text))
-                
                 # Get relevant context with timeout
-                retrieval_results = await asyncio.wait_for(retrieval_task, timeout=55.0)
                 retrieval_start = time.time()
+                retrieval_task = asyncio.create_task(self.query_engine.retrieve_with_sources(text))
+                retrieval_results = await asyncio.wait_for(retrieval_task, timeout=25.0)
+                
                 results = retrieval_results.get("results", [])
                 context = self.query_engine.format_retrieved_context(results)
                 retrieval_time = time.time() - retrieval_start
                 
                 # Generate response with timeout
                 llm_start = time.time()
-                query_task = asyncio.create_task(self.query_engine.query(text))
-                direct_result = await asyncio.wait_for(query_task, timeout=55.0)
+                query_task = asyncio.create_task(self.query_engine.query(text, context=results))
+                direct_result = await asyncio.wait_for(query_task, timeout=25.0)
                 response = direct_result.get("response", "")
                 llm_time = time.time() - llm_start
                 
@@ -168,9 +201,7 @@ class KnowledgeBaseIntegration:
             Response chunks
         """
         if not self.initialized:
-            logger.error("Knowledge Base integration not properly initialized")
-            yield {"error": "Knowledge Base integration not initialized", "done": True}
-            return
+            await self.init()
         
         # Reset conversation manager state if needed
         if self.conversation_manager.current_state != ConversationState.WAITING_FOR_QUERY:
@@ -206,6 +237,57 @@ class KnowledgeBaseIntegration:
                 "done": True
             }
     
+    async def process_query(self, text: str) -> Dict[str, Any]:
+        """
+        Process a query through the conversation manager.
+        
+        This is a higher-level method that uses the conversation manager
+        to handle the query with conversation context.
+        
+        Args:
+            text: Query text
+            
+        Returns:
+            Response dictionary
+        """
+        if not self.initialized:
+            await self.init()
+            
+        try:
+            # Process through conversation manager for contextual responses
+            return await self.conversation_manager.handle_user_input(text)
+        except Exception as e:
+            logger.error(f"Error processing query through conversation manager: {e}")
+            return {
+                "error": str(e),
+                "query": text,
+                "response": "I'm sorry, I encountered an error processing your request."
+            }
+    
+    async def process_streaming_query(self, text: str) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Process a streaming query through the conversation manager.
+        
+        Args:
+            text: Query text
+            
+        Yields:
+            Response chunks
+        """
+        if not self.initialized:
+            await self.init()
+            
+        try:
+            # Process through conversation manager with streaming
+            async for chunk in self.conversation_manager.generate_streaming_response(text):
+                yield chunk
+        except Exception as e:
+            logger.error(f"Error in streaming conversation query: {e}")
+            yield {
+                "error": str(e),
+                "done": True
+            }
+    
     def reset_conversation(self) -> None:
         """Reset the conversation state."""
         if self.conversation_manager:
@@ -223,7 +305,7 @@ class KnowledgeBaseIntegration:
         if not self.conversation_manager:
             return []
         
-        return self.conversation_manager.get_history()
+        return self.conversation_manager.get_conversation_history()
     
     async def get_stats(self) -> Dict[str, Any]:
         """
@@ -235,26 +317,58 @@ class KnowledgeBaseIntegration:
         if not self.query_engine:
             return {"error": "Query engine not initialized"}
         
-        # Get stats from query engine
-        kb_stats = await self.query_engine.get_stats()
-        
-        # Add integration-specific stats
-        stats = {
-            "kb_stats": kb_stats,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-        }
-        
-        # Add cache stats if enabled
-        if self.use_cache:
-            stats["cache_stats"] = self.response_cache.get_stats()
-        
-        # Add conversation stats if available
-        if self.conversation_manager and self.conversation_manager.history:
-            conversation_stats = {
-                "total_turns": len(self.conversation_manager.history),
-                "current_state": self.conversation_manager.current_state
+        try:
+            # Get stats from query engine
+            kb_stats = await self.query_engine.get_stats()
+            
+            # Add integration-specific stats
+            stats = {
+                "kb_stats": kb_stats,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "pinecone_index": self.config.pinecone_index_name,
+                "pinecone_namespace": self.config.pinecone_namespace
             }
-            stats["conversation"] = conversation_stats
+            
+            # Add cache stats if enabled
+            if self.use_cache:
+                stats["cache_stats"] = self.response_cache.get_stats()
+            
+            # Add conversation stats if available
+            if self.conversation_manager:
+                conversation_stats = self.conversation_manager.get_stats()
+                stats["conversation"] = conversation_stats
+            
+            return stats
+        except Exception as e:
+            logger.error(f"Error getting KB stats: {e}")
+            return {"error": str(e)}
+    
+    async def get_pinecone_info(self) -> Dict[str, Any]:
+        """
+        Get information about the Pinecone index being used.
         
-        return stats
+        Returns:
+            Dictionary with Pinecone information
+        """
+        if not self.initialized:
+            await self.init()
+            
+        if not hasattr(self.query_engine, 'index_manager'):
+            return {
+                "error": "Query engine does not have an index manager",
+                "pinecone_index": self.config.pinecone_index_name,
+                "pinecone_namespace": self.config.pinecone_namespace
+            }
+            
+        try:
+            # Get information from index manager
+            index_info = await self.query_engine.index_manager.get_index_info()
+            return index_info
+        except Exception as e:
+            logger.error(f"Error getting Pinecone info: {e}")
+            return {
+                "error": str(e),
+                "pinecone_index": self.config.pinecone_index_name,
+                "pinecone_namespace": self.config.pinecone_namespace
+            }

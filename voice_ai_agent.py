@@ -6,7 +6,7 @@ import logging
 import asyncio
 import time
 import json
-from typing import Optional, Dict, Any, Union, Callable, Awaitable
+from typing import Optional, Dict, Any, Union, Callable, Awaitable, List
 
 # Google Cloud STT imports
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT

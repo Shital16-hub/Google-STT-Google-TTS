@@ -1,14 +1,21 @@
+# index_kb_data.py
 import os
 import asyncio
 import logging
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def populate_knowledge_base():
-    """Populate the knowledge base with documents."""
+async def index_knowledge_base_data():
+    """
+    Index documents from the /workspace/Google-STT-Google-TTS/knowledge_base/data folder to Pinecone.
+    """
     # Import required components
     from llama_index.core import Document, ServiceContext, StorageContext, Settings
     from llama_index.core.indices.vector_store import VectorStoreIndex
@@ -19,7 +26,7 @@ async def populate_knowledge_base():
     
     from pinecone import Pinecone, ServerlessSpec  # Use ServerlessSpec for AWS free tier
     
-    # Make sure API keys are set
+    # Ensure API keys are set
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     pinecone_api_key = os.environ.get("PINECONE_API_KEY")
     
@@ -28,11 +35,20 @@ async def populate_knowledge_base():
     if not pinecone_api_key:
         raise ValueError("PINECONE_API_KEY environment variable not set")
     
+    # Set the specific directory to index
+    knowledge_dir = "/workspace/Google-STT-Google-TTS/knowledge_base/data"
+    
+    # Validate directory exists
+    if not os.path.exists(knowledge_dir):
+        logger.error(f"Directory not found: {knowledge_dir}")
+        raise FileNotFoundError(f"Directory not found: {knowledge_dir}")
+    
     # Initialize Pinecone with v3 API
     pc = Pinecone(api_key=pinecone_api_key)
     
     # Create an index if it doesn't exist
     index_name = "voice-ai-agent"
+    namespace = "voice-assistant"
     
     # List indexes using the new API
     index_names = [index.name for index in pc.list_indexes()]
@@ -52,15 +68,16 @@ async def populate_knowledge_base():
         )
         
         # Wait for index to initialize
+        logger.info("Waiting for index to be ready...")
         while True:
             try:
                 index_info = pc.describe_index(index_name)
                 if hasattr(index_info, 'status') and index_info.status.ready:
                     break
-            except:
-                pass
-            logger.info("Waiting for index to be ready...")
-            await asyncio.sleep(10)
+            except Exception as e:
+                logger.warning(f"Error checking index status: {e}")
+            
+            await asyncio.sleep(5)
     
     # Connect to the Pinecone index with the new API
     pinecone_index = pc.Index(index_name)
@@ -68,7 +85,7 @@ async def populate_knowledge_base():
     # Create vector store
     vector_store = PineconeVectorStore(
         pinecone_index=pinecone_index,
-        namespace="voice-assistant"
+        namespace=namespace
     )
     
     # Create embedding model
@@ -92,30 +109,20 @@ async def populate_knowledge_base():
     pdf_reader = PyMuPDFReader()
     docx_reader = DocxReader()
     
-    # Directory with documents to process
-    knowledge_dir = "./knowledge_base/data"
-    
-    # Create directory if it doesn't exist
-    os.makedirs(knowledge_dir, exist_ok=True)
-    
-    # Make sure we have at least one document
-    sample_doc_path = f"{knowledge_dir}/sample.txt"
-    if not os.path.exists(sample_doc_path) and len(os.listdir(knowledge_dir)) == 0:
-        logger.info("Creating a sample document")
-        with open(sample_doc_path, "w") as f:
-            f.write("This is a sample document for testing the knowledge base. " +
-                   "VoiceAssist is a product that offers multiple pricing plans. " +
-                   "The Basic Plan costs $499/month and includes up to 1,000 conversations per day. " +
-                   "The Professional Plan costs $999/month and includes up to 5,000 conversations per day.")
-    
     # Process documents
     all_docs = []
     
+    # Get list of files in the directory
+    files = list(Path(knowledge_dir).glob("**/*"))
+    logger.info(f"Found {len(files)} files/directories in {knowledge_dir}")
+    
     # Process files in directory
-    for file_path in Path(knowledge_dir).glob("**/*"):
+    for file_path in files:
         if file_path.is_file():
             ext = file_path.suffix.lower()
             try:
+                logger.info(f"Processing file: {file_path}")
+                
                 if ext == ".pdf":
                     docs = pdf_reader.load_data(str(file_path))
                 elif ext == ".docx":
@@ -130,17 +137,24 @@ async def populate_knowledge_base():
                 
                 # Add to all docs
                 all_docs.extend(docs)
-                logger.info(f"Processed {file_path}")
+                logger.info(f"Processed {file_path.name}: Added {len(docs)} document(s)")
                 
             except Exception as e:
                 logger.error(f"Error processing {file_path}: {e}")
                 continue
+    
+    logger.info(f"Total documents collected: {len(all_docs)}")
+    
+    if not all_docs:
+        logger.warning("No documents found to index!")
+        return 0
     
     # Split documents into nodes/chunks
     nodes = node_parser.get_nodes_from_documents(all_docs)
     logger.info(f"Created {len(nodes)} chunks from {len(all_docs)} documents")
     
     # Create vector store index
+    logger.info("Creating vector index in Pinecone...")
     index = VectorStoreIndex(
         nodes,
         storage_context=storage_context,
@@ -150,9 +164,9 @@ async def populate_knowledge_base():
     # Get index stats
     try:
         stats = pinecone_index.describe_index_stats()
-        namespace_stats = stats.get("namespaces", {}).get("voice-assistant", {})
+        namespace_stats = stats.get("namespaces", {}).get(namespace, {})
         doc_count = namespace_stats.get("vector_count", 0)
-        logger.info(f"Successfully indexed {len(nodes)} chunks, total in index: {doc_count}")
+        logger.info(f"Successfully indexed {len(nodes)} chunks, total vectors in index: {doc_count}")
     except Exception as e:
         logger.warning(f"Could not get index stats: {e}")
         logger.info(f"Successfully indexed {len(nodes)} chunks")
@@ -160,4 +174,13 @@ async def populate_knowledge_base():
     return len(nodes)
 
 if __name__ == "__main__":
-    asyncio.run(populate_knowledge_base())
+    print(f"Indexing documents from /workspace/Google-STT-Google-TTS/knowledge_base/data to Pinecone...")
+    
+    try:
+        chunks_indexed = asyncio.run(index_knowledge_base_data())
+        if chunks_indexed > 0:
+            print(f"\n✅ Successfully indexed {chunks_indexed} chunks to Pinecone!")
+        else:
+            print("\n⚠️ No documents were indexed. Check the logs for details.")
+    except Exception as e:
+        print(f"\n❌ Error indexing documents: {e}")

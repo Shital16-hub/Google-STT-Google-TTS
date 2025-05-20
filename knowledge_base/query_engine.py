@@ -6,7 +6,7 @@ import logging
 import asyncio
 from typing import Dict, Any, List, Optional, AsyncIterator, Tuple
 
-from llama_index.core import QueryBundle, VectorStoreIndex
+from llama_index.core import QueryBundle, Settings
 from llama_index.core.schema import NodeWithScore
 from llama_index.core.query_engine import RetrieverQueryEngine
 from llama_index.core.retrievers import VectorIndexRetriever
@@ -108,6 +108,9 @@ class QueryEngine:
                 streaming=self.config.streaming_enabled
             )
             
+            # Set LLM in global settings
+            Settings.llm = self.llm
+            
             # Initialize the retriever
             self.retriever = VectorIndexRetriever(
                 index=self.index_manager.index,
@@ -181,6 +184,24 @@ class QueryEngine:
             logger.error(f"Error retrieving documents: {e}")
             return []
     
+    async def retrieve_with_sources(self, query_text: str) -> Dict[str, Any]:
+        """
+        Retrieve relevant documents with sources for a query.
+        
+        Args:
+            query_text: Query text
+            
+        Returns:
+            Dictionary with retrieval results
+        """
+        results = await self.retrieve(query_text)
+        
+        return {
+            "query": query_text,
+            "results": results,
+            "total": len(results)
+        }
+    
     def format_retrieved_context(self, results: List[Dict[str, Any]]) -> str:
         """
         Format retrieved documents as context string.
@@ -237,9 +258,8 @@ class QueryEngine:
             query_bundle = QueryBundle(query_str=query_text)
             
             # Set system prompt in the query engine
-            # In the new LlamaIndex, we need to customize the query engine's service context
-            # or use a customized response synthesizer
-            # For now, we'll just use the basic query engine
+            # With modern LlamaIndex, system prompts are handled differently
+            # We can either use a custom response synthesizer or just rely on the standard query
             response = self.query_engine.query(query_bundle)
             
             # Format response
