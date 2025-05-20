@@ -199,7 +199,10 @@ class VoiceAIAgentPipeline:
         audio_callback: Callable[[bytes], Awaitable[None]]
     ) -> Dict[str, Any]:
         """
-        Process audio with low-latency streaming response.
+        Process audio with optimized streaming response.
+        
+        Implements progressive response system with immediate feedback
+        and optimized state transitions.
         
         Args:
             audio_data: Audio data as bytes or numpy array
@@ -212,6 +215,7 @@ class VoiceAIAgentPipeline:
         
         # Record start time for tracking
         start_time = time.time()
+        processing_start_time = None
         
         try:
             # Ensure audio is in the right format
@@ -225,82 +229,96 @@ class VoiceAIAgentPipeline:
             if hasattr(self.speech_recognizer, 'set_speaking_state'):
                 self.speech_recognizer.set_speaking_state(False)
             
-            # Process audio in smaller chunks
-            chunk_size = 800  # 100ms chunks for faster response
-            audio_chunks = [audio[i:i+chunk_size] for i in range(0, len(audio), chunk_size)]
+            # Introduce progressive response system
+            is_processing = False
+            has_sent_progress = False
+            progress_messages = [
+                "Let me check that for you...",
+                "Looking that up now...",
+                "Finding that information..."
+            ]
             
             # Collect all transcription results
             transcription_results = []
+            final_response_sent = False
             
             # Define callback for transcription results
             async def collect_transcriptions(result):
+                nonlocal is_processing, has_sent_progress, processing_start_time, final_response_sent
                 transcription_results.append(result)
                 
-                # Process substantial interim results immediately for faster response
-                if not result.is_final and len(result.text.split()) >= 4:
-                    # Generate a quick partial response for substantial interim results
-                    await self._handle_interim_result(result.text, audio_callback)
+                # For substantial interim results, send progress response
+                if not result.is_final and len(result.text.split()) >= 3 and not has_sent_progress and not is_processing:
+                    import random
+                    progress_text = random.choice(progress_messages)
+                    
+                    # Send immediate progress response
+                    progress_audio = await self.tts_integration.synthesize(progress_text)
+                    await audio_callback(progress_audio)
+                    
+                    # Mark progress as sent
+                    has_sent_progress = True
+                    
+                    # Start processing in background
+                    is_processing = True
+                    processing_start_time = time.time()
+                    
+                    # Process in background
+                    asyncio.create_task(self._process_transcription_background(
+                        result.text, audio_callback, partial=True
+                    ))
+                    
+                # For final results, process and respond
+                elif result.is_final and not final_response_sent:
+                    # If we haven't started processing yet, do so now
+                    if not is_processing:
+                        is_processing = True
+                        processing_start_time = time.time()
+                        
+                        # Process the final transcription
+                        await self._process_transcription_background(
+                            result.text, audio_callback, partial=False
+                        )
+                        final_response_sent = True
             
             # Set up streaming session
             await self.stt_helper.start_streaming()
             
-            # Process audio chunks with minimal delay
-            for chunk in audio_chunks:
-                await self.stt_helper.process_stream_chunk(chunk, collect_transcriptions)
-                await asyncio.sleep(0.01)  # Minimal delay to simulate real-time
+            # Process audio in optimized chunks
+            chunk_size = 400  # 50ms chunks for faster response
+            audio_chunks = [audio[i:i+chunk_size] for i in range(0, len(audio), chunk_size)]
+            
+            # Faster initial processing, then slow down for continuous listening
+            for i, chunk in enumerate(audio_chunks):
+                if i < 10:  # First 500ms - process quickly
+                    await self.stt_helper.process_stream_chunk(chunk, collect_transcriptions)
+                    await asyncio.sleep(0.01)
+                else:  # Later chunks - more normal pacing
+                    await self.stt_helper.process_stream_chunk(chunk, collect_transcriptions)
+                    await asyncio.sleep(0.03)
             
             # Stop streaming to get final results
             final_text, duration = await self.stt_helper.end_streaming()
             
-            # Get best transcription
-            if transcription_results:
-                # Prioritize final results
-                final_results = [r for r in transcription_results if r.is_final]
-                if final_results:
-                    best_result = max(final_results, key=lambda r: r.confidence)
-                    transcription = best_result.text
-                else:
-                    # Use longest interim result if no final result
-                    best_result = max(transcription_results, key=lambda r: len(r.text))
-                    transcription = best_result.text
-            else:
-                transcription = final_text
-                
-            # Generate final response for the complete transcription
-            if transcription:
-                try:
-                    # Set speaking state before generating response
-                    if hasattr(self.speech_recognizer, 'set_speaking_state'):
-                        self.speech_recognizer.set_speaking_state(True)
+            # Wait for processing to complete if needed
+            if is_processing and processing_start_time:
+                # Wait up to 5 seconds for processing to complete
+                processing_time = time.time() - processing_start_time
+                if processing_time < 5.0:
+                    await asyncio.sleep(min(5.0 - processing_time, 2.0))
                     
-                    # Generate response through conversation manager
-                    result = await self.conversation_manager.handle_user_input(transcription)
-                    response_text = result.get("response", "")
-                    
-                    if response_text:
-                        # Send audio response
-                        audio_data = await self.tts_integration.synthesize(response_text)
-                        await audio_callback(audio_data)
-                    
-                    # Reset speaking state
-                    if hasattr(self.speech_recognizer, 'set_speaking_state'):
-                        self.speech_recognizer.set_speaking_state(False)
-                        
-                except Exception as e:
-                    logger.error(f"Error generating final response: {e}")
-            
             # Calculate stats
             total_time = time.time() - start_time
             
             return {
-                "transcription": transcription,
                 "transcription_results": len(transcription_results),
                 "final_results": len([r for r in transcription_results if r.is_final]),
                 "interim_results": len([r for r in transcription_results if not r.is_final]),
                 "processing_time": total_time,
+                "progress_response_sent": has_sent_progress,
                 "success": True
             }
-            
+                
         except Exception as e:
             logger.error(f"Error in streaming pipeline: {e}")
             return {
@@ -308,6 +326,144 @@ class VoiceAIAgentPipeline:
                 "processing_time": time.time() - start_time,
                 "success": False
             }
+
+    async def _process_transcription_background(
+        self, 
+        text: str, 
+        audio_callback: Callable[[bytes], Awaitable[None]], 
+        partial: bool = False
+    ) -> None:
+        """
+        Process transcription in background with optimized response generation.
+        
+        Args:
+            text: Transcription text
+            audio_callback: Callback for audio output
+            partial: Whether this is a partial (interim) transcription
+        """
+        try:
+            # Set speaking state during response generation
+            if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                self.speech_recognizer.set_speaking_state(True)
+            
+            # Different processing approaches based on partial flag
+            if partial:
+                # For partial transcriptions, use simplified approach
+                # Just get key information for faster response
+                ctx = None
+                if hasattr(self.conversation_manager, 'memory'):
+                    ctx = self.conversation_manager.memory.get_context(text)
+                
+                # Generate a simple response based on context
+                response_text = None
+                
+                # Try to extract a relevant response from context
+                if ctx:
+                    try:
+                        # Use a simplified query approach
+                        response_text = await self._generate_quick_response(text, ctx)
+                    except Exception as e:
+                        logger.error(f"Error generating quick response: {e}")
+                
+                # Only send audio if we have a good response
+                if response_text:
+                    audio_data = await self.tts_integration.synthesize(response_text)
+                    if audio_data:
+                        # Send in smaller chunks for smoother playback
+                        chunk_size = 320  # 40ms chunks
+                        chunks = [audio_data[i:i+chunk_size] for i in range(0, len(audio_data), chunk_size)]
+                        
+                        # Send a limited number of chunks for partial response
+                        for chunk in chunks[:min(len(chunks), 5)]:
+                            await audio_callback(chunk)
+                            await asyncio.sleep(0.01)
+            else:
+                # For final transcriptions, use full conversation manager
+                result = await self.conversation_manager.handle_user_input(text)
+                response_text = result.get("response", "")
+                
+                if response_text:
+                    # Break into sentences for faster response
+                    import re
+                    sentences = re.split(r'(?<=[.!?])\s+', response_text)
+                    
+                    # Process each sentence
+                    for sentence in sentences:
+                        if not sentence.strip():
+                            continue
+                            
+                        # Synthesize and send each sentence
+                        audio_data = await self.tts_integration.synthesize(sentence)
+                        if audio_data:
+                            await audio_callback(audio_data)
+                else:
+                    # No response generated
+                    fallback = "I'm sorry, I couldn't find an answer to that."
+                    audio_data = await self.tts_integration.synthesize(fallback)
+                    if audio_data:
+                        await audio_callback(audio_data)
+                        
+        except Exception as e:
+            logger.error(f"Error in background processing: {e}")
+            
+            # Send error message
+            try:
+                error_msg = "I'm sorry, I encountered an error processing your request."
+                error_audio = await self.tts_integration.synthesize(error_msg)
+                if error_audio:
+                    await audio_callback(error_audio)
+            except:
+                pass
+                
+        finally:
+            # Reset speaking state
+            if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                self.speech_recognizer.set_speaking_state(False)
+
+    async def _generate_quick_response(self, query: str, context: Optional[str] = None) -> str:
+        """
+        Generate a quick response for interim results.
+        Uses a simplified approach for speed.
+        
+        Args:
+            query: Query text
+            context: Optional context
+            
+        Returns:
+            Quick response text
+        """
+        # Create a simple system prompt for quick responses
+        system_prompt = """You are a helpful voice assistant. Generate a very short (1-2 sentences) 
+        preliminary response to the user's query. Be conversational but brief."""
+        
+        if context:
+            system_prompt += f"\n\nHere's some relevant information:\n{context}"
+        
+        user_prompt = f"Query: {query}\nGenerate a very brief preliminary response (1-2 sentences max):"
+        
+        try:
+            # Use OpenAI directly for speed
+            from openai import OpenAI
+            client = OpenAI(api_key=self.conversation_manager.config.openai_api_key)
+            
+            # Use a faster, smaller model for quick responses
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",  # Use a faster model
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=50,  # Keep it very short
+                temperature=0.7
+            )
+            
+            quick_response = response.choices[0].message.content.strip()
+            return quick_response
+            
+        except Exception as e:
+            logger.error(f"Error generating quick response: {e}")
+            return None
+
     
     async def _handle_interim_result(self, text: str, audio_callback: Callable[[bytes], Awaitable[None]]):
         """Handle substantial interim results for faster responses."""

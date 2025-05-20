@@ -374,7 +374,7 @@ async def cleanup_sessions():
 
 @app.websocket("/ws/stream/{call_sid}")
 async def handle_media_stream(websocket: WebSocket, call_sid: str):
-    """Handle WebSocket media stream with low-latency optimizations."""
+    """Handle WebSocket media stream with optimized binary data transfer."""
     logger.info(f"WebSocket connection request for call {call_sid}")
     
     # Wait for initialization to complete with timeout
@@ -394,7 +394,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
     handler = None
     
     try:
-        # Accept the WebSocket connection
+        # Accept the WebSocket connection with binary mode
         await websocket.accept()
         logger.info(f"WebSocket connection established for call {call_sid}")
         
@@ -407,12 +407,38 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
             call_sessions[call_sid]["status"] = "connected"
             call_sessions[call_sid]["ws_connected_time"] = time.time()
         
-        # Process incoming messages with enhanced error handling
+        # Process incoming messages
         while True:
             try:
-                # Receive message with timeout
+                # Check for both text and binary messages with timeout
+                message_type = "text"
                 try:
-                    message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                    # Wait for either text or binary with timeout
+                    done, pending = await asyncio.wait([
+                        asyncio.create_task(websocket.receive_text()),
+                        asyncio.create_task(websocket.receive_bytes())
+                    ], return_when=asyncio.FIRST_COMPLETED, timeout=30.0)
+                    
+                    # Cancel pending tasks
+                    for task in pending:
+                        task.cancel()
+                    
+                    if not done:
+                        # Timeout occurred
+                        logger.debug("WebSocket receive timeout, checking connection status")
+                        continue
+                    
+                    # Get the result from the completed task
+                    message_task = list(done)[0]
+                    try:
+                        message = message_task.result()
+                        # Determine message type
+                        if isinstance(message, bytes):
+                            message_type = "binary"
+                    except Exception as e:
+                        logger.error(f"Error getting message result: {e}")
+                        continue
+                    
                 except asyncio.TimeoutError:
                     # Check if we should still be connected
                     logger.debug("WebSocket receive timeout, checking connection status")
@@ -423,47 +449,54 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                     continue
                 
                 # Parse and handle message
-                try:
-                    data = json.loads(message)
-                    event_type = data.get('event')
-                    
-                    if event_type == 'connected':
-                        logger.info(f"WebSocket connected for call {call_sid}")
-                        
-                    elif event_type == 'start':
-                        stream_sid = data.get('streamSid')
-                        logger.info(f"Stream started: {stream_sid}")
-                        handler.stream_sid = stream_sid
-                        
-                        # Start the conversation with low-latency welcome
-                        await handler.start_conversation(websocket)
-                        
-                        # Update session
-                        if call_sid in call_sessions:
-                            call_sessions[call_sid]["stream_started"] = True
-                            call_sessions[call_sid]["stream_sid"] = stream_sid
-                        
-                    elif event_type == 'media':
-                        # Handle audio data for low-latency conversation
-                        await handler._handle_audio(data, websocket)
-                        
-                    elif event_type == 'stop':
-                        logger.info(f"Stream stopped for call {call_sid}")
-                        
-                        # Run cleanup
-                        await handler._cleanup()
-                        
-                        # Update session
-                        if call_sid in call_sessions:
-                            call_sessions[call_sid]["stream_stopped"] = True
-                        break
-                        
-                except json.JSONDecodeError as e:
-                    logger.error(f"Invalid JSON received: {message}")
+                if message_type == "binary":
+                    # Handle binary message (client-side optimization)
+                    # For now, we don't expect binary from client, but could implement in future
+                    logger.debug("Received binary message from client")
                     continue
-                except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-                    continue
+                else:
+                    # Handle text message (standard Twilio format)
+                    try:
+                        data = json.loads(message)
+                        event_type = data.get('event')
+                        
+                        if event_type == 'connected':
+                            logger.info(f"WebSocket connected for call {call_sid}")
+                            
+                        elif event_type == 'start':
+                            stream_sid = data.get('streamSid')
+                            logger.info(f"Stream started: {stream_sid}")
+                            handler.stream_sid = stream_sid
+                            
+                            # Start the conversation with optimized welcome
+                            await handler.start_conversation(websocket)
+                            
+                            # Update session
+                            if call_sid in call_sessions:
+                                call_sessions[call_sid]["stream_started"] = True
+                                call_sessions[call_sid]["stream_sid"] = stream_sid
+                            
+                        elif event_type == 'media':
+                            # Handle audio data with optimized processing
+                            await handler._handle_audio(data, websocket)
+                            
+                        elif event_type == 'stop':
+                            logger.info(f"Stream stopped for call {call_sid}")
+                            
+                            # Run cleanup
+                            await handler._cleanup()
+                            
+                            # Update session
+                            if call_sid in call_sessions:
+                                call_sessions[call_sid]["stream_stopped"] = True
+                            break
+                            
+                    except json.JSONDecodeError:
+                        logger.error(f"Invalid JSON received")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+                        continue
                 
             except WebSocketDisconnect:
                 logger.info(f"WebSocket connection closed for call {call_sid}")
