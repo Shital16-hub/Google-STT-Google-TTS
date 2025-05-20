@@ -1,5 +1,7 @@
+# voice_ai_agent.py
+
 """
-Voice AI Agent main class updated to use latest LlamaIndex with OpenAI and Pinecone.
+Voice AI Agent main class updated with low-latency optimizations.
 """
 import os
 import logging
@@ -8,23 +10,23 @@ import time
 import json
 from typing import Optional, Dict, Any, Union, Callable, Awaitable, List
 
-# Google Cloud STT imports
+# Import our optimized STT implementation
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT
 from speech_to_text.stt_integration import STTIntegration
 
-# Updated knowledge base imports
+# Knowledge base imports
 from knowledge_base.conversation_manager import ConversationManager
 from knowledge_base.query_engine import QueryEngine
 from knowledge_base.index_manager import IndexManager
 from knowledge_base.rag_config import rag_config
 
-# Google Cloud TTS imports
+# Google Cloud TTS import
 from text_to_speech.google_cloud_tts import GoogleCloudTTS
 
 logger = logging.getLogger(__name__)
 
 class VoiceAIAgent:
-    """Main Voice AI Agent class using latest LlamaIndex with OpenAI and Pinecone."""
+    """Voice AI Agent optimized for low-latency voice interactions."""
     
     def __init__(
         self,
@@ -37,7 +39,7 @@ class VoiceAIAgent:
         **kwargs
     ):
         """
-        Initialize the Voice AI Agent with latest LlamaIndex.
+        Initialize the Voice AI Agent with low-latency optimizations.
         
         Args:
             storage_dir: Directory for local storage
@@ -128,25 +130,25 @@ class VoiceAIAgent:
         self.conversation_manager = None
         self.tts_client = None
         
-        logger.info("VoiceAIAgent initialized with configuration for latest LlamaIndex")
+        logger.info("VoiceAIAgent initialized with low-latency optimizations")
         
     async def init(self):
-        """Initialize all components with latest LlamaIndex."""
+        """Initialize all components with low-latency optimizations."""
         logger.info("Initializing Voice AI Agent components...")
         
-        # Initialize speech recognizer with Google Cloud v2 and explicit credentials
+        # Initialize speech recognizer with optimized settings
         self.speech_recognizer = GoogleCloudStreamingSTT(
             language=self.stt_language,
-            sample_rate=8000,  # Match Twilio exactly
-            encoding="MULAW",  # Match Twilio exactly
+            sample_rate=8000,
+            encoding="MULAW",
             channels=1,
-            interim_results=False,  # Only final results for better accuracy
+            interim_results=True,  # Enable interim results for early processing
             project_id=self.project_id,
             location="global",
-            credentials_file=self.credentials_file  # Pass credentials file explicitly
+            credentials_file=self.credentials_file
         )
         
-        # Initialize STT integration with zero preprocessing
+        # Initialize STT integration with optimized settings
         self.stt_integration = STTIntegration(
             speech_recognizer=self.speech_recognizer,
             language=self.stt_language
@@ -172,18 +174,17 @@ class VoiceAIAgent:
         )
         await self.conversation_manager.init()
         
-        # Initialize Google Cloud TTS with telephony optimization and explicit credentials
+        # Initialize Google Cloud TTS with telephony optimization
         try:
-            # Initialize with telephony-optimized settings and explicit credentials
             self.tts_client = GoogleCloudTTS(
-                credentials_file=self.credentials_file,  # Pass credentials file explicitly
+                credentials_file=self.credentials_file,
                 voice_name=self.tts_voice_name,
                 voice_gender=self.tts_voice_gender if not "Neural2" in self.tts_voice_name else None,
                 language_code=self.tts_language_code,
-                container_format="mulaw",  # For Twilio compatibility
-                sample_rate=8000,  # For Twilio compatibility
+                container_format="mulaw",
+                sample_rate=8000,
                 enable_caching=True,
-                voice_type="NEURAL2"  # Use Neural2 for best quality
+                voice_type="NEURAL2"
             )
             
             logger.info(f"Initialized Google Cloud TTS with voice: {self.tts_voice_name}")
@@ -193,7 +194,7 @@ class VoiceAIAgent:
         
         # Mark as initialized
         self._initialized = True
-        logger.info("Voice AI Agent initialization complete with latest LlamaIndex")
+        logger.info("Voice AI Agent initialization complete with low-latency optimizations")
         
     async def process_audio(
         self,
@@ -201,26 +202,39 @@ class VoiceAIAgent:
         callback: Optional[Callable[[Any], Awaitable[None]]] = None
     ) -> Dict[str, Any]:
         """
-        Process audio data with streaming response.
+        Process audio data with low-latency optimizations.
         """
         if not self.initialized:
             raise RuntimeError("Voice AI Agent not initialized")
         
-        # Pass audio directly to STT with no modifications
+        # Reset speaking state for optimal processing
+        if hasattr(self.speech_recognizer, 'set_speaking_state'):
+            self.speech_recognizer.set_speaking_state(False)
+        
+        # Pass audio directly to STT with minimal overhead
         result = await self.stt_integration.transcribe_audio_data(audio_data, callback=callback)
         
-        # Only process valid transcriptions
+        # Process valid transcriptions
         if result.get("is_valid", False) and result.get("transcription"):
             transcription = result["transcription"]
             logger.info(f"Valid transcription: {transcription}")
             
+            # Set speaking state during response generation
+            if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                self.speech_recognizer.set_speaking_state(True)
+            
             # Process through conversation manager
             response = await self.conversation_manager.handle_user_input(transcription)
             
-            # Generate speech using Google Cloud TTS
+            # Generate speech
             if response and response.get("response"):
                 try:
                     speech_audio = await self.tts_client.synthesize(response["response"])
+                    
+                    # Reset speaking state after response generation
+                    if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                        self.speech_recognizer.set_speaking_state(False)
+                    
                     return {
                         "transcription": transcription,
                         "response": response.get("response", ""),
@@ -230,7 +244,12 @@ class VoiceAIAgent:
                         "sources": response.get("sources", [])
                     }
                 except Exception as e:
-                    logger.error(f"Error synthesizing speech with Google Cloud TTS: {e}")
+                    logger.error(f"Error synthesizing speech: {e}")
+                    
+                    # Reset speaking state in case of error
+                    if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                        self.speech_recognizer.set_speaking_state(False)
+                        
                     return {
                         "transcription": transcription,
                         "response": response.get("response", ""),
@@ -238,6 +257,10 @@ class VoiceAIAgent:
                         "status": "tts_error"
                     }
             else:
+                # Reset speaking state if no response
+                if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                    self.speech_recognizer.set_speaking_state(False)
+                    
                 return {
                     "transcription": transcription,
                     "response": response.get("response", ""),
@@ -257,12 +280,12 @@ class VoiceAIAgent:
         audio_callback: Callable[[bytes], Awaitable[None]]
     ) -> Dict[str, Any]:
         """
-        Process audio with streaming response.
+        Process audio with optimized streaming response.
         """
         if not self.initialized:
             raise RuntimeError("Voice AI Agent not initialized")
         
-        # Process with the pipeline directly
+        # Create optimized pipeline on demand if not already available
         from integration.pipeline import VoiceAIAgentPipeline
         
         pipeline = VoiceAIAgentPipeline(
@@ -284,8 +307,11 @@ class VoiceAIAgent:
         logger.info("Shutting down Voice AI Agent...")
         
         # Close Google Cloud streaming session if active
-        if self.speech_recognizer and hasattr(self.speech_recognizer, 'is_streaming') and self.speech_recognizer.is_streaming:
-            await self.speech_recognizer.stop_streaming()
+        if self.speech_recognizer:
+            if hasattr(self.speech_recognizer, 'cleanup'):
+                await self.speech_recognizer.cleanup()
+            elif hasattr(self.speech_recognizer, 'stop_streaming'):
+                await self.speech_recognizer.stop_streaming()
         
         # Reset conversation if active
         if self.conversation_manager:

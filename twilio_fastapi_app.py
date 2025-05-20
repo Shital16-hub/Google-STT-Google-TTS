@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
+# twilio_fastapi_app.py
+
 """
-Updated Twilio application with FastAPI for improved performance.
-Handles proper STT session management and WebSocket lifecycle.
+Updated FastAPI application with optimized STT and speaking state management
+for low-latency voice interactions.
 """
 import os
-import sys
 import asyncio
 import logging
 import json
@@ -21,10 +21,10 @@ import uvicorn
 from pydantic import BaseModel
 
 # Twilio imports
-from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Say, Pause
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 from dotenv import load_dotenv
 
-# Import fixed handler
+# Import our optimized components
 from telephony.simple_websocket_handler import SimpleWebSocketHandler
 from telephony.config import HOST, PORT, DEBUG
 from voice_ai_agent import VoiceAIAgent
@@ -34,10 +34,10 @@ from integration.tts_integration import TTSIntegration
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with timestamp and thread ID for better debugging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(threadName)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -70,10 +70,10 @@ class TwilioIncomingCallModel(BaseModel):
     CallSid: str
 
 async def initialize_system():
-    """Initialize the Voice AI system with optimized conversation settings."""
+    """Initialize the Voice AI system with optimized settings for low latency."""
     global voice_ai_pipeline, base_url
     
-    logger.info("Initializing Voice AI Agent for continuous conversation...")
+    logger.info("Initializing Voice AI Agent with low-latency optimizations...")
     
     # Validate required environment variables
     base_url = os.getenv('BASE_URL')
@@ -89,26 +89,26 @@ async def initialize_system():
     
     logger.info(f"Using BASE_URL: {base_url}")
     
-    # Initialize Voice AI Agent with conversation-optimized settings
+    # Initialize Voice AI Agent with low-latency optimizations
     agent = VoiceAIAgent(
         storage_dir='./storage',
         model_name='gpt-3.5-turbo',
         llm_temperature=0.7,
-        credentials_file=google_creds  # Pass credentials explicitly
+        credentials_file=google_creds
     )
     await agent.init()
     
-    # Initialize TTS with fixed configuration
+    # Initialize TTS
     tts = TTSIntegration(
         voice_name="en-US-Neural2-C",
-        voice_gender=None,  # Don't set gender for Neural2 voices
+        voice_gender=None,
         language_code="en-US",
         enable_caching=True,
         credentials_file=google_creds
     )
     await tts.init()
     
-    # Create pipeline optimized for continuous conversation
+    # Create optimized pipeline
     voice_ai_pipeline = VoiceAIAgentPipeline(
         speech_recognizer=agent.speech_recognizer,
         conversation_manager=agent.conversation_manager,
@@ -116,9 +116,11 @@ async def initialize_system():
         tts_integration=tts
     )
     
-    logger.info("System initialized successfully for continuous conversation")
+    logger.info("System initialized with low-latency optimizations")
     # Set the initialization event
     initialization_complete.set()
+
+# twilio_fastapi_app.py (continued)
 
 async def shutdown_cleanup():
     """Clean up resources on shutdown."""
@@ -159,8 +161,8 @@ async def lifespan(app: FastAPI):
 # FastAPI app setup with lifespan
 app = FastAPI(
     title="Voice AI Agent API",
-    description="Voice AI Agent with continuous conversation support for Twilio",
-    version="2.2.0",
+    description="Voice AI Agent with low-latency optimizations",
+    version="3.0.0",
     lifespan=lifespan
 )
 
@@ -178,8 +180,8 @@ async def index():
     """Health check endpoint."""
     return {
         "status": "running",
-        "message": "Voice AI Agent running with continuous conversation support",
-        "version": "2.2.0",
+        "message": "Voice AI Agent running with low-latency optimizations",
+        "version": "3.0.0",
         "active_calls": len(active_calls),
         "initialized": initialization_complete.is_set()
     }
@@ -219,7 +221,7 @@ async def health_check():
 
 @app.post("/voice/incoming")
 async def handle_incoming_call(request: Request):
-    """Handle incoming voice calls with optimized TwiML for continuous conversation."""
+    """Handle incoming voice calls with optimized TwiML for low-latency."""
     logger.info("Received incoming call request")
     
     # Wait for initialization to complete with timeout
@@ -286,7 +288,7 @@ async def handle_incoming_call(request: Request):
         connect.append(stream)
         response.append(connect)
         
-        logger.info(f"Generated TwiML for continuous conversation - Call {call_sid}")
+        logger.info(f"Generated TwiML for low-latency conversation - Call {call_sid}")
         return HTMLResponse(
             content=str(response),
             media_type="text/xml"
@@ -372,7 +374,7 @@ async def cleanup_sessions():
 
 @app.websocket("/ws/stream/{call_sid}")
 async def handle_media_stream(websocket: WebSocket, call_sid: str):
-    """Handle WebSocket media stream with continuous conversation support."""
+    """Handle WebSocket media stream with low-latency optimizations."""
     logger.info(f"WebSocket connection request for call {call_sid}")
     
     # Wait for initialization to complete with timeout
@@ -396,7 +398,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
         await websocket.accept()
         logger.info(f"WebSocket connection established for call {call_sid}")
         
-        # Create handler optimized for continuous conversation
+        # Create handler optimized for low-latency conversation
         handler = SimpleWebSocketHandler(call_sid, voice_ai_pipeline)
         active_calls[call_sid] = handler
         
@@ -405,11 +407,10 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
             call_sessions[call_sid]["status"] = "connected"
             call_sessions[call_sid]["ws_connected_time"] = time.time()
         
-        # Process incoming messages
+        # Process incoming messages with enhanced error handling
         while True:
             try:
-                # Receive message with timeout (implementing timeout in FastAPI websockets)
-                # We'll use a task with timeout
+                # Receive message with timeout
                 try:
                     message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
                 except asyncio.TimeoutError:
@@ -434,7 +435,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                         logger.info(f"Stream started: {stream_sid}")
                         handler.stream_sid = stream_sid
                         
-                        # Start the conversation properly
+                        # Start the conversation with low-latency welcome
                         await handler.start_conversation(websocket)
                         
                         # Update session
@@ -443,7 +444,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                             call_sessions[call_sid]["stream_sid"] = stream_sid
                         
                     elif event_type == 'media':
-                        # Handle audio data for continuous conversation
+                        # Handle audio data for low-latency conversation
                         await handler._handle_audio(data, websocket)
                         
                     elif event_type == 'stop':
@@ -498,7 +499,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
 
 @app.get("/stats")
 async def get_stats():
-    """Get comprehensive statistics including conversation metrics."""
+    """Get comprehensive statistics including latency metrics."""
     stats = {
         "timestamp": time.time(),
         "system": {
@@ -549,10 +550,10 @@ async def get_config():
         "base_url": base_url,
         "google_credentials": os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
         "google_project": os.getenv('GOOGLE_CLOUD_PROJECT'),
-        "conversation_features": {
-            "continuous_streaming": True,
-            "session_management": True,
-            "auto_reconnection": True
+        "optimizations": {
+            "low_latency_stt": True, 
+            "speaking_state_management": True,
+            "early_result_processing": True
         }
     }
     return config
@@ -574,7 +575,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
     )
 
 if __name__ == '__main__':
-    print("Starting Voice AI Agent with FastAPI and continuous conversation support...")
+    print("Starting Voice AI Agent with low-latency optimizations...")
     print(f"Base URL: {os.getenv('BASE_URL', 'Not set')}")
     print(f"Google Credentials: {os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'Not set')}")
     
