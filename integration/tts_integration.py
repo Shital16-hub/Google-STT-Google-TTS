@@ -1,7 +1,7 @@
 # integration/tts_integration.py
 
 """
-Updated TTS integration using Google Cloud TTS with low-latency optimizations.
+Optimized TTS integration using Google Cloud TTS with low-latency optimizations.
 """
 import logging
 import asyncio
@@ -28,7 +28,8 @@ class TTSIntegration:
         language_code: Optional[str] = "en-US",
         enable_caching: bool = True,
         credentials_file: Optional[str] = None,
-        voice_type: str = "NEURAL2"
+        voice_type: str = "NEURAL2",
+        container_format: Optional[str] = "mulaw"
     ):
         """
         Initialize the TTS integration with optimized settings.
@@ -40,6 +41,7 @@ class TTSIntegration:
             enable_caching: Whether to enable TTS caching
             credentials_file: Path to Google Cloud credentials file
             voice_type: Voice type (NEURAL2, STANDARD, etc.)
+            container_format: Audio container format (mulaw, linear16, mp3)
         """
         # Set default voice name if not provided
         if not voice_name:
@@ -55,6 +57,7 @@ class TTSIntegration:
         self.enable_caching = enable_caching
         self.credentials_file = credentials_file
         self.voice_type = voice_type
+        self.container_format = container_format or "mulaw"
         self.tts_client = None
         self.initialized = False
         
@@ -80,17 +83,30 @@ class TTSIntegration:
         try:
             # Initialize Google Cloud TTS client with proper credentials
             if self.credentials_file and os.path.exists(self.credentials_file):
+                # Use service account credentials
                 credentials = service_account.Credentials.from_service_account_file(
                     self.credentials_file
                 )
                 self.tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
+                logger.info(f"Initialized TTS client with credentials from {self.credentials_file}")
             else:
+                # Use default credentials (ADC)
                 self.tts_client = texttospeech.TextToSpeechClient()
+                logger.info("Initialized TTS client with default credentials")
             
             # Create audio config optimized for telephony
+            if self.container_format == "mulaw":
+                audio_encoding = texttospeech.AudioEncoding.MULAW
+            elif self.container_format == "linear16":
+                audio_encoding = texttospeech.AudioEncoding.LINEAR16
+            elif self.container_format == "mp3":
+                audio_encoding = texttospeech.AudioEncoding.MP3
+            else:
+                audio_encoding = texttospeech.AudioEncoding.MULAW  # Default for telephony
+            
             self.audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MULAW,
-                sample_rate_hertz=8000,
+                audio_encoding=audio_encoding,
+                sample_rate_hertz=8000,  # 8kHz for telephony
                 effects_profile_id=["telephony-class-application"]
             )
             
@@ -128,7 +144,10 @@ class TTSIntegration:
             "I'm sorry, could you repeat that?",
             "Thank you for your question.",
             "Let me think about that.",
-            "Is there anything else you'd like to know?"
+            "Is there anything else you'd like to know?",
+            "Let me check that for you.",
+            "Looking that up now.",
+            "Let me find that information."
         ]
         
         for phrase in common_phrases:
@@ -150,6 +169,10 @@ class TTSIntegration:
         Returns:
             Audio data as bytes
         """
+        if not text:
+            logger.warning("Empty text provided to synthesize")
+            return b''
+        
         if not self.initialized:
             await self.init()
         
@@ -177,10 +200,14 @@ class TTSIntegration:
             synthesis_input = texttospeech.SynthesisInput(text=text)
             
             # Generate speech
-            response = self.tts_client.synthesize_speech(
-                input=synthesis_input,
-                voice=self.voice_params,
-                audio_config=self.audio_config
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, 
+                lambda: self.tts_client.synthesize_speech(
+                    input=synthesis_input,
+                    voice=self.voice_params,
+                    audio_config=self.audio_config
+                )
             )
             
             audio_content = response.audio_content

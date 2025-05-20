@@ -83,8 +83,6 @@ class SimpleWebSocketHandler:
                 voice_name="en-US-Neural2-C",
                 voice_gender=None,
                 language_code="en-US",
-                container_format="mulaw",
-                sample_rate=8000,
                 enable_caching=True,
                 voice_type="NEURAL2"
             )
@@ -165,8 +163,27 @@ class SimpleWebSocketHandler:
         logger.warning("Using fallback project ID - this should be configured properly")
         return "my-tts-project-458404"
     
+    def _reinitialize_stt(self):
+        """Re-initialize STT components if needed."""
+        credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        self.speech_recognizer = GoogleCloudStreamingSTT(
+            language="en-US",
+            sample_rate=8000,
+            encoding="MULAW",
+            channels=1,
+            interim_results=True,
+            project_id=self.project_id,
+            location="global",
+            credentials_file=credentials_file
+        )
+        self.stt_integration = STTIntegration(
+            speech_recognizer=self.speech_recognizer,
+            language="en-US"
+        )
+        logger.info("Re-initialized STT components")
+    
     async def _handle_audio(self, data: Dict[str, Any], ws: WebSocket):
-        """Handle audio with optimized state management."""
+        """Handle audio with improved error handling and state management."""
         # Skip audio processing if call has ended
         if self.call_ended:
             return
@@ -186,7 +203,11 @@ class SimpleWebSocketHandler:
             audio_data = base64.b64decode(payload)
             self.audio_received += 1
             self.last_audio_time = time.time()
-            logger.debug(f"Received audio chunk: {len(audio_data)} bytes")
+            
+            # Only log occasional chunks to reduce log noise
+            if self.audio_received % 200 == 0:
+                logger.debug(f"Received audio chunk: {len(audio_data)} bytes")
+                
         except Exception as e:
             logger.error(f"Error decoding audio: {e}")
             return
@@ -197,24 +218,38 @@ class SimpleWebSocketHandler:
         
         # Process audio directly through STT with early response processing
         try:
-            # Log every 50th audio chunk for debugging
-            if self.audio_received % 50 == 0:
+            # Log every 500th audio chunk for debugging
+            if self.audio_received % 500 == 0:
                 logger.info(f"Processing audio chunk #{self.audio_received}, size: {len(audio_data)} bytes")
                 
             # Ensure STT integration exists
             if not self.stt_integration:
                 logger.error("STT integration not available")
+                self._reinitialize_stt()
                 return
                 
-            await self.stt_integration.process_stream_chunk(
-                audio_data, 
-                callback=self._handle_transcription_result
-            )
+            # Use a longer timeout for STT processing
+            try:
+                result = await asyncio.wait_for(
+                    self.stt_integration.process_stream_chunk(
+                        audio_data, 
+                        callback=self._handle_transcription_result
+                    ),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("STT processing timed out, continuing")
+                
         except Exception as e:
             logger.error(f"Error processing audio chunk: {e}")
+            # Try to recover by restarting the STT stream
+            try:
+                await self.stt_integration.start_streaming()
+            except Exception as recovery_error:
+                logger.error(f"Error recovering STT stream: {recovery_error}")
     
     async def _handle_transcription_result(self, result: StreamingTranscriptionResult):
-        """Process transcription with progressive response capability."""
+        """Process transcription with progressive response capability and better debug logging."""
         transcription = result.text.strip()
         confidence = result.confidence
         
@@ -223,6 +258,10 @@ class SimpleWebSocketHandler:
             self.interim_transcriptions += 1
             self.last_interim_time = time.time()
             self.interim_text = transcription
+            
+            # Add more debug logging to trace what's happening
+            if len(transcription) >= 2:
+                logger.debug(f"Interim result: '{transcription}' (confidence: {confidence:.2f})")
             
             # Process substantial interim results for faster response
             if len(transcription.split()) >= 3 and time.time() - self.last_progress_time > 2.0:
@@ -290,7 +329,7 @@ class SimpleWebSocketHandler:
             logger.error(f"Error sending progress response: {e}")
     
     async def _process_transcription(self, transcription: str, is_final: bool = True):
-        """Process transcription with optimized flow."""
+        """Process transcription with improved error handling and retry logic."""
         # Skip if we're speaking to prevent processing during our own speech
         if self.is_speaking:
             return
@@ -300,85 +339,99 @@ class SimpleWebSocketHandler:
             self.is_processing = True
             self.current_query_start_time = time.time()
         
-        try:
-            # Process through knowledge base
-            if hasattr(self.pipeline, 'query_engine') and self.pipeline.query_engine:
-                # Set speaking state to true while generating response
-                self.is_speaking = True
-                if hasattr(self.stt_integration, 'set_speaking_state'):
-                    self.stt_integration.set_speaking_state(True)
-                
-                if is_final:
-                    # For final results, use full query
-                    result = await self.pipeline.query_engine.query(transcription)
-                    response_text = result.get("response", "")
+        # Set a maximum number of retries
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Process through knowledge base
+                if hasattr(self.pipeline, 'query_engine') and self.pipeline.query_engine:
+                    # Set speaking state to true while generating response
+                    self.is_speaking = True
+                    if hasattr(self.stt_integration, 'set_speaking_state'):
+                        self.stt_integration.set_speaking_state(True)
                     
-                    # Calculate and log processing time
-                    if self.current_query_start_time > 0:
-                        processing_time = time.time() - self.current_query_start_time
-                        self.processing_times.append(processing_time)
-                        logger.info(f"Query processed in {processing_time:.2f}s: '{transcription}'")
+                    if is_final:
+                        # For final results, use full query
+                        result = await self.pipeline.query_engine.query(transcription)
+                        response_text = result.get("response", "")
                         
-                else:
-                    # For interim results, use simplified query for speed
-                    # This will be a simpler query to get faster responses
-                    try:
-                        # Try a more direct method for faster response
-                        context = await self.pipeline.query_engine.retrieve(transcription)
-                        
-                        # If we have context, generate a very short initial response
-                        if context and len(context) > 0:
-                            # Extract a quick response based on first document
-                            first_doc = context[0]
-                            quick_text = first_doc.get('text', '')[:100]
+                        # Calculate and log processing time
+                        if self.current_query_start_time > 0:
+                            processing_time = time.time() - self.current_query_start_time
+                            self.processing_times.append(processing_time)
+                            logger.info(f"Query processed in {processing_time:.2f}s: '{transcription}'")
                             
-                            # Prepare a shortened response
-                            response_text = f"I found information about {transcription.split()[-1]}. "
+                    else:
+                        # For interim results, use simplified query for speed
+                        # This will be a simpler query to get faster responses
+                        try:
+                            # Try a more direct method for faster response
+                            context = await self.pipeline.query_engine.retrieve(transcription)
                             
-                            # Don't respond yet for interim unless we have good content
-                            if len(quick_text) < 20:
+                            # If we have context, generate a very short initial response
+                            if context and len(context) > 0:
+                                # Extract a quick response based on first document
+                                first_doc = context[0]
+                                quick_text = first_doc.get('text', '')[:100]
+                                
+                                # Prepare a shortened response
+                                response_text = f"I found information about {transcription.split()[-1]}. "
+                                
+                                # Don't respond yet for interim unless we have good content
+                                if len(quick_text) < 20:
+                                    return
+                            else:
+                                # No good context, don't respond yet
                                 return
-                        else:
-                            # No good context, don't respond yet
+                                
+                        except Exception as e:
+                            logger.error(f"Error in interim query: {e}")
                             return
-                            
-                    except Exception as e:
-                        logger.error(f"Error in interim query: {e}")
-                        return
+                    
+                    # Send response if we have one
+                    if response_text:
+                        await self._send_response(response_text)
+                        # Success! Break the retry loop
+                        break
+                    elif is_final:
+                        # Only for final results with no response
+                        logger.warning("No response generated from knowledge base")
+                        await self._send_response("I'm sorry, I couldn't find an answer to that question.")
+                        # Still counts as success
+                        break
+                    
+                else:
+                    logger.error("Pipeline or query engine not available")
+                    if is_final:
+                        await self._send_response("I'm sorry, there's an issue with my knowledge base.")
+                    # Error with pipeline - increment retry count
+                    retry_count += 1
+                    await asyncio.sleep(0.2 * retry_count)
+                    
+            except Exception as e:
+                logger.error(f"Error processing transcription: {e}", exc_info=True)
+                retry_count += 1
                 
-                # Send response if we have one
-                if response_text:
-                    await self._send_response(response_text)
-                elif is_final:
-                    # Only for final results with no response
-                    logger.warning("No response generated from knowledge base")
-                    await self._send_response("I'm sorry, I couldn't find an answer to that question.")
+                if retry_count >= max_retries and is_final:
+                    # Send error message on final retry
+                    await self._send_response("I'm sorry, I encountered an error processing your request.")
                 
-                # Reset processing and speaking states
+                # Wait before retrying
+                await asyncio.sleep(0.2 * retry_count)
+                continue
+            
+            finally:
+                # Always reset state even if there was an error
                 self.is_processing = False
                 self.current_query_start_time = 0
                 self.is_speaking = False
                 if hasattr(self.stt_integration, 'set_speaking_state'):
                     self.stt_integration.set_speaking_state(False)
-                    
-            else:
-                logger.error("Pipeline or query engine not available")
-                if is_final:
-                    await self._send_response("I'm sorry, there's an issue with my knowledge base.")
-                
-        except Exception as e:
-            logger.error(f"Error processing transcription: {e}", exc_info=True)
-            if is_final:
-                await self._send_response("I'm sorry, I encountered an error processing your request.")
-            
-            # Reset state in case of error
-            self.is_processing = False
-            self.is_speaking = False
-            if hasattr(self.stt_integration, 'set_speaking_state'):
-                self.stt_integration.set_speaking_state(False)
     
     async def _send_response(self, text: str, ws=None):
-        """Send TTS response with optimized streaming."""
+        """Send TTS response with improved error handling and state management."""
         if not text.strip() or self.call_ended:
             return
         
@@ -399,6 +452,12 @@ class SimpleWebSocketHandler:
             self.last_response_text = text
             
             logger.info(f"Sending response: '{text}'")
+            
+            # Verify stream_sid is set before trying to send audio
+            if not self.stream_sid:
+                logger.warning("Cannot send audio: missing stream_sid")
+                # Wait a bit and try to continue
+                await asyncio.sleep(0.1)
             
             # Optimal response strategy based on text length
             if len(text) > 100:
@@ -486,15 +545,25 @@ class SimpleWebSocketHandler:
             logger.error(f"Error sending audio chunk: {e}")
     
     async def start_conversation(self, ws):
-        """Start conversation with optimized welcome message."""
+        """Start conversation with proper initialization."""
         # Store WebSocket reference
         self._ws = ws
         
         # Log WebSocket type
         logger.info(f"WebSocket type: {type(ws).__name__}")
         
-        # Start STT streaming
-        if hasattr(self.stt_integration, 'start_streaming'):
+        # Initialize STT streaming - ENSURE this is ALWAYS initialized
+        if self.stt_integration:
+            try:
+                await self.stt_integration.start_streaming()
+            except Exception as e:
+                logger.error(f"Error starting STT streaming: {e}")
+                # Create a new STT integration if start failed
+                self._reinitialize_stt()
+                await self.stt_integration.start_streaming()
+        else:
+            # Create STT components if missing
+            self._reinitialize_stt()
             await self.stt_integration.start_streaming()
         
         # Send welcome message with minimal delay

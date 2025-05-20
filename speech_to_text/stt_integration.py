@@ -126,6 +126,9 @@ class STTIntegration:
                 if callback:
                     await callback(result)
             
+            # Make sure STT is streaming
+            await self.speech_recognizer.start_streaming()
+            
             # Process the audio directly
             result = await self.speech_recognizer.process_audio_chunk(audio_data, store_result)
             

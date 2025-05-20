@@ -31,6 +31,7 @@ from telephony.config import HOST, PORT, DEBUG
 from voice_ai_agent import VoiceAIAgent
 from integration.pipeline import VoiceAIAgentPipeline
 from integration.tts_integration import TTSIntegration
+from speech_to_text.stt_integration import STTIntegration
 
 # Load environment variables
 load_dotenv()
@@ -121,8 +122,6 @@ async def initialize_system():
     # Set the initialization event
     initialization_complete.set()
 
-# twilio_fastapi_app.py (continued)
-
 async def shutdown_cleanup():
     """Clean up resources on shutdown."""
     logger.info("Shutting down Voice AI Agent API")
@@ -152,8 +151,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error during startup: {e}", exc_info=True)
         # Don't raise here to let the server start anyway
         # The health endpoint will report the initialization status
-    
-    # Yield control back to FastAPI
+        # Yield control back to FastAPI
     yield
     
     # Shutdown: Clean up resources
@@ -347,10 +345,26 @@ async def handle_status_callback(request: Request, background_tasks: BackgroundT
     return Response(status_code=204)
 
 async def cleanup_call(call_sid: str, handler):
-    """Clean up call resources."""
+    """Clean up call resources with better error handling."""
     try:
-        # Trigger cleanup with session preservation logic
-        await handler._cleanup()
+        # Trigger cleanup with proper error handling
+        if handler:
+            await handler._cleanup()
+            
+            # Explicitly clean up speech recognizer
+            if hasattr(handler, 'speech_recognizer') and handler.speech_recognizer:
+                try:
+                    if hasattr(handler.speech_recognizer, 'cleanup'):
+                        await handler.speech_recognizer.cleanup()
+                    elif hasattr(handler.speech_recognizer, 'stop_streaming'):
+                        await handler.speech_recognizer.stop_streaming()
+                except:
+                    # Create a new one for the next call
+                    handler.speech_recognizer = None
+                    
+            # Ensure stt_integration is also cleaned
+            if hasattr(handler, 'stt_integration') and handler.stt_integration:
+                handler.stt_integration = None
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
     
@@ -375,9 +389,8 @@ async def cleanup_sessions():
 
 @app.websocket("/ws/stream/{call_sid}")
 async def handle_media_stream(websocket: WebSocket, call_sid: str):
-    """Handle WebSocket media stream with optimized binary data transfer."""
+    """Handle WebSocket media stream with improved error handling."""
     logger.info(f"Starting WebSocket handler for call {call_sid} with pipeline: {voice_ai_pipeline is not None}")
-    logger.info(f"WebSocket connection request for call {call_sid}")
     
     # Wait for initialization to complete with timeout
     try:
@@ -409,11 +422,15 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
             call_sessions[call_sid]["status"] = "connected"
             call_sessions[call_sid]["ws_connected_time"] = time.time()
         
-        # Process incoming messages
+        # Create a task for starting the conversation - this adds resilience
+        # if the welcome message fails
+        conversation_task = asyncio.create_task(handler.start_conversation(websocket))
+        
+        # Process incoming messages with improved error handling
         while True:
             try:
-                # Use receive() which handles both text and binary messages
-                message = await asyncio.wait_for(websocket.receive(), timeout=30.0)
+                # Use receive() with a shorter timeout
+                message = await asyncio.wait_for(websocket.receive(), timeout=10.0)
                 
                 if "text" in message:
                     # Handle text message
@@ -429,8 +446,13 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                             logger.info(f"Stream started: {stream_sid}")
                             handler.stream_sid = stream_sid
                             
-                            # Start the conversation with optimized welcome
-                            await handler.start_conversation(websocket)
+                            # If the conversation task is still running, let it complete
+                            if not conversation_task.done():
+                                try:
+                                    # Add a timeout to prevent blocking
+                                    await asyncio.wait_for(conversation_task, timeout=2.0)
+                                except asyncio.TimeoutError:
+                                    logger.warning("Conversation start task timed out, proceeding anyway")
                             
                             # Update session
                             if call_sid in call_sessions:
@@ -461,7 +483,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                         
                 elif "bytes" in message:
                     # Handle binary message - log for now
-                    logger.warning("Received binary message from client - not handling yet")
+                    logger.debug("Received binary message from client")
                     continue
                     
                 else:
@@ -484,12 +506,22 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                 
             except Exception as e:
                 logger.error(f"Error in WebSocket loop: {e}")
+                # Try to recover from non-fatal errors
+                if str(e).startswith("object NoneType can't be used in 'await' expression"):
+                    logger.warning("Attempting to recover from NoneType error")
+                    if handler and not handler.stt_integration:
+                        handler._reinitialize_stt()
+                        continue
                 break
         
     except Exception as e:
         logger.error(f"Error establishing WebSocket: {e}", exc_info=True)
         
     finally:
+        # Cancel the conversation task if it's still running
+        if 'conversation_task' in locals() and not conversation_task.done():
+            conversation_task.cancel()
+            
         # Cleanup resources
         if handler:
             try:

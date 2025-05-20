@@ -140,7 +140,7 @@ class GoogleCloudTTS:
         return config
     
     def _create_voice_config(self) -> texttospeech.VoiceSelectionParams:
-        """Create voice configuration with proper handling for different voice types."""
+        """Create voice configuration with latest language models."""
         voice_config = texttospeech.VoiceSelectionParams(
             language_code=self.language_code
         )
@@ -148,17 +148,21 @@ class GoogleCloudTTS:
         # Set voice name if specified (preferred method)
         if self.voice_name:
             voice_config.name = self.voice_name
-            # For Neural2 voices, don't set gender as it's included in the name
-            if not ("Neural2" in self.voice_name or "Studio" in self.voice_name):
-                if self.voice_gender:
-                    if self.voice_gender == "MALE":
-                        voice_config.ssml_gender = texttospeech.SsmlVoiceGender.MALE
-                    elif self.voice_gender == "FEMALE":
-                        voice_config.ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
-                    elif self.voice_gender == "NEUTRAL":
-                        voice_config.ssml_gender = texttospeech.SsmlVoiceGender.NEUTRAL
+            
+            # For Neural2 voices, use customization features if available
+            if "Neural2" in self.voice_name:
+                # Neural2 voices don't use gender parameter as it's included in the name
+                pass
+            # Handle other voice types that may need gender parameter
+            elif self.voice_gender:
+                if self.voice_gender == "MALE":
+                    voice_config.ssml_gender = texttospeech.SsmlVoiceGender.MALE
+                elif self.voice_gender == "FEMALE":
+                    voice_config.ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
+                elif self.voice_gender == "NEUTRAL":
+                    voice_config.ssml_gender = texttospeech.SsmlVoiceGender.NEUTRAL
         else:
-            # Set gender only if no specific voice name
+            # Set gender only if no specific voice name but gender is specified
             if self.voice_gender:
                 if self.voice_gender == "MALE":
                     voice_config.ssml_gender = texttospeech.SsmlVoiceGender.MALE
@@ -167,6 +171,7 @@ class GoogleCloudTTS:
                 elif self.voice_gender == "NEUTRAL":
                     voice_config.ssml_gender = texttospeech.SsmlVoiceGender.NEUTRAL
         
+        # Return the voice configuration
         return voice_config
     
     def _get_cache_key(self, text: str) -> str:
@@ -214,12 +219,30 @@ class GoogleCloudTTS:
             # Prepare the synthesis input
             synthesis_input = texttospeech.SynthesisInput(text=text)
             
+            # Get voice configuration
+            voice_config = self._create_voice_config()
+            
+            # Create custom voice parameters for Neural2 voices
+            custom_voice_params = None
+            if self.voice_name and "Neural2" in self.voice_name:
+                custom_voice_params = texttospeech.CustomVoiceParams(
+                    reported_usage=texttospeech.CustomVoiceParams.ReportedUsage.OFFLINE_TELEPHONY,
+                    model="neural2"
+                )
+            
             # Make the synthesis request
-            response = self.client.synthesize_speech(
+            request = texttospeech.SynthesizeSpeechRequest(
                 input=synthesis_input,
-                voice=self.voice_config,
+                voice=voice_config,
                 audio_config=self.audio_config
             )
+            
+            # Add custom voice parameters if available
+            if custom_voice_params:
+                request.custom_voice = custom_voice_params
+            
+            # Perform the synthesis
+            response = self.client.synthesize_speech(request)
             
             audio_content = response.audio_content
             
@@ -235,7 +258,7 @@ class GoogleCloudTTS:
             logger.error(f"Error during TTS synthesis: {e}")
             # Log more details about the error
             if "voice" in str(e).lower():
-                logger.error(f"Voice configuration: {self.voice_config}")
+                logger.error(f"Voice configuration: {self._create_voice_config()}")
                 logger.error(f"Available voices might need to be checked")
             raise
     

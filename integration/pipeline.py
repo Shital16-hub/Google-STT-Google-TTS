@@ -333,92 +333,87 @@ class VoiceAIAgentPipeline:
         audio_callback: Callable[[bytes], Awaitable[None]], 
         partial: bool = False
     ) -> None:
-        """
-        Process transcription in background with optimized response generation.
+        """Process transcription with improved error recovery."""
+        max_retries = 3
+        retry_count = 0
         
-        Args:
-            text: Transcription text
-            audio_callback: Callback for audio output
-            partial: Whether this is a partial (interim) transcription
-        """
-        try:
-            # Set speaking state during response generation
-            if hasattr(self.speech_recognizer, 'set_speaking_state'):
-                self.speech_recognizer.set_speaking_state(True)
-            
-            # Different processing approaches based on partial flag
-            if partial:
-                # For partial transcriptions, use simplified approach
-                # Just get key information for faster response
-                ctx = None
-                if hasattr(self.conversation_manager, 'memory'):
-                    ctx = self.conversation_manager.memory.get_context(text)
+        while retry_count < max_retries:
+            try:
+                # Set speaking state during response generation
+                if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                    self.speech_recognizer.set_speaking_state(True)
                 
-                # Generate a simple response based on context
-                response_text = None
-                
-                # Try to extract a relevant response from context
-                if ctx:
-                    try:
-                        # Use a simplified query approach
-                        response_text = await self._generate_quick_response(text, ctx)
-                    except Exception as e:
-                        logger.error(f"Error generating quick response: {e}")
-                
-                # Only send audio if we have a good response
-                if response_text:
-                    audio_data = await self.tts_integration.synthesize(response_text)
-                    if audio_data:
-                        # Send in smaller chunks for smoother playback
-                        chunk_size = 320  # 40ms chunks
-                        chunks = [audio_data[i:i+chunk_size] for i in range(0, len(audio_data), chunk_size)]
-                        
-                        # Send a limited number of chunks for partial response
-                        for chunk in chunks[:min(len(chunks), 5)]:
-                            await audio_callback(chunk)
-                            await asyncio.sleep(0.01)
-            else:
-                # For final transcriptions, use full conversation manager
-                result = await self.conversation_manager.handle_user_input(text)
-                response_text = result.get("response", "")
-                
-                if response_text:
-                    # Break into sentences for faster response
-                    import re
-                    sentences = re.split(r'(?<=[.!?])\s+', response_text)
+                # Different processing approaches based on partial flag
+                if partial:
+                    # For partial transcriptions, use simplified approach
+                    # Just get key information for faster response
+                    ctx = None
+                    if hasattr(self.conversation_manager, 'memory'):
+                        ctx = self.conversation_manager.memory.get_context(text)
                     
-                    # Process each sentence
-                    for sentence in sentences:
-                        if not sentence.strip():
-                            continue
-                            
-                        # Synthesize and send each sentence
-                        audio_data = await self.tts_integration.synthesize(sentence)
+                    # Generate a simple response based on context
+                    response_text = None
+                    
+                    # Try to extract a relevant response from context
+                    if ctx:
+                        try:
+                            # Use a simplified query approach
+                            response_text = await self._generate_quick_response(text, ctx)
+                        except Exception as e:
+                            logger.error(f"Error generating quick response: {e}")
+                    
+                    # Only send audio if we have a good response
+                    if response_text:
+                        audio_data = await self.tts_integration.synthesize(response_text)
                         if audio_data:
                             await audio_callback(audio_data)
+                            return  # Success, exit function
                 else:
-                    # No response generated
-                    fallback = "I'm sorry, I couldn't find an answer to that."
-                    audio_data = await self.tts_integration.synthesize(fallback)
-                    if audio_data:
-                        await audio_callback(audio_data)
-                        
-        except Exception as e:
-            logger.error(f"Error in background processing: {e}")
-            
-            # Send error message
-            try:
-                error_msg = "I'm sorry, I encountered an error processing your request."
-                error_audio = await self.tts_integration.synthesize(error_msg)
-                if error_audio:
-                    await audio_callback(error_audio)
-            except:
-                pass
+                    # For final transcriptions, use full conversation manager
+                    result = await self.conversation_manager.handle_user_input(text)
+                    response_text = result.get("response", "")
+                    
+                    if response_text:
+                        # Synthesize and send the response
+                        audio_data = await self.tts_integration.synthesize(response_text)
+                        if audio_data:
+                            await audio_callback(audio_data)
+                            return  # Success, exit function
+                    else:
+                        # No response generated
+                        fallback = "I'm sorry, I couldn't find an answer to that."
+                        audio_data = await self.tts_integration.synthesize(fallback)
+                        if audio_data:
+                            await audio_callback(audio_data)
+                            return  # Success, exit function
+                            
+                # If we get here, something failed but didn't throw an exception
+                # Try again with a different approach
+                retry_count += 1
+                logger.warning(f"Response generation incomplete, retrying ({retry_count}/{max_retries})")
+                await asyncio.sleep(0.5)  # Small delay before retry
+                            
+            except Exception as e:
+                logger.error(f"Error in background processing: {e}")
+                retry_count += 1
                 
-        finally:
-            # Reset speaking state
-            if hasattr(self.speech_recognizer, 'set_speaking_state'):
-                self.speech_recognizer.set_speaking_state(False)
+                if retry_count >= max_retries:
+                    # Send error message on final retry
+                    try:
+                        error_msg = "I'm sorry, I encountered an error processing your request."
+                        error_audio = await self.tts_integration.synthesize(error_msg)
+                        if error_audio:
+                            await audio_callback(error_audio)
+                    except:
+                        pass
+                else:
+                    # Wait briefly before retry
+                    await asyncio.sleep(0.5 * retry_count)  # Increasing delay for each retry
+                    
+            finally:
+                # Reset speaking state
+                if hasattr(self.speech_recognizer, 'set_speaking_state'):
+                    self.speech_recognizer.set_speaking_state(False)
 
     async def _generate_quick_response(self, query: str, context: Optional[str] = None) -> str:
         """

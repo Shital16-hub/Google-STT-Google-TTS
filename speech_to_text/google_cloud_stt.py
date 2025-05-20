@@ -188,20 +188,21 @@ class GoogleCloudStreamingSTT:
                 enable_spoken_emojis=False,
                 profanity_filter=False,
                 enable_word_confidence=True,
+                enable_word_time_offsets=True,  # Add word-level timing
                 max_alternatives=1,
             )
         )
         
-        # Configure streaming for lower latency with faster end-of-speech detection
+        # Configure streaming for lower latency with improved end-of-speech detection
         self.streaming_config = cloud_speech.StreamingRecognitionConfig(
             config=self.recognition_config,
             streaming_features=cloud_speech.StreamingRecognitionFeatures(
                 interim_results=self.interim_results,
                 enable_voice_activity_events=True,
                 voice_activity_timeout=cloud_speech.StreamingRecognitionFeatures.VoiceActivityTimeout(
-                    # Optimized timeouts for faster response
-                    speech_start_timeout=Duration(seconds=1, nanos=0),  # Quicker speech detection (1s)
-                    speech_end_timeout=Duration(seconds=0, nanos=500000000),  # End speech detection after 0.5s of silence
+                    # Increased timeouts for better speech detection
+                    speech_start_timeout=Duration(seconds=1, nanos=500000000),  # 1.5s
+                    speech_end_timeout=Duration(seconds=1, nanos=500000000),  # 1.5s
                 ),
             ),
         )
@@ -223,9 +224,10 @@ class GoogleCloudStreamingSTT:
             finally:
                 self.callback_loop.close()
         
-        self.callback_thread = threading.Thread(target=run_callback_loop, daemon=True)
-        self.callback_thread.start()
-        logger.debug("Started callback event loop thread")
+        if self.callback_thread is None or not self.callback_thread.is_alive():
+            self.callback_thread = threading.Thread(target=run_callback_loop, daemon=True)
+            self.callback_thread.start()
+            logger.debug("Started callback event loop thread")
     
     def _stop_callback_loop(self):
         """Stop the callback event loop."""
@@ -236,14 +238,15 @@ class GoogleCloudStreamingSTT:
         logger.debug("Stopped callback event loop thread")
     
     def _request_generator(self) -> Iterator[cloud_speech.StreamingRecognizeRequest]:
-        """Generate requests with enhanced low-latency processing."""
+        """Generate requests with improved buffer management."""
         # Send initial config
         yield self.config_request
         
         # Variables to track empty audio timeout
         last_audio_time = time.time()
         heartbeat_count = 0
-        max_empty_heartbeats = 3  # Only send a few empty heartbeats
+        max_empty_heartbeats = 3
+        buffer_size = 0  # Track amount of audio buffered
         
         # Process audio chunks
         while not self.stop_event.is_set():
@@ -251,7 +254,7 @@ class GoogleCloudStreamingSTT:
                 # Get audio chunk with blocking but short timeout
                 try:
                     # Check if there's audio in the queue with a short timeout
-                    audio_chunk = self._sync_queue.get(timeout=0.05)
+                    audio_chunk = self._sync_queue.get(timeout=0.1)  # Slightly longer timeout
                     
                     if audio_chunk is None:
                         break
@@ -262,6 +265,9 @@ class GoogleCloudStreamingSTT:
                         self._sync_queue.task_done()
                         continue
                     
+                    # Add size to buffer tracking
+                    buffer_size += len(audio_chunk)
+                    
                     # Send audio chunk
                     yield cloud_speech.StreamingRecognizeRequest(audio=audio_chunk)
                     self._sync_queue.task_done()
@@ -269,24 +275,25 @@ class GoogleCloudStreamingSTT:
                     last_audio_time = time.time()
                     heartbeat_count = 0  # Reset heartbeat count when we get real audio
                     
+                    # Check if we need to trigger an end-of-speech manually
+                    # Only do this if we've accumulated enough audio (speech likely detected)
+                    if self.speech_detected and buffer_size > 32000:  # About 2 seconds of audio
+                        # Empty audio buffer and reset size tracking
+                        buffer_size = 0
+                        
                 except queue.Empty:
                     # Check if we should stop due to inactivity
-                    if time.time() - last_audio_time > 5.0:  # Reduced from 10s to 5s
-                        logger.info("No audio for 5s, stopping stream")
+                    if time.time() - last_audio_time > 7.0:  # Increased from 5s to 7s
+                        logger.info("No audio for 7s, stopping stream")
                         break
-                        
-                    # Don't send empty audio chunks - Google doesn't like them
-                    # Instead, just continue the loop and try to get more audio
-                    if heartbeat_count < max_empty_heartbeats:
-                        # Just a short wait instead of sending empty audio
-                        time.sleep(0.1)
-                        heartbeat_count += 1
-                    continue
+                    
+                    # Wait a bit longer before checking again
+                    time.sleep(0.2)  # Increased from 0.1 to 0.2
                     
             except Exception as e:
                 logger.error(f"Error in request generator: {e}")
                 # Try to continue despite errors
-                time.sleep(0.1)
+                time.sleep(0.2)
     
     def _run_streaming(self):
         """Run streaming with optimized error handling for low latency."""
@@ -374,10 +381,13 @@ class GoogleCloudStreamingSTT:
         
         logger.info(f"Streaming thread ended (session: {self.session_id})")
     
-
+    async def _delayed_speech_end(self):
+        """Delay setting speech_detected to False to allow for natural pauses."""
+        await asyncio.sleep(1.0)  # Wait 1 second before considering speech complete
+        self.speech_detected = False
     
     def _process_response(self, response):
-        """Process response with optimized early-result handling."""
+        """Process response with improved handling for first utterances."""
         # Handle voice activity events
         if hasattr(response, 'speech_event_type') and response.speech_event_type:
             speech_event = response.speech_event_type
@@ -388,9 +398,19 @@ class GoogleCloudStreamingSTT:
                 self.silence_frames = 0
                 logger.debug("Speech activity detected")
             elif speech_event == cloud_speech.StreamingRecognizeResponse.SpeechEventType.SPEECH_ACTIVITY_END:
-                self.speech_detected = False
+                # Don't set speech_detected to False immediately
+                # Instead, keep a grace period for the user to continue speaking
                 speaking_duration = time.time() - self.last_speech_time
                 logger.debug(f"Speech activity ended (duration: {speaking_duration:.2f}s)")
+                
+                # Only mark speech as done if it was substantial
+                if speaking_duration > 1.0:
+                    # Create a task for delayed speech end
+                    if self.callback_loop and not self.callback_loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(
+                            self._delayed_speech_end(),
+                            self.callback_loop
+                        )
         
         # Process transcription results
         for result in response.results:
@@ -400,8 +420,17 @@ class GoogleCloudStreamingSTT:
             alternative = result.alternatives[0]
             text = alternative.transcript.strip()
             
-            # Skip empty or very short results
-            if not text or len(text) < 2:
+            # Improved handling of short results - don't discard them too quickly
+            # For first utterances, be more lenient
+            skip_result = False
+            
+            if not text:
+                skip_result = True
+            elif self.successful_transcriptions == 0 and len(text) < 2:
+                # For first utterance, still skip very short results
+                skip_result = True
+            
+            if skip_result:
                 continue
                 
             # Skip duplicate results we've already seen
