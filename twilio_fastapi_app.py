@@ -389,7 +389,7 @@ async def cleanup_sessions():
 
 @app.websocket("/ws/stream/{call_sid}")
 async def handle_media_stream(websocket: WebSocket, call_sid: str):
-    """Handle WebSocket media stream with improved error handling."""
+    """Handle WebSocket media stream with improved error handling and resource management."""
     logger.info(f"Starting WebSocket handler for call {call_sid} with pipeline: {voice_ai_pipeline is not None}")
     
     # Wait for initialization to complete with timeout
@@ -413,6 +413,18 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
         await websocket.accept()
         logger.info(f"WebSocket connection established for call {call_sid}")
         
+        # Check if call already exists - clean it up first
+        if call_sid in active_calls:
+            old_handler = active_calls[call_sid]
+            logger.warning(f"Found existing handler for call {call_sid}, cleaning up")
+            try:
+                await old_handler._cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up existing handler: {e}")
+            finally:
+                # Always remove old handler
+                del active_calls[call_sid]
+        
         # Create handler optimized for low-latency conversation
         handler = SimpleWebSocketHandler(call_sid, voice_ai_pipeline)
         active_calls[call_sid] = handler
@@ -425,6 +437,9 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
         # Create a task for starting the conversation - this adds resilience
         # if the welcome message fails
         conversation_task = asyncio.create_task(handler.start_conversation(websocket))
+        
+        # Use a heartbeat task to detect WebSocket disconnections
+        heartbeat_task = asyncio.create_task(websocket_heartbeat(websocket, call_sid))
         
         # Process incoming messages with improved error handling
         while True:
@@ -465,6 +480,9 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                             
                         elif event_type == 'stop':
                             logger.info(f"Stream stopped for call {call_sid}")
+                            
+                            # Cancel heartbeat
+                            heartbeat_task.cancel()
                             
                             # Run cleanup
                             await handler._cleanup()
@@ -518,31 +536,64 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
         logger.error(f"Error establishing WebSocket: {e}", exc_info=True)
         
     finally:
-        # Cancel the conversation task if it's still running
+        # Cancel the tasks if they exist
         if 'conversation_task' in locals() and not conversation_task.done():
             conversation_task.cancel()
             
-        # Cleanup resources
+        if 'heartbeat_task' in locals() and not heartbeat_task.done():
+            heartbeat_task.cancel()
+            
+        # Cleanup resources with improved error handling
         if handler:
             try:
-                await handler._cleanup()
+                # Use a timeout to prevent blocking
+                await asyncio.wait_for(handler._cleanup(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout during handler cleanup for call {call_sid}")
             except Exception as e:
                 logger.error(f"Error during handler cleanup: {e}")
         
+        # Remove from active calls
         if call_sid in active_calls:
             del active_calls[call_sid]
         
         # Update session
         if call_sid in call_sessions:
             call_sessions[call_sid]["ws_disconnected_time"] = time.time()
+            call_sessions[call_sid]["status"] = "disconnected"
         
+        # Ensure WebSocket is closed
         try:
             if websocket.client_state == WebSocketState.CONNECTED:
                 await websocket.close()
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error closing WebSocket: {e}")
         
         logger.info(f"WebSocket cleanup complete for call {call_sid}")
+
+async def websocket_heartbeat(websocket: WebSocket, call_sid: str):
+    """Send periodic heartbeats to keep the WebSocket connection alive."""
+    try:
+        while True:
+            await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+            if websocket.client_state == WebSocketState.CONNECTED:
+                # Send a simple ping message
+                try:
+                    ping_message = {"type": "ping", "timestamp": time.time()}
+                    await websocket.send_text(json.dumps(ping_message))
+                    logger.debug(f"Sent heartbeat ping to call {call_sid}")
+                except Exception as e:
+                    logger.warning(f"Failed to send heartbeat: {e}")
+                    break
+            else:
+                logger.info(f"WebSocket for call {call_sid} is no longer connected")
+                break
+    except asyncio.CancelledError:
+        # Task was cancelled, clean exit
+        pass
+    except Exception as e:
+        logger.error(f"Error in WebSocket heartbeat: {e}")
+
 
 @app.get("/stats")
 async def get_stats():

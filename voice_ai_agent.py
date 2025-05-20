@@ -133,8 +133,11 @@ class VoiceAIAgent:
         logger.info("VoiceAIAgent initialized with low-latency optimizations")
         
     async def init(self):
-        """Initialize all components with better error handling."""
+        """Initialize all components with improved error handling and state tracking."""
         logger.info("Initializing Voice AI Agent components...")
+        
+        # Track initialization to avoid duplicate or incomplete initialization
+        self._initializing = True
         
         try:
             # Initialize speech recognizer with optimized settings
@@ -202,6 +205,9 @@ class VoiceAIAgent:
             # Attempt cleanup of partial initialization
             await self.shutdown(force=True)
             raise
+        finally:
+            # Clear initialization flag
+            self._initializing = False
         
     async def process_audio(
         self,
@@ -310,16 +316,20 @@ class VoiceAIAgent:
         return getattr(self, '_initialized', False)
                 
     async def shutdown(self, force=False):
-        """Shut down all components properly with force option."""
+        """Shut down all components properly with improved resource management."""
         logger.info("Shutting down Voice AI Agent...")
+        
+        shutdown_tasks = []
         
         # Close Google Cloud streaming session if active
         if self.speech_recognizer:
             try:
                 if hasattr(self.speech_recognizer, 'cleanup'):
-                    await self.speech_recognizer.cleanup()
+                    task = asyncio.create_task(self.speech_recognizer.cleanup())
+                    shutdown_tasks.append(task)
                 elif hasattr(self.speech_recognizer, 'stop_streaming'):
-                    await self.speech_recognizer.stop_streaming()
+                    task = asyncio.create_task(self.speech_recognizer.stop_streaming())
+                    shutdown_tasks.append(task)
             except Exception as e:
                 if not force:
                     raise
@@ -334,8 +344,51 @@ class VoiceAIAgent:
                     raise
                 logger.error(f"Error resetting conversation manager: {e}")
         
+        # Wait for all shutdown tasks with timeout
+        if shutdown_tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*shutdown_tasks, return_exceptions=True), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout waiting for shutdown tasks")
+            except Exception as e:
+                logger.error(f"Error in shutdown tasks: {e}")
+        
+        # Clear component references
+        self.speech_recognizer = None
+        self.stt_integration = None
+        self.tts_client = None
+        
+        # Keep index_manager and query_engine to avoid expensive reinitialization
         # Mark as not initialized
         self._initialized = False
+        logger.info("Voice AI Agent shutdown complete")
+
+    def create_new_speech_components(self):
+        """Create new speech recognition components without full reinitialization."""
+        try:
+            # Create new speech recognizer instance
+            self.speech_recognizer = GoogleCloudStreamingSTT(
+                language=self.stt_language,
+                sample_rate=8000,
+                encoding="MULAW",
+                channels=1,
+                interim_results=True,
+                project_id=self.project_id,
+                location="global",
+                credentials_file=self.credentials_file
+            )
+            
+            # Create new STT integration
+            self.stt_integration = STTIntegration(
+                speech_recognizer=self.speech_recognizer,
+                language=self.stt_language
+            )
+            
+            logger.info("Created new speech components")
+            return True
+        except Exception as e:
+            logger.error(f"Error creating new speech components: {e}")
+            return False
     
     async def add_documents_to_index(self, directory_path: str) -> List[str]:
         """

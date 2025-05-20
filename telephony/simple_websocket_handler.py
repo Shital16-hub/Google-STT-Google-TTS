@@ -19,6 +19,8 @@ from fastapi import WebSocket
 
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT, StreamingTranscriptionResult
 from integration.tts_integration import TTSIntegration
+from speech_to_text.stt_integration import STTIntegration
+
 
 logger = logging.getLogger(__name__)
 
@@ -164,24 +166,49 @@ class SimpleWebSocketHandler:
         return "my-tts-project-458404"
     
     def _reinitialize_stt(self):
-        """Re-initialize STT components if needed."""
-        credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        self.speech_recognizer = GoogleCloudStreamingSTT(
-            language="en-US",
-            sample_rate=8000,
-            encoding="MULAW",
-            channels=1,
-            interim_results=True,
-            project_id=self.project_id,
-            location="global",
-            credentials_file=credentials_file
-        )
-        self.stt_integration = STTIntegration(
-            speech_recognizer=self.speech_recognizer,
-            language="en-US"
-        )
-        logger.info("Re-initialized STT components")
-    
+        """Re-initialize STT components with improved error handling."""
+        try:
+            # Create a new speech recognizer with the same settings
+            credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            self.speech_recognizer = GoogleCloudStreamingSTT(
+                language="en-US",
+                sample_rate=8000,
+                encoding="MULAW",
+                channels=1,
+                interim_results=True,
+                project_id=self.project_id,
+                location="global",
+                credentials_file=credentials_file
+            )
+            
+            # Create a new STT integration with the new recognizer
+            self.stt_integration = STTIntegration(
+                speech_recognizer=self.speech_recognizer,
+                language="en-US"
+            )
+            
+            logger.info("Re-initialized STT components successfully")
+            
+            # Restart streaming to ensure a clean state
+            asyncio.create_task(self._restart_streaming())
+            
+        except Exception as e:
+            logger.error(f"Error re-initializing STT components: {e}")
+            # Try to recover by using components from the pipeline
+            if hasattr(self.pipeline, 'speech_recognizer') and self.pipeline.speech_recognizer:
+                self.speech_recognizer = self.pipeline.speech_recognizer
+                self.stt_integration = self.pipeline.stt_helper
+                logger.info("Recovered STT components from pipeline")
+
+    async def _restart_streaming(self):
+        """Restart streaming session with error handling."""
+        try:
+            if self.stt_integration:
+                await self.stt_integration.start_streaming()
+                logger.info("Restarted streaming session")
+        except Exception as e:
+            logger.error(f"Error restarting streaming: {e}")
+        
     async def _handle_audio(self, data: Dict[str, Any], ws: WebSocket):
         """Handle audio with improved error handling and state management."""
         # Skip audio processing if call has ended
@@ -571,34 +598,61 @@ class SimpleWebSocketHandler:
         await self._send_response("How can I help you today?", ws)
     
     async def _cleanup(self):
-        """Clean up resources."""
+        """Clean up resources with improved error handling and state reset."""
+        logger.info(f"Starting cleanup for call {self.call_sid}")
+        
         try:
+            # Mark call as ended first to prevent new operations
             self.call_ended = True
             self.conversation_active = False
             self.is_speaking = False
+            self.is_processing = False
             
-            # Clean up STT
-            if hasattr(self.stt_integration, 'end_streaming'):
-                await self.stt_integration.end_streaming()
-            elif hasattr(self.speech_recognizer, 'stop_streaming'):
-                await self.speech_recognizer.stop_streaming()
+            # Clean up STT streaming session
+            if hasattr(self.stt_integration, 'end_streaming') and self.stt_integration:
+                try:
+                    await asyncio.wait_for(self.stt_integration.end_streaming(), timeout=2.0)
+                    logger.debug("STT streaming ended")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for STT streaming to end")
+                except Exception as e:
+                    logger.error(f"Error ending STT streaming: {e}")
             
-            # Calculate stats
+            # Explicitly clean up speech recognizer with timeout
+            if hasattr(self.speech_recognizer, 'stop_streaming') and self.speech_recognizer:
+                try:
+                    await asyncio.wait_for(self.speech_recognizer.stop_streaming(), timeout=2.0)
+                    logger.debug("Speech recognizer stopped")
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout waiting for speech recognizer to stop")
+                except Exception as e:
+                    logger.error(f"Error stopping speech recognizer: {e}")
+            
+            # Clear references to components
+            self.speech_recognizer = None
+            self.stt_integration = None
+            
+            # Calculate session stats for logging
             duration = time.time() - self.session_start_time
+            avg_processing = 0
+            if self.processing_times:
+                avg_processing = sum(self.processing_times) / len(self.processing_times)
             
-            # Calculate latency metrics
-            avg_processing = sum(self.processing_times) / max(len(self.processing_times), 1)
-            
+            # Log detailed session stats
             logger.info(f"Session cleanup completed. Stats: "
-                       f"Duration: {duration:.2f}s, "
-                       f"Audio packets: {self.audio_received}, "
-                       f"Transcriptions: {self.transcriptions}, "
-                       f"Interim: {self.interim_transcriptions}, "
-                       f"Responses: {self.responses_sent}, "
-                       f"Avg processing: {avg_processing:.2f}s")
-                       
+                      f"Duration: {duration:.2f}s, "
+                      f"Audio packets: {self.audio_received}, "
+                      f"Transcriptions: {self.transcriptions}, "
+                      f"Interim: {self.interim_transcriptions}, "
+                      f"Responses: {self.responses_sent}, "
+                      f"Avg processing: {avg_processing:.2f}s")
+            
         except Exception as e:
             logger.error(f"Error during cleanup: {e}", exc_info=True)
+            
+        finally:
+            # Clear the WebSocket reference to avoid memory leaks
+            self._ws = None
     
     def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive session statistics."""
