@@ -151,7 +151,8 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error during startup: {e}", exc_info=True)
         # Don't raise here to let the server start anyway
         # The health endpoint will report the initialization status
-        # Yield control back to FastAPI
+    
+    # Yield control back to FastAPI
     yield
     
     # Shutdown: Clean up resources
@@ -345,11 +346,12 @@ async def handle_status_callback(request: Request, background_tasks: BackgroundT
     return Response(status_code=204)
 
 async def cleanup_call(call_sid: str, handler):
-    """Clean up call resources with better error handling."""
+    """Clean up call resources with thorough cleanup of streaming sessions."""
     try:
         # Trigger cleanup with proper error handling
         if handler:
-            await handler._cleanup()
+            # Use a timeout to prevent blocking
+            await asyncio.wait_for(handler._cleanup(), timeout=5.0)
             
             # Explicitly clean up speech recognizer
             if hasattr(handler, 'speech_recognizer') and handler.speech_recognizer:
@@ -358,13 +360,34 @@ async def cleanup_call(call_sid: str, handler):
                         await handler.speech_recognizer.cleanup()
                     elif hasattr(handler.speech_recognizer, 'stop_streaming'):
                         await handler.speech_recognizer.stop_streaming()
-                except:
-                    # Create a new one for the next call
+                        
+                    # If we have a stream thread, make sure it's stopped
+                    if hasattr(handler.speech_recognizer, 'stream_thread') and handler.speech_recognizer.stream_thread:
+                        if handler.speech_recognizer.stream_thread.is_alive():
+                            logger.info(f"Force terminating stream thread for call {call_sid}")
+                            # Set stop event if available
+                            if hasattr(handler.speech_recognizer, 'stop_event'):
+                                handler.speech_recognizer.stop_event.set()
+                            
+                            # Give it a moment to terminate
+                            handler.speech_recognizer.stream_thread.join(timeout=1.0)
+                except Exception as e:
+                    logger.error(f"Error cleaning up speech recognizer: {e}")
+                finally:
+                    # Always clear the reference
                     handler.speech_recognizer = None
                     
             # Ensure stt_integration is also cleaned
             if hasattr(handler, 'stt_integration') and handler.stt_integration:
-                handler.stt_integration = None
+                try:
+                    if hasattr(handler.stt_integration, 'end_streaming'):
+                        await handler.stt_integration.end_streaming()
+                except Exception as e:
+                    logger.error(f"Error cleaning up STT integration: {e}")
+                finally:
+                    handler.stt_integration = None
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout during cleanup for call {call_sid}")
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
     
@@ -418,14 +441,17 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
             old_handler = active_calls[call_sid]
             logger.warning(f"Found existing handler for call {call_sid}, cleaning up")
             try:
-                await old_handler._cleanup()
+                # Force a thorough cleanup to ensure no hanging resources
+                await asyncio.wait_for(old_handler._cleanup(), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout cleaning up old handler for {call_sid}")
             except Exception as e:
                 logger.error(f"Error cleaning up existing handler: {e}")
             finally:
-                # Always remove old handler
+                # Always remove old handler to prevent resource leaks
                 del active_calls[call_sid]
         
-        # Create handler optimized for low-latency conversation
+        # Create completely new handler for each call
         handler = SimpleWebSocketHandler(call_sid, voice_ai_pipeline)
         active_calls[call_sid] = handler
         
@@ -434,8 +460,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
             call_sessions[call_sid]["status"] = "connected"
             call_sessions[call_sid]["ws_connected_time"] = time.time()
         
-        # Create a task for starting the conversation - this adds resilience
-        # if the welcome message fails
+        # Create a task for starting the conversation
         conversation_task = asyncio.create_task(handler.start_conversation(websocket))
         
         # Use a heartbeat task to detect WebSocket disconnections
@@ -524,12 +549,16 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
                 
             except Exception as e:
                 logger.error(f"Error in WebSocket loop: {e}")
-                # Try to recover from non-fatal errors
+                
+                # Determine if we should attempt to recover
                 if str(e).startswith("object NoneType can't be used in 'await' expression"):
-                    logger.warning("Attempting to recover from NoneType error")
-                    if handler and not handler.stt_integration:
-                        handler._reinitialize_stt()
-                        continue
+                    logger.warning("Attempting to recover from NoneType error by reinitializing STT")
+                    if handler:
+                        # Try to reinitialize the STT components
+                        success = handler._reinitialize_stt()
+                        if success:
+                            logger.info("Successfully recovered from NoneType error")
+                            continue
                 break
         
     except Exception as e:
@@ -572,19 +601,37 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
         logger.info(f"WebSocket cleanup complete for call {call_sid}")
 
 async def websocket_heartbeat(websocket: WebSocket, call_sid: str):
-    """Send periodic heartbeats to keep the WebSocket connection alive."""
+    """Send periodic heartbeats to keep the WebSocket connection alive and detect disconnections."""
+    ping_count = 0
+    max_failed_pings = 3
+    failed_pings = 0
+    
     try:
         while True:
-            await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+            await asyncio.sleep(15)  # Send heartbeat every 15 seconds (reduced from 30)
+            
+            # Check if WebSocket is still connected
             if websocket.client_state == WebSocketState.CONNECTED:
+                ping_count += 1
                 # Send a simple ping message
                 try:
-                    ping_message = {"type": "ping", "timestamp": time.time()}
+                    ping_message = {"type": "ping", "timestamp": time.time(), "count": ping_count}
                     await websocket.send_text(json.dumps(ping_message))
-                    logger.debug(f"Sent heartbeat ping to call {call_sid}")
+                    
+                    # Reset failed pings counter on successful ping
+                    failed_pings = 0
+                    
+                    if ping_count % 4 == 0:  # Log every 4th ping (about every minute)
+                        logger.debug(f"Sent heartbeat ping to call {call_sid} (#{ping_count})")
                 except Exception as e:
-                    logger.warning(f"Failed to send heartbeat: {e}")
-                    break
+                    # Track failed pings
+                    failed_pings += 1
+                    logger.warning(f"Failed to send heartbeat (attempt {failed_pings}/{max_failed_pings}): {e}")
+                    
+                    # If we've failed too many times, consider the connection dead
+                    if failed_pings >= max_failed_pings:
+                        logger.error(f"Too many failed heartbeats for {call_sid}, closing connection")
+                        break
             else:
                 logger.info(f"WebSocket for call {call_sid} is no longer connected")
                 break
@@ -651,7 +698,10 @@ async def get_config():
         "optimizations": {
             "low_latency_stt": True, 
             "speaking_state_management": True,
-            "early_result_processing": True
+            "early_result_processing": True,
+            "auto_reconnection": True,
+            "heartbeat_monitoring": True,
+            "resource_cleanup": True
         }
     }
     return config

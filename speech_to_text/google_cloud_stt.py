@@ -346,7 +346,7 @@ class GoogleCloudStreamingSTT:
                         if consecutive_empty_queues < max_empty_queues and no_activity_count < max_no_activity:
                             # Just wait longer before restarting
                             logger.debug(f"Queue empty ({consecutive_empty_queues}/{max_empty_queues}), waiting before restart")
-                            time.sleep(1.0)  # Wait longer between restarts (1 second)
+                            time.sleep(1.0)  # Wait longer between restarts
                             continue
                     
                     # Only log restart if we're actually restarting due to errors
@@ -517,12 +517,13 @@ class GoogleCloudStreamingSTT:
         logger.info(f"Started optimized low-latency streaming session: {self.session_id}")
     
     async def stop_streaming(self) -> tuple[str, float]:
-        """Stop streaming with proper cleanup."""
+        """Stop streaming with proper cleanup and resource release."""
         if not self.is_streaming:
             return "", 0.0
         
         logger.info(f"Stopping streaming session: {self.session_id}")
         
+        # Signal stop and set flags
         self.is_streaming = False
         self.stop_event.set()
         
@@ -531,7 +532,13 @@ class GoogleCloudStreamingSTT:
             try:
                 self._sync_queue.put(None, block=False)
             except queue.Full:
-                pass
+                # If the queue is full, try to get an item first
+                try:
+                    self._sync_queue.get_nowait()
+                    self._sync_queue.task_done()
+                    self._sync_queue.put(None, block=False)
+                except (queue.Empty, queue.Full):
+                    pass
         
         # Signal async queue too
         try:
@@ -547,6 +554,7 @@ class GoogleCloudStreamingSTT:
         if self.current_stream:
             try:
                 self.current_stream.cancel()
+                self.current_stream = None
             except Exception as e:
                 logger.debug(f"Error cancelling stream: {e}")
         
@@ -555,6 +563,10 @@ class GoogleCloudStreamingSTT:
         
         # Calculate session duration
         duration = time.time() - self.stream_start_time if self.stream_start_time else 0.0
+        
+        # Reset connection objects
+        self.session_id = str(uuid.uuid4())  # Generate a new session ID for the next connection
+        self.stream_start_time = None
         
         logger.info(f"Stopped streaming, duration: {duration:.2f}s")
         

@@ -13,6 +13,7 @@ import os
 from typing import Dict, Any, Optional, List
 import struct
 import aiohttp
+import uuid
 
 import fastapi
 from fastapi import WebSocket
@@ -73,7 +74,10 @@ class SimpleWebSocketHandler:
                 location="global",
                 credentials_file=credentials_file
             )
-            self.stt_integration = self.pipeline.stt_helper
+            self.stt_integration = STTIntegration(
+                speech_recognizer=self.speech_recognizer,
+                language="en-US"
+            )
         
         # Use TTS integration from pipeline for consistency
         if hasattr(pipeline, 'tts_integration') and pipeline.tts_integration:
@@ -168,8 +172,14 @@ class SimpleWebSocketHandler:
     def _reinitialize_stt(self):
         """Re-initialize STT components with improved error handling."""
         try:
-            # Create a new speech recognizer with the same settings
+            # Create a completely new speech recognizer instance
             credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            
+            # Important: Set these to None first to ensure proper cleanup
+            self.speech_recognizer = None
+            self.stt_integration = None
+            
+            # Create fresh instances
             self.speech_recognizer = GoogleCloudStreamingSTT(
                 language="en-US",
                 sample_rate=8000,
@@ -192,6 +202,8 @@ class SimpleWebSocketHandler:
             # Restart streaming to ensure a clean state
             asyncio.create_task(self._restart_streaming())
             
+            return True
+            
         except Exception as e:
             logger.error(f"Error re-initializing STT components: {e}")
             # Try to recover by using components from the pipeline
@@ -199,6 +211,8 @@ class SimpleWebSocketHandler:
                 self.speech_recognizer = self.pipeline.speech_recognizer
                 self.stt_integration = self.pipeline.stt_helper
                 logger.info("Recovered STT components from pipeline")
+                return True
+            return False
 
     async def _restart_streaming(self):
         """Restart streaming session with error handling."""
@@ -598,7 +612,7 @@ class SimpleWebSocketHandler:
         await self._send_response("How can I help you today?", ws)
     
     async def _cleanup(self):
-        """Clean up resources with improved error handling and state reset."""
+        """Clean up resources with thorough cleanup of streaming sessions."""
         logger.info(f"Starting cleanup for call {self.call_sid}")
         
         try:
@@ -608,29 +622,39 @@ class SimpleWebSocketHandler:
             self.is_speaking = False
             self.is_processing = False
             
-            # Clean up STT streaming session
-            if hasattr(self.stt_integration, 'end_streaming') and self.stt_integration:
+            # Clean up STT streaming session with explicit timeout
+            if self.stt_integration:
                 try:
+                    # First try to gracefully end streaming
                     await asyncio.wait_for(self.stt_integration.end_streaming(), timeout=2.0)
-                    logger.debug("STT streaming ended")
+                    logger.debug("STT streaming ended successfully")
                 except asyncio.TimeoutError:
                     logger.warning("Timeout waiting for STT streaming to end")
                 except Exception as e:
                     logger.error(f"Error ending STT streaming: {e}")
+                
+                # Explicitly set to None to aid garbage collection
+                self.stt_integration = None
             
             # Explicitly clean up speech recognizer with timeout
-            if hasattr(self.speech_recognizer, 'stop_streaming') and self.speech_recognizer:
+            if self.speech_recognizer:
                 try:
-                    await asyncio.wait_for(self.speech_recognizer.stop_streaming(), timeout=2.0)
+                    # Try to explicitly stop and close the streaming session
+                    if hasattr(self.speech_recognizer, 'stop_streaming'):
+                        await asyncio.wait_for(self.speech_recognizer.stop_streaming(), timeout=2.0)
+                        
+                    # For GoogleCloudStreamingSTT, we can also try to stop the session directly
+                    if hasattr(self.speech_recognizer, 'stop_stream'):
+                        self.speech_recognizer.stop_stream.set()
+                        
                     logger.debug("Speech recognizer stopped")
                 except asyncio.TimeoutError:
                     logger.warning("Timeout waiting for speech recognizer to stop")
                 except Exception as e:
                     logger.error(f"Error stopping speech recognizer: {e}")
-            
-            # Clear references to components
-            self.speech_recognizer = None
-            self.stt_integration = None
+                    
+                # Explicitly set to None to aid garbage collection
+                self.speech_recognizer = None
             
             # Calculate session stats for logging
             duration = time.time() - self.session_start_time

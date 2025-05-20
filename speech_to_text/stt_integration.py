@@ -199,10 +199,27 @@ class STTIntegration:
         )
     
     async def end_streaming(self) -> Tuple[str, float]:
-        """End the streaming session."""
+        """End the streaming session with complete cleanup."""
         if not self.initialized:
             logger.error("STT integration not properly initialized")
             return "", 0.0
         
-        # Stop streaming session
-        return await self.speech_recognizer.stop_streaming()
+        # Stop streaming
+        final_text, duration = "", 0.0
+        
+        try:
+            # Only try to stop if speech_recognizer exists
+            if self.speech_recognizer:
+                final_text, duration = await self.speech_recognizer.stop_streaming()
+                
+                # Add extra cleanup step
+                if hasattr(self.speech_recognizer, 'cleanup'):
+                    await self.speech_recognizer.cleanup()
+                    
+        except Exception as e:
+            logger.error(f"Error ending streaming session: {e}")
+        
+        # Set to None to help garbage collection
+        self.speech_recognizer = None
+        
+        return final_text, duration
