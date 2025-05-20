@@ -11,6 +11,7 @@ import json
 import time
 import threading
 from typing import Dict, Any, Optional
+from contextlib import asynccontextmanager
 
 # FastAPI imports
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException
@@ -43,22 +44,6 @@ logger = logging.getLogger(__name__)
 # Suppress noisy logs
 logging.getLogger('google.cloud').setLevel(logging.WARNING)
 logging.getLogger('grpc').setLevel(logging.WARNING)
-
-# FastAPI app setup
-app = FastAPI(
-    title="Voice AI Agent API",
-    description="Voice AI Agent with continuous conversation support for Twilio",
-    version="2.2.0"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Global instances
 voice_ai_pipeline = None
@@ -135,19 +120,7 @@ async def initialize_system():
     # Set the initialization event
     initialization_complete.set()
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize system on startup."""
-    try:
-        # Start initialization in background
-        asyncio.create_task(initialize_system())
-    except Exception as e:
-        logger.error(f"Error during startup: {e}", exc_info=True)
-        # Don't raise here to let the server start anyway
-        # The health endpoint will report the initialization status
-
-@app.on_event("shutdown")
-async def shutdown_event():
+async def shutdown_cleanup():
     """Clean up resources on shutdown."""
     logger.info("Shutting down Voice AI Agent API")
     
@@ -160,6 +133,45 @@ async def shutdown_event():
     
     active_calls.clear()
     # We'll keep call_sessions for logging purposes
+
+# Define the lifespan context manager
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for the FastAPI application.
+    Handles startup and shutdown events.
+    """
+    # Startup: Initialize the system
+    try:
+        # Start initialization in background
+        asyncio.create_task(initialize_system())
+    except Exception as e:
+        logger.error(f"Error during startup: {e}", exc_info=True)
+        # Don't raise here to let the server start anyway
+        # The health endpoint will report the initialization status
+    
+    # Yield control back to FastAPI
+    yield
+    
+    # Shutdown: Clean up resources
+    await shutdown_cleanup()
+
+# FastAPI app setup with lifespan
+app = FastAPI(
+    title="Voice AI Agent API",
+    description="Voice AI Agent with continuous conversation support for Twilio",
+    version="2.2.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 async def index():
