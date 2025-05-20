@@ -1,6 +1,6 @@
 """
-Enhanced WebSocket handler with proper session management, echo prevention,
-and robust error handling for continuous conversation.
+Enhanced WebSocket handler compatible with FastAPI WebSockets.
+Provides proper session management, echo prevention, and robust error handling for continuous conversation.
 """
 import json
 import asyncio
@@ -9,6 +9,8 @@ import base64
 import time
 import os
 from typing import Dict, Any, Optional
+
+import fastapi
 
 # Use the fixed STT implementation
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT, StreamingTranscriptionResult
@@ -22,6 +24,7 @@ class SimpleWebSocketHandler:
     """
     Enhanced WebSocket handler with robust session management and echo prevention.
     Optimized for continuous conversation with proper error handling and cleanup.
+    Compatible with FastAPI WebSockets.
     """
     
     def __init__(self, call_sid: str, pipeline):
@@ -87,10 +90,10 @@ class SimpleWebSocketHandler:
         self.echo_detections = 0
         self.invalid_transcriptions = 0
         
-        # WebSocket reference for response sending
+        # Store reference to current websocket
         self._ws = None
         
-        logger.info(f"Enhanced WebSocket handler initialized - Call: {call_sid}, Project: {self.project_id}")
+        logger.info(f"Enhanced WebSocket handler initialized for FastAPI - Call: {call_sid}, Project: {self.project_id}")
     
     def _get_project_id(self) -> str:
         """Get project ID with enhanced error handling."""
@@ -117,7 +120,7 @@ class SimpleWebSocketHandler:
         logger.warning("Using fallback project ID - this should be configured properly")
         return "my-tts-project-458404"
     
-    async def _handle_audio(self, data: Dict[str, Any], ws):
+    async def _handle_audio(self, data: Dict[str, Any], ws: fastapi.WebSocket):
         """Handle audio with enhanced flow control and echo prevention."""
         # Skip audio processing if call has ended
         if self.call_ended:
@@ -172,7 +175,7 @@ class SimpleWebSocketHandler:
             
             # Enhanced validation and echo detection
             if self._is_valid_transcription(transcription, confidence):
-                await self._process_final_transcription(transcription, None)
+                await self._process_final_transcription(transcription)
             else:
                 self.invalid_transcriptions += 1
                 logger.debug(f"Invalid transcription rejected: '{transcription}' (conf: {confidence:.2f})")
@@ -252,7 +255,7 @@ class SimpleWebSocketHandler:
         
         return False
     
-    async def _process_final_transcription(self, transcription: str, ws=None):
+    async def _process_final_transcription(self, transcription: str):
         """Process transcription with enhanced error handling and response management."""
         # Update state
         self.transcriptions += 1
@@ -282,7 +285,11 @@ class SimpleWebSocketHandler:
             self.waiting_for_response = False
     
     async def _send_response(self, text: str, ws=None):
-        """Send TTS response with enhanced error handling and echo prevention."""
+        """
+        Send TTS response with enhanced error handling and echo prevention.
+        
+        This method works with both FastAPI WebSockets and the legacy WebSocket format.
+        """
         if not text.strip() or self.call_ended:
             return
         
@@ -341,9 +348,13 @@ class SimpleWebSocketHandler:
             logger.debug("Ready for next utterance")
     
     async def _send_audio_chunks(self, audio_data: bytes, ws):
-        """Send audio data with proper chunking and error handling."""
-        if not self.stream_sid or not ws:
-            logger.warning("Cannot send audio: missing stream_sid or websocket")
+        """
+        Send audio data with proper chunking and error handling.
+        
+        Works with both FastAPI WebSockets and the legacy WebSocket format.
+        """
+        if not self.stream_sid:
+            logger.warning("Cannot send audio: missing stream_sid")
             return
         
         chunk_size = 400  # 50ms chunks for smooth playback
@@ -362,7 +373,13 @@ class SimpleWebSocketHandler:
                     "media": {"payload": audio_base64}
                 }
                 
-                ws.send(json.dumps(message))
+                # Check what type of WebSocket we're using
+                if isinstance(ws, fastapi.WebSocket):
+                    # FastAPI WebSocket
+                    await ws.send_text(json.dumps(message))
+                else:
+                    # Legacy WebSocket
+                    ws.send(json.dumps(message))
                 
                 # Dynamic delay based on chunk size
                 await asyncio.sleep(0.025)  # 25ms delay
@@ -393,15 +410,12 @@ class SimpleWebSocketHandler:
             self.call_ended = True
             self.conversation_active = False
             
-            # Check if we should keep the session alive
-            session_duration = time.time() - self.session_start_time
-            time_since_last_transcription = time.time() - self.last_transcription_time
-            
             # More aggressive cleanup since call ended
             logger.info("Call ended - stopping STT session")
             if self.stt_client.is_streaming:
                 await self.stt_client.stop_streaming()
-                await self.stt_client.cleanup()
+                if hasattr(self.stt_client, 'cleanup'):
+                    await self.stt_client.cleanup()
             
             # Calculate final statistics
             duration = time.time() - self.session_start_time

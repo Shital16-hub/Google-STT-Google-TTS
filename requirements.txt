@@ -1,14 +1,14 @@
-# Core dependencies
-aiohttp>=3.8.0
-aiohttp-retry>=2.8.3
-asyncio
+# Core framework
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
-flask>=2.3.0
-flask-sockets>=0.2.1
-gevent>=22.10.0
-gevent-websocket>=0.10.1
-simple-websocket>=0.10.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# WebSockets
+websockets>=11.0.0
+
+# Async HTTP client
+httpx>=0.24.0
 
 # Audio processing
 audioread>=3.0.0
@@ -17,7 +17,19 @@ soundfile>=0.12.0
 numpy>=1.24.0
 scipy>=1.10.0
 
-# AI/ML components - UPDATED for latest LlamaIndex
+# Twilio integration
+twilio>=8.8.0
+
+# Google Cloud APIs - Updated for v2 API with proper protobuf support
+google-cloud-speech>=2.27.0
+google-cloud-texttospeech>=2.16.0
+google-auth>=2.23.0
+google-api-core>=2.11.0
+google-cloud-core>=2.3.2
+grpcio>=1.56.0
+protobuf>=4.25.0,<5.0.0
+
+# AI/ML components - Updated for latest LlamaIndex
 llama-index>=0.10.11
 llama-index-core>=0.10.11
 llama-index-embeddings-openai>=0.1.5
@@ -33,20 +45,6 @@ spacy>=3.6.0
 nltk>=3.8.0
 langdetect>=1.0.9
 
-# Twilio integration
-twilio>=8.8.0
-
-# Google Cloud Speech API - Updated for v2 API with proper protobuf support
-google-cloud-speech>=2.27.0
-google-auth>=2.23.0
-google-api-core>=2.11.0
-google-cloud-core>=2.3.2
-grpcio>=1.56.0
-protobuf>=4.25.0,<5.0.0
-
-# Google Cloud TTS
-google-cloud-texttospeech>=2.16.0 
-
 # Document processing
 beautifulsoup4>=4.12.0
 pdfplumber>=0.7.0
@@ -57,12 +55,10 @@ openpyxl>=3.1.0
 lxml>=4.9.0
 
 # Utilities
-pydantic>=2.0.0
+python-multipart>=0.0.6  # For FastAPI form data handling
+aiofiles>=0.8.0  # For async file operations
 pydantic-settings>=2.0.0
-python-dotenv>=1.0.0
 requests>=2.31.0
-websockets>=11.0.0
-websocket-client>=1.6.0
 pandas>=2.0.0
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
