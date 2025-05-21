@@ -6,13 +6,17 @@ Enhanced conversation manager with state tracking and context management.
 import logging
 import time
 import asyncio
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, TYPE_CHECKING
 import uuid
+import re
 
 from core.state_manager import StateManager, ConversationState
 from core.session_manager import SessionManager
-from knowledge_base.query_engine import QueryEngine
-from prompts.prompt_manager import PromptManager
+
+# Use TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from knowledge_base.query_engine import QueryEngine
+    from prompts.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +34,8 @@ class ConversationManager:
     
     def __init__(
         self,
-        query_engine: QueryEngine,
-        prompt_manager: PromptManager,
+        query_engine: 'QueryEngine',
+        prompt_manager: Optional['PromptManager'] = None,
         config: Optional[Dict[str, Any]] = None
     ):
         """
@@ -39,7 +43,7 @@ class ConversationManager:
         
         Args:
             query_engine: Knowledge base query engine
-            prompt_manager: Prompt management system
+            prompt_manager: Prompt management system (optional)
             config: Optional configuration
         """
         self.query_engine = query_engine
@@ -74,6 +78,17 @@ class ConversationManager:
         
         logger.info(f"Initialized conversation manager for session {self.session_id}")
     
+    async def init(self):
+        """Initialize async components if needed."""
+        # This method can be used for async init tasks
+        # Currently we don't need it but it's here for API consistency
+        logger.debug(f"Conversation manager init called for session {self.session_id}")
+    
+    async def cleanup(self):
+        """Clean up any resources if needed."""
+        # This is a placeholder for future cleanup needs
+        logger.debug(f"Conversation manager cleanup called for session {self.session_id}")
+    
     async def process_message(
         self,
         message: str,
@@ -107,12 +122,14 @@ class ConversationManager:
             # Update context window
             context = self._build_context(session, message)
             
-            # Get appropriate prompt
-            prompt = self.prompt_manager.get_prompt(
-                agent_type=session.agent_type,
-                state=self.state_manager.current_state,
-                collected_info=self.collected_info
-            )
+            # Get appropriate prompt if prompt manager is available
+            prompt = None
+            if self.prompt_manager and hasattr(session, 'agent_type'):
+                prompt = self.prompt_manager.get_prompt(
+                    agent_type=session.get("agent_type"),
+                    state=self.state_manager.current_state,
+                    collected_info=self.collected_info
+                )
             
             # Generate response
             response = await self.query_engine.query(
@@ -249,7 +266,6 @@ class ConversationManager:
         extracted_info = {}
         
         # Extract phone numbers
-        import re
         phone_match = re.search(
             r'(?:\+?1[-.]?)?\(?([0-9]{3})\)?[-.]?([0-9]{3})[-.]?([0-9]{4})',
             message
@@ -331,6 +347,10 @@ class ConversationManager:
             session=self.session_manager.get_session(self.session_id) or {},
             current_message=""
         )
+    
+    async def get_conversation_history(self) -> List[Dict[str, Any]]:
+        """Get conversation history."""
+        return self.conversation_history
     
     def reset(self):
         """Reset conversation state."""

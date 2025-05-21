@@ -4,7 +4,7 @@
 Intent-based agent router for directing conversations to specialized agents.
 """
 import logging
-from typing import Dict, Any, Optional, Type
+from typing import Dict, Any, Optional, Type, Union, TYPE_CHECKING
 import asyncio
 
 from agents.base_agent import BaseAgent, AgentType
@@ -12,9 +12,12 @@ from agents.towing_agent import TowingAgent
 from agents.tire_agent import TireAgent
 from agents.jump_start_agent import JumpStartAgent
 from agents.dispatcher_agent import DispatcherAgent
-from core.conversation_manager import ConversationManager
-from knowledge_base.query_engine import QueryEngine
-from prompts.prompt_manager import PromptManager
+
+# Use TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from core.conversation_manager import ConversationManager
+    from knowledge_base.query_engine import QueryEngine
+    from prompts.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +26,9 @@ class AgentRouter:
     
     def __init__(
         self,
-        conversation_manager: ConversationManager,
-        query_engine: QueryEngine,
-        prompt_manager: PromptManager
+        conversation_manager: 'ConversationManager',
+        query_engine: 'QueryEngine',
+        prompt_manager: 'PromptManager'
     ):
         """
         Initialize the agent router.

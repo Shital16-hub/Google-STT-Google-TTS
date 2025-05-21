@@ -3,16 +3,19 @@
 """
 Base agent class providing core functionality for all specialized agents.
 """
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, TYPE_CHECKING
 from enum import Enum
 import logging
 import asyncio
 import time
 
 from core.state_manager import ConversationState
-from core.conversation_manager import ConversationManager
-from knowledge_base.query_engine import QueryEngine
-from prompts.prompt_manager import PromptManager
+
+# Use TYPE_CHECKING to avoid circular import issues
+if TYPE_CHECKING:
+    from core.conversation_manager import ConversationManager
+    from knowledge_base.query_engine import QueryEngine
+    from prompts.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +33,9 @@ class BaseAgent:
     def __init__(
         self,
         agent_type: AgentType,
-        conversation_manager: ConversationManager,
-        query_engine: QueryEngine,
-        prompt_manager: PromptManager,
+        conversation_manager: 'ConversationManager',
+        query_engine: 'QueryEngine',
+        prompt_manager: 'PromptManager',
         **kwargs
     ):
         """

@@ -13,8 +13,13 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPExcept
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+# Import the right modules in the right order to avoid circular dependencies
 from core.config import Settings
+# Import these individually instead of from core/__init__.py
+from core.state_manager import StateManager, ConversationState
 from core.conversation_manager import ConversationManager
+from core.session_manager import SessionManager
+
 from knowledge_base.query_engine import QueryEngine
 from prompts.prompt_manager import PromptManager
 from agents.router import AgentRouter
@@ -51,14 +56,15 @@ async def lifespan(app: FastAPI):
         query_engine = QueryEngine(config=settings.knowledge_base)
         await query_engine.init()
         
+        # Initialize prompt system
+        prompt_manager = PromptManager(prompt_dir=settings.prompts_dir)
+        
+        # Initialize conversation manager
         conversation_manager = ConversationManager(
             query_engine=query_engine,
             config=settings.conversation
         )
         await conversation_manager.init()
-        
-        # Initialize prompt system
-        prompt_manager = PromptManager(prompt_dir=settings.prompts_dir)
         
         # Initialize agent router
         agent_router = AgentRouter(

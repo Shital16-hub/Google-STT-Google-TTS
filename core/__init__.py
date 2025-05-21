@@ -1,12 +1,12 @@
+# Import only the things that don't create circular dependencies
 from core.state_manager import StateManager, ConversationState
-from core.conversation_manager import ConversationManager
-from core.session_manager import SessionManager
 from core.config import Settings
+
+# Don't import ConversationManager or SessionManager here
+# These should be imported directly from their modules when needed
 
 __all__ = [
     'StateManager',
     'ConversationState',
-    'ConversationManager',
-    'SessionManager',
     'Settings'
 ]

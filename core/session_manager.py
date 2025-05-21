@@ -5,10 +5,11 @@ Session management for voice interactions.
 """
 import logging
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union, TYPE_CHECKING
 import uuid
 
-from agents.base_agent import AgentType
+# Import AgentType as a string to avoid circular import
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -272,14 +273,14 @@ class SessionManager:
     def set_agent_type(
         self,
         session_id: str,
-        agent_type: AgentType
+        agent_type: Union[str, Enum]
     ) -> bool:
         """
         Set agent type for session.
         
         Args:
             session_id: Session identifier
-            agent_type: Type of agent
+            agent_type: Type of agent (can be string or enum)
             
         Returns:
             True if agent type was set
@@ -287,8 +288,13 @@ class SessionManager:
         session = self.get_session(session_id)
         if not session:
             return False
+        
+        # Handle both string and enum agent types
+        if isinstance(agent_type, Enum):
+            session["agent_type"] = agent_type
+        else:
+            session["agent_type"] = agent_type
             
-        session["agent_type"] = agent_type
         return True
     
     def get_stats(self) -> Dict[str, Any]:
@@ -329,18 +335,20 @@ class SessionManager:
         for session in self.sessions.values():
             agent_type = session.get("agent_type")
             if agent_type:
-                agent_type = agent_type.value
-                if agent_type not in counts:
-                    counts[agent_type] = 0
-                counts[agent_type] += 1
+                # Handle both string and enum agent types
+                agent_type_value = agent_type.value if hasattr(agent_type, 'value') else str(agent_type)
+                if agent_type_value not in counts:
+                    counts[agent_type_value] = 0
+                counts[agent_type_value] += 1
         
         # Count completed sessions
         for session in self.completed_sessions:
             agent_type = session.get("agent_type")
             if agent_type:
-                agent_type = agent_type.value
-                if agent_type not in counts:
-                    counts[agent_type] = 0
-                counts[agent_type] += 1
+                # Handle both string and enum agent types
+                agent_type_value = agent_type.value if hasattr(agent_type, 'value') else str(agent_type)
+                if agent_type_value not in counts:
+                    counts[agent_type_value] = 0
+                counts[agent_type_value] += 1
         
         return counts

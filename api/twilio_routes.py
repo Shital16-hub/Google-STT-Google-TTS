@@ -33,7 +33,7 @@ class TwilioEvent(BaseModel):
     CallerName: Optional[str]
     ParentCallSid: Optional[str]
 
-def validate_twilio_request(
+async def validate_twilio_request(
     request: Request,
     settings: Settings = Depends(get_settings)
 ) -> bool:
