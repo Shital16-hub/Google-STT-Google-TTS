@@ -1,8 +1,5 @@
-# core/config.py
+# core/fixed_config.py
 
-"""
-Core configuration settings for the application.
-"""
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
@@ -12,27 +9,92 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+class OpenAISettings(BaseModel):
+    """OpenAI configuration."""
+    api_key: str = Field(default=os.getenv("OPENAI_API_KEY", ""))
+    model: str = Field(default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    temperature: float = Field(default=float(os.getenv("OPENAI_TEMPERATURE", "0.7")))
+    max_tokens: int = Field(default=int(os.getenv("OPENAI_MAX_TOKENS", "256")))
+    timeout: float = Field(default=float(os.getenv("OPENAI_TIMEOUT", "1.5")))
+    embedding_model: str = Field(default=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
+    streaming: bool = Field(default=True)
+
+class PineconeSettings(BaseModel):
+    """Pinecone configuration."""
+    api_key: str = Field(default=os.getenv("PINECONE_API_KEY", ""))
+    index_name: str = Field(default=os.getenv("PINECONE_INDEX_NAME", "voice-ai-knowledge"))
+    environment: str = Field(default=os.getenv("PINECONE_ENVIRONMENT", "us-east-1"))
+    namespace: str = Field(default=os.getenv("PINECONE_NAMESPACE", "default"))
+    
+class GoogleCloudSettings(BaseModel):
+    """Google Cloud configuration."""
+    credentials_file: str = Field(default=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""))
+    project_id: str = Field(default=os.getenv("GOOGLE_CLOUD_PROJECT", ""))
+    
+class STTSettings(BaseModel):
+    """STT configuration."""
+    language: str = Field(default=os.getenv("STT_LANGUAGE", "en-US"))
+    model: str = Field(default=os.getenv("STT_MODEL", "telephony"))
+    sample_rate: int = Field(default=int(os.getenv("STT_SAMPLE_RATE", "8000")))
+    encoding: str = Field(default=os.getenv("STT_ENCODING", "MULAW"))
+    channels: int = Field(default=int(os.getenv("STT_CHANNELS", "1")))
+    location: str = Field(default=os.getenv("STT_LOCATION", "global"))
+    recognizer_id: str = Field(default=os.getenv("STT_RECOGNIZER_ID", "_"))
+    interim_results: bool = Field(default=os.getenv("STT_INTERIM_RESULTS", "false").lower() == "true")
+    enable_automatic_punctuation: bool = Field(default=os.getenv("STT_ENABLE_AUTOMATIC_PUNCTUATION", "true").lower() == "true")
+    enable_word_time_offsets: bool = Field(default=os.getenv("STT_ENABLE_WORD_TIME_OFFSETS", "true").lower() == "true")
+    enable_word_confidence: bool = Field(default=os.getenv("STT_ENABLE_WORD_CONFIDENCE", "true").lower() == "true")
+    enable_voice_activity_events: bool = Field(default=os.getenv("STT_ENABLE_VOICE_ACTIVITY_EVENTS", "true").lower() == "true")
+    speech_start_timeout: int = Field(default=int(os.getenv("STT_SPEECH_START_TIMEOUT", "5")))
+    speech_end_timeout: int = Field(default=int(os.getenv("STT_SPEECH_END_TIMEOUT", "1")))
+    max_alternatives: int = Field(default=int(os.getenv("STT_MAX_ALTERNATIVES", "1")))
+    profanity_filter: bool = Field(default=os.getenv("STT_PROFANITY_FILTER", "false").lower() == "true")
+    use_enhanced_model: bool = Field(default=os.getenv("STT_USE_ENHANCED_MODEL", "true").lower() == "true")
+
+class TTSSettings(BaseModel):
+    """TTS configuration."""
+    voice_type: str = Field(default=os.getenv("TTS_VOICE_TYPE", "NEURAL2"))
+    voice_name: str = Field(default=os.getenv("TTS_VOICE_NAME", "en-US-Neural2-C"))
+    voice_gender: str = Field(default=os.getenv("TTS_VOICE_GENDER", ""))
+    language_code: str = Field(default=os.getenv("TTS_LANGUAGE_CODE", "en-US"))
+    container_format: str = Field(default=os.getenv("TTS_CONTAINER_FORMAT", "mulaw"))
+    sample_rate: int = Field(default=int(os.getenv("TTS_SAMPLE_RATE", "8000")))
+    enable_caching: bool = Field(default=os.getenv("TTS_ENABLE_CACHING", "true").lower() == "true")
+
 class KnowledgeBaseSettings(BaseModel):
     """Knowledge base configuration."""
-    storage_dir: str = Field(default="./storage")
-    pinecone_api_key: str = Field(default=os.getenv("PINECONE_API_KEY", ""))
-    pinecone_environment: str = Field(default=os.getenv("PINECONE_ENV", "gcp-starter"))
-    pinecone_index: str = Field(default=os.getenv("PINECONE_INDEX", "roadside-assistance"))
-    index_batch_size: int = Field(default=100)
-    cache_enabled: bool = Field(default=True)
+    storage_dir: str = Field(default=os.getenv("STORAGE_DIR", "./storage"))
+    max_document_size_mb: int = Field(default=int(os.getenv("MAX_DOCUMENT_SIZE_MB", "10")))
+    chunk_size: int = Field(default=int(os.getenv("CHUNK_SIZE", "512")))
+    chunk_overlap: int = Field(default=int(os.getenv("CHUNK_OVERLAP", "50")))
+    default_retrieve_count: int = Field(default=int(os.getenv("DEFAULT_RETRIEVE_COUNT", "3")))
+    minimum_relevance_score: float = Field(default=float(os.getenv("MINIMUM_RELEVANCE_SCORE", "0.6")))
+    embedding_batch_size: int = Field(default=int(os.getenv("EMBEDDING_BATCH_SIZE", "32")))
+    enable_caching: bool = Field(default=os.getenv("ENABLE_CACHING", "true").lower() == "true")
+    parallel_processing: bool = Field(default=os.getenv("PARALLEL_PROCESSING", "true").lower() == "true")
+    use_gpu: bool = Field(default=os.getenv("USE_GPU", "false").lower() == "true")
+    persist_dir: str = Field(default=os.getenv("PERSIST_DIR", "./storage"))
+    reranking_enabled: bool = Field(default=os.getenv("RERANKING_ENABLED", "false").lower() == "true")
+    embedding_model: str = Field(default=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"))
+    embedding_dimension: str = Field(default=os.getenv("EMBEDDING_DIMENSION", "1536"))
+    vector_dimension: str = Field(default=os.getenv("VECTOR_DIMENSION", "1536"))
 
 class ConversationSettings(BaseModel):
-    """Conversation management configuration."""
-    max_turns: int = Field(default=20)
-    timeout_seconds: int = Field(default=300)
-    max_silence_seconds: float = Field(default=10.0)
-    early_response_threshold: int = Field(default=3)
+    """Conversation configuration."""
+    max_conversation_history: int = Field(default=int(os.getenv("MAX_CONVERSATION_HISTORY", "5")))
+    context_window_size: int = Field(default=int(os.getenv("CONTEXT_WINDOW_SIZE", "4096")))
+    max_tokens: int = Field(default=int(os.getenv("MAX_TOKENS", "150")))
+    temperature: float = Field(default=float(os.getenv("TEMPERATURE", "0.7")))
 
-class AgentSettings(BaseModel):
-    """Agent system configuration."""
-    default_agent: str = Field(default="dispatcher")
-    handoff_timeout: int = Field(default=60)
-    max_retry_attempts: int = Field(default=3)
+class PerformanceSettings(BaseModel):
+    """Performance configuration."""
+    target_stt_latency: float = Field(default=float(os.getenv("TARGET_STT_LATENCY", "0.5")))
+    target_kb_latency: float = Field(default=float(os.getenv("TARGET_KB_LATENCY", "1.0")))
+    target_tts_latency: float = Field(default=float(os.getenv("TARGET_TTS_LATENCY", "0.5")))
+    target_total_latency: float = Field(default=float(os.getenv("TARGET_TOTAL_LATENCY", "2.0")))
+    enable_performance_logging: bool = Field(default=os.getenv("ENABLE_PERFORMANCE_LOGGING", "true").lower() == "true")
+    enable_prometheus: bool = Field(default=os.getenv("ENABLE_PROMETHEUS", "true").lower() == "true")
+    metrics_port: int = Field(default=int(os.getenv("METRICS_PORT", "9090")))
 
 class TwilioSettings(BaseModel):
     """Twilio integration configuration."""
@@ -42,36 +104,43 @@ class TwilioSettings(BaseModel):
     twiml_app_sid: Optional[str] = Field(default=os.getenv("TWILIO_TWIML_APP_SID"))
     status_callback_url: Optional[str] = Field(default=None)
 
-class OpenAISettings(BaseModel):
-    """OpenAI configuration."""
-    api_key: str = Field(default=os.getenv("OPENAI_API_KEY", ""))
-    model: str = Field(default="gpt-3.5-turbo")
-    temperature: float = Field(default=0.7)
-    max_tokens: int = Field(default=150)
-    streaming: bool = Field(default=True)
+class RedisSettings(BaseModel):
+    """Redis configuration."""
+    url: str = Field(default=os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+
+class FeatureFlags(BaseModel):
+    """Feature flags."""
+    enable_conversation_context: bool = Field(default=os.getenv("ENABLE_CONVERSATION_CONTEXT", "true").lower() == "true")
+    enable_source_citations: bool = Field(default=os.getenv("ENABLE_SOURCE_CITATIONS", "true").lower() == "true")
 
 class Settings(BaseSettings):
     """Main application settings."""
     # Basic settings
-    debug: bool = Field(default=False)
+    debug: bool = Field(default=os.getenv("DEBUG", "false").lower() == "true")
     environment: str = Field(default="development")
-    log_level: str = Field(default="INFO")
+    log_level: str = Field(default=os.getenv("LOG_LEVEL", "INFO"))
     
     # Application paths
     base_dir: str = Field(default=".")
     prompts_dir: str = Field(default="./prompts")
     
     # Component configurations
+    openai: OpenAISettings = Field(default_factory=OpenAISettings)
+    pinecone: PineconeSettings = Field(default_factory=PineconeSettings)
+    google_cloud: GoogleCloudSettings = Field(default_factory=GoogleCloudSettings)
+    stt: STTSettings = Field(default_factory=STTSettings)
+    tts: TTSSettings = Field(default_factory=TTSSettings)
     knowledge_base: KnowledgeBaseSettings = Field(default_factory=KnowledgeBaseSettings)
     conversation: ConversationSettings = Field(default_factory=ConversationSettings)
-    agent: AgentSettings = Field(default_factory=AgentSettings)
+    performance: PerformanceSettings = Field(default_factory=PerformanceSettings)
     twilio: TwilioSettings = Field(default_factory=TwilioSettings)
-    openai: OpenAISettings = Field(default_factory=OpenAISettings)
+    redis: RedisSettings = Field(default_factory=RedisSettings)
+    feature_flags: FeatureFlags = Field(default_factory=FeatureFlags)
     
     # API configuration
-    host: str = Field(default="0.0.0.0")
-    port: int = Field(default=8000)
-    base_url: str = Field(default=os.getenv("BASE_URL", "http://localhost:8000"))
+    host: str = Field(default=os.getenv("HOST", "0.0.0.0"))
+    port: int = Field(default=int(os.getenv("PORT", "5000")))
+    base_url: str = Field(default=os.getenv("BASE_URL", "http://localhost:5000"))
     
     # Security settings
     api_key: Optional[str] = Field(default=os.getenv("API_KEY"))
@@ -80,52 +149,4 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
-    
-    def get_component_settings(self, component: str) -> Dict[str, Any]:
-        """Get settings for a specific component."""
-        components = {
-            "knowledge_base": self.knowledge_base,
-            "conversation": self.conversation,
-            "agent": self.agent,
-            "twilio": self.twilio,
-            "openai": self.openai
-        }
-        return components.get(component, {})
-    
-    def get_knowledge_base_config(self) -> Dict[str, Any]:
-        """Get configuration for knowledge base initialization."""
-        return {
-            "storage_dir": self.knowledge_base.storage_dir,
-            "pinecone_api_key": self.knowledge_base.pinecone_api_key,
-            "pinecone_environment": self.knowledge_base.pinecone_environment,
-            "pinecone_index": self.knowledge_base.pinecone_index,
-            "cache_enabled": self.knowledge_base.cache_enabled
-        }
-    
-    def get_openai_config(self) -> Dict[str, Any]:
-        """Get OpenAI configuration."""
-        return {
-            "api_key": self.openai.api_key,
-            "model": self.openai.model,
-            "temperature": self.openai.temperature,
-            "max_tokens": self.openai.max_tokens,
-            "streaming": self.openai.streaming
-        }
-    
-    def get_twilio_config(self) -> Dict[str, Any]:
-        """Get Twilio configuration."""
-        config = {
-            "account_sid": self.twilio.account_sid,
-            "auth_token": self.twilio.auth_token,
-            "phone_number": self.twilio.phone_number
-        }
-        
-        if self.twilio.twiml_app_sid:
-            config["application_sid"] = self.twilio.twiml_app_sid
-            
-        if self.twilio.status_callback_url:
-            config["status_callback"] = self.twilio.status_callback_url
-        elif self.base_url:
-            config["status_callback"] = f"{self.base_url}/voice/status"
-            
-        return config
+        extra = "ignore"
