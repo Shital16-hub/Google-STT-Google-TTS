@@ -86,7 +86,7 @@ class QueryEngine:
         """
         self.config = config or rag_config
         self.index_manager = index_manager
-        self.top_k = self.config.retrieval_top_k
+        self.top_k = getattr(self.config, 'retrieval_top_k', getattr(self.config, 'default_retrieve_count', 3))
         self.similarity_threshold = self.config.similarity_threshold
         
         # Component placeholders
