@@ -1,7 +1,7 @@
 # telephony/simple_websocket_handler.py
 
 """
-Fixed WebSocket handler V2 - Resolves connection detection and audio processing issues.
+Fixed WebSocket handler V3 - Resolves connection_closed attribute error and improves audio processing.
 """
 import json
 import asyncio
@@ -38,7 +38,7 @@ PROGRESS_RESPONSES = [
 
 class SimpleWebSocketHandler:
     """
-    Fixed WebSocket handler V2 with improved connection detection and audio processing.
+    Fixed WebSocket handler V3 with improved connection detection and audio processing.
     """
     
     def __init__(self, call_sid: str, pipeline):
@@ -92,6 +92,7 @@ class SimpleWebSocketHandler:
         self.is_processing = False
         self.call_ended = False
         self.stream_started = False  # Track if media stream has started
+        self.connection_closed = False  # FIX: Add missing attribute
         
         # Audio processing with optimized flow control
         self.audio_buffer = bytearray()
@@ -137,7 +138,7 @@ class SimpleWebSocketHandler:
                 )
             )
         
-        logger.info(f"Fixed WebSocket handler V2 initialized - Call: {call_sid}, Project: {self.project_id}")
+        logger.info(f"Fixed WebSocket handler V3 initialized - Call: {call_sid}, Project: {self.project_id}")
     
     def _get_project_id(self) -> str:
         """Get project ID with enhanced error handling."""
@@ -173,15 +174,15 @@ class SimpleWebSocketHandler:
             # For FastAPI WebSocket, check if we can access the websocket attributes
             # If we can access them without error, the connection is likely still open
             _ = self._ws.client
-            return not self.call_ended
+            return not self.call_ended and not self.connection_closed
         except Exception:
             return False
     
     async def _handle_audio(self, data: Dict[str, Any], ws: WebSocket):
         """Handle audio with improved connection state management."""
-        # Skip audio processing if call has ended
-        if self.call_ended:
-            logger.debug("Skipping audio processing - call ended")
+        # Skip audio processing if call has ended or connection closed
+        if self.call_ended or self.connection_closed:
+            logger.debug("Skipping audio processing - call ended or connection closed")
             return
         
         # Skip audio processing if we're speaking to prevent echo
@@ -435,7 +436,7 @@ class SimpleWebSocketHandler:
     
     async def _send_response(self, text: str, ws=None):
         """Send TTS response with improved connection handling."""
-        if not text.strip() or self.call_ended:
+        if not text.strip() or self.call_ended or self.connection_closed:
             return
         
         # Use stored WebSocket if not provided
@@ -548,6 +549,7 @@ class SimpleWebSocketHandler:
                 
         except WebSocketDisconnect:
             logger.info("WebSocket disconnected during audio send")
+            self.connection_closed = True  # Mark connection as closed
         except Exception as e:
             logger.error(f"Error sending audio chunk: {e}")
     
@@ -647,6 +649,7 @@ class SimpleWebSocketHandler:
         try:
             # Mark call as ended first to prevent new operations
             self.call_ended = True
+            self.connection_closed = True  # Mark connection as closed
             self.conversation_active = False
             self.is_speaking = False
             self.is_processing = False
@@ -723,6 +726,7 @@ class SimpleWebSocketHandler:
             "is_processing": self.is_processing,
             "conversation_active": self.conversation_active,
             "call_ended": self.call_ended,
+            "connection_closed": self.connection_closed,  # Include this in stats
             "stream_started": self.stream_started,
             "session_start_time": self.session_start_time,
             "last_transcription_time": self.last_transcription_time,
