@@ -69,6 +69,7 @@ class KnowledgeBaseSettings(BaseModel):
     chunk_overlap: int = Field(default=int(os.getenv("CHUNK_OVERLAP", "50")))
     default_retrieve_count: int = Field(default=int(os.getenv("DEFAULT_RETRIEVE_COUNT", "3")))
     minimum_relevance_score: float = Field(default=float(os.getenv("MINIMUM_RELEVANCE_SCORE", "0.6")))
+    similarity_threshold: float = Field(default=float(os.getenv("SIMILARITY_THRESHOLD", "0.7")))  # Add this line
     embedding_batch_size: int = Field(default=int(os.getenv("EMBEDDING_BATCH_SIZE", "32")))
     enable_caching: bool = Field(default=os.getenv("ENABLE_CACHING", "true").lower() == "true")
     parallel_processing: bool = Field(default=os.getenv("PARALLEL_PROCESSING", "true").lower() == "true")
@@ -78,6 +79,18 @@ class KnowledgeBaseSettings(BaseModel):
     embedding_model: str = Field(default=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"))
     embedding_dimension: str = Field(default=os.getenv("EMBEDDING_DIMENSION", "1536"))
     vector_dimension: str = Field(default=os.getenv("VECTOR_DIMENSION", "1536"))
+    pinecone_index_name: str = Field(default=os.getenv("PINECONE_INDEX_NAME", "voice-ai-knowledge"))
+    pinecone_namespace: str = Field(default=os.getenv("PINECONE_NAMESPACE", "default"))
+    openai_embedding_model: str = Field(default=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
+    openai_api_key: str = Field(default=os.getenv("OPENAI_API_KEY", ""))
+    openai_model: str = Field(default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    llm_temperature: float = Field(default=float(os.getenv("OPENAI_TEMPERATURE", "0.7")))
+    pinecone_api_key: str = Field(default=os.getenv("PINECONE_API_KEY", ""))
+    max_tokens: int = Field(default=int(os.getenv("OPENAI_MAX_TOKENS", "256")))
+
+
+
+
 
 class ConversationSettings(BaseModel):
     """Conversation configuration."""
