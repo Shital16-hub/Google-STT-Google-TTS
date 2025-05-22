@@ -1,8 +1,7 @@
 # telephony/simple_websocket_handler.py
 
 """
-Highly optimized WebSocket handler for minimal latency voice interactions.
-Includes binary data transmission, connection pooling, and progressive response.
+Fixed WebSocket handler V2 - Resolves connection detection and audio processing issues.
 """
 import json
 import asyncio
@@ -16,7 +15,7 @@ import aiohttp
 import uuid
 
 import fastapi
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from speech_to_text.google_cloud_stt import GoogleCloudStreamingSTT, StreamingTranscriptionResult
 from integration.tts_integration import TTSIntegration
@@ -39,17 +38,11 @@ PROGRESS_RESPONSES = [
 
 class SimpleWebSocketHandler:
     """
-    Highly optimized WebSocket handler for minimal latency.
-    
-    Features:
-    - Binary WebSocket messages for audio data
-    - Progressive responses with immediate feedback
-    - Connection pooling for API calls
-    - Optimized speaking/listening state management
+    Fixed WebSocket handler V2 with improved connection detection and audio processing.
     """
     
     def __init__(self, call_sid: str, pipeline):
-        """Initialize with advanced optimizations."""
+        """Initialize with improved connection management."""
         self.call_sid = call_sid
         self.stream_sid = None
         self.pipeline = pipeline
@@ -69,7 +62,7 @@ class SimpleWebSocketHandler:
                 sample_rate=8000,
                 encoding="MULAW",
                 channels=1,
-                interim_results=True,  # Enable interim results for early processing
+                interim_results=True,
                 project_id=self.project_id,
                 location="global",
                 credentials_file=credentials_file
@@ -93,16 +86,17 @@ class SimpleWebSocketHandler:
                 voice_type="NEURAL2"
             )
         
-        # Enhanced state management
+        # Enhanced state management with simplified connection tracking
         self.conversation_active = True
         self.is_speaking = False
-        self.is_processing = False  # Track when we're processing a query
+        self.is_processing = False
         self.call_ended = False
+        self.stream_started = False  # Track if media stream has started
         
         # Audio processing with optimized flow control
         self.audio_buffer = bytearray()
-        self.chunk_size = 320  # 40ms chunks for faster processing
-        self.min_valid_chunk_size = 80  # Minimum valid chunk size
+        self.chunk_size = 320
+        self.min_valid_chunk_size = 80
         
         # Session management
         self.session_start_time = time.time()
@@ -110,7 +104,7 @@ class SimpleWebSocketHandler:
         self.last_audio_time = time.time()
         self.last_interim_time = time.time()
         self.last_tts_time = None
-        self.last_progress_time = 0  # Track when we last sent a progress message
+        self.last_progress_time = 0
         
         # Response tracking
         self.last_response_time = time.time()
@@ -127,8 +121,9 @@ class SimpleWebSocketHandler:
         self.progress_responses_sent = 0
         self.processing_times = []
         
-        # WebSocket reference
+        # WebSocket reference with simplified state tracking
         self._ws = None
+        self._ws_lock = asyncio.Lock()
         
         # Ensure we have a global HTTP session for connection pooling
         global HTTP_SESSION
@@ -136,13 +131,13 @@ class SimpleWebSocketHandler:
             HTTP_SESSION = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=10),
                 connector=aiohttp.TCPConnector(
-                    limit=20,  # Max connections
-                    ttl_dns_cache=300,  # DNS cache TTL
-                    ssl=False  # Faster without SSL verification
+                    limit=20,
+                    ttl_dns_cache=300,
+                    ssl=False
                 )
             )
         
-        logger.info(f"Highly optimized WebSocket handler initialized - Call: {call_sid}, Project: {self.project_id}")
+        logger.info(f"Fixed WebSocket handler V2 initialized - Call: {call_sid}, Project: {self.project_id}")
     
     def _get_project_id(self) -> str:
         """Get project ID with enhanced error handling."""
@@ -169,74 +164,36 @@ class SimpleWebSocketHandler:
         logger.warning("Using fallback project ID - this should be configured properly")
         return "my-tts-project-458404"
     
-    def _reinitialize_stt(self):
-        """Re-initialize STT components with improved error handling."""
+    def _is_websocket_connected(self) -> bool:
+        """Simplified WebSocket connection check."""
         try:
-            # Create a completely new speech recognizer instance
-            credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            if not self._ws:
+                return False
             
-            # Important: Set these to None first to ensure proper cleanup
-            self.speech_recognizer = None
-            self.stt_integration = None
-            
-            # Create fresh instances
-            self.speech_recognizer = GoogleCloudStreamingSTT(
-                language="en-US",
-                sample_rate=8000,
-                encoding="MULAW",
-                channels=1,
-                interim_results=True,
-                project_id=self.project_id,
-                location="global",
-                credentials_file=credentials_file
-            )
-            
-            # Create a new STT integration with the new recognizer
-            self.stt_integration = STTIntegration(
-                speech_recognizer=self.speech_recognizer,
-                language="en-US"
-            )
-            
-            logger.info("Re-initialized STT components successfully")
-            
-            # Restart streaming to ensure a clean state
-            asyncio.create_task(self._restart_streaming())
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error re-initializing STT components: {e}")
-            # Try to recover by using components from the pipeline
-            if hasattr(self.pipeline, 'speech_recognizer') and self.pipeline.speech_recognizer:
-                self.speech_recognizer = self.pipeline.speech_recognizer
-                self.stt_integration = self.pipeline.stt_helper
-                logger.info("Recovered STT components from pipeline")
-                return True
+            # For FastAPI WebSocket, check if we can access the websocket attributes
+            # If we can access them without error, the connection is likely still open
+            _ = self._ws.client
+            return not self.call_ended
+        except Exception:
             return False
-
-    async def _restart_streaming(self):
-        """Restart streaming session with error handling."""
-        try:
-            if self.stt_integration:
-                await self.stt_integration.start_streaming()
-                logger.info("Restarted streaming session")
-        except Exception as e:
-            logger.error(f"Error restarting streaming: {e}")
-        
+    
     async def _handle_audio(self, data: Dict[str, Any], ws: WebSocket):
-        """Handle audio with improved error handling and state management."""
+        """Handle audio with improved connection state management."""
         # Skip audio processing if call has ended
         if self.call_ended:
+            logger.debug("Skipping audio processing - call ended")
             return
         
         # Skip audio processing if we're speaking to prevent echo
         if self.is_speaking:
+            logger.debug("Skipping audio processing - currently speaking")
             return
         
         media = data.get('media', {})
         payload = media.get('payload')
         
         if not payload:
+            logger.debug("No payload in media data")
             return
         
         # Decode audio with optimized error handling
@@ -245,9 +202,9 @@ class SimpleWebSocketHandler:
             self.audio_received += 1
             self.last_audio_time = time.time()
             
-            # Only log occasional chunks to reduce log noise
-            if self.audio_received % 200 == 0:
-                logger.debug(f"Received audio chunk: {len(audio_data)} bytes")
+            # Log audio reception for debugging
+            if self.audio_received <= 10 or self.audio_received % 100 == 0:
+                logger.info(f"Received audio chunk #{self.audio_received}: {len(audio_data)} bytes")
                 
         except Exception as e:
             logger.error(f"Error decoding audio: {e}")
@@ -255,21 +212,18 @@ class SimpleWebSocketHandler:
         
         # Skip if chunk too small (likely silence)
         if len(audio_data) < self.min_valid_chunk_size:
+            logger.debug(f"Skipping small audio chunk: {len(audio_data)} bytes")
             return
         
         # Process audio directly through STT with early response processing
         try:
-            # Log every 500th audio chunk for debugging
-            if self.audio_received % 500 == 0:
-                logger.info(f"Processing audio chunk #{self.audio_received}, size: {len(audio_data)} bytes")
-                
             # Ensure STT integration exists
             if not self.stt_integration:
                 logger.error("STT integration not available")
                 self._reinitialize_stt()
                 return
                 
-            # Use a longer timeout for STT processing
+            # Process audio chunk
             try:
                 result = await asyncio.wait_for(
                     self.stt_integration.process_stream_chunk(
@@ -278,6 +232,10 @@ class SimpleWebSocketHandler:
                     ),
                     timeout=10.0
                 )
+                
+                if self.audio_received <= 5:
+                    logger.info(f"Successfully processed audio chunk #{self.audio_received}")
+                    
             except asyncio.TimeoutError:
                 logger.warning("STT processing timed out, continuing")
                 
@@ -290,7 +248,7 @@ class SimpleWebSocketHandler:
                 logger.error(f"Error recovering STT stream: {recovery_error}")
     
     async def _handle_transcription_result(self, result: StreamingTranscriptionResult):
-        """Process transcription with progressive response capability and better debug logging."""
+        """Process transcription with improved handling."""
         transcription = result.text.strip()
         confidence = result.confidence
         
@@ -300,9 +258,9 @@ class SimpleWebSocketHandler:
             self.last_interim_time = time.time()
             self.interim_text = transcription
             
-            # Add more debug logging to trace what's happening
-            if len(transcription) >= 2:
-                logger.debug(f"Interim result: '{transcription}' (confidence: {confidence:.2f})")
+            # Log substantial interim results
+            if len(transcription) >= 3:
+                logger.info(f"Interim result: '{transcription}' (confidence: {confidence:.2f})")
             
             # Process substantial interim results for faster response
             if len(transcription.split()) >= 3 and time.time() - self.last_progress_time > 2.0:
@@ -334,6 +292,11 @@ class SimpleWebSocketHandler:
         """Send an immediate progress response while processing."""
         # Skip if already sent or if we're speaking
         if self.progress_sent or self.is_speaking:
+            return
+            
+        # Check if we have stream_sid to send audio
+        if not self.stream_sid:
+            logger.warning("Cannot send progress response: no stream_sid")
             return
             
         # Choose a progress response
@@ -370,7 +333,7 @@ class SimpleWebSocketHandler:
             logger.error(f"Error sending progress response: {e}")
     
     async def _process_transcription(self, transcription: str, is_final: bool = True):
-        """Process transcription with improved error handling and retry logic."""
+        """Process transcription with improved error handling."""
         # Skip if we're speaking to prevent processing during our own speech
         if self.is_speaking:
             return
@@ -406,7 +369,6 @@ class SimpleWebSocketHandler:
                             
                     else:
                         # For interim results, use simplified query for speed
-                        # This will be a simpler query to get faster responses
                         try:
                             # Try a more direct method for faster response
                             context = await self.pipeline.query_engine.retrieve(transcription)
@@ -472,55 +434,52 @@ class SimpleWebSocketHandler:
                     self.stt_integration.set_speaking_state(False)
     
     async def _send_response(self, text: str, ws=None):
-        """Send TTS response with improved error handling and state management."""
+        """Send TTS response with improved connection handling."""
         if not text.strip() or self.call_ended:
             return
         
         # Use stored WebSocket if not provided
         if ws is None:
             ws = getattr(self, '_ws', None)
-            if ws is None:
-                logger.error("No WebSocket available for sending response")
-                return
+        
+        # Check if we have necessary components
+        if not ws or not self.stream_sid:
+            logger.error(f"Cannot send response: ws={ws is not None}, stream_sid={self.stream_sid}")
+            return
         
         try:
-            # Set speaking state to prevent processing our own output
-            self.is_speaking = True
-            if hasattr(self.stt_integration, 'set_speaking_state'):
-                self.stt_integration.set_speaking_state(True)
-                
-            self.last_response_time = time.time()
-            self.last_response_text = text
-            
-            logger.info(f"Sending response: '{text}'")
-            
-            # Verify stream_sid is set before trying to send audio
-            if not self.stream_sid:
-                logger.warning("Cannot send audio: missing stream_sid")
-                # Wait a bit and try to continue
-                await asyncio.sleep(0.1)
-            
-            # Optimal response strategy based on text length
-            if len(text) > 100:
-                # Long response - use streaming synthesis for faster start
-                await self._stream_long_response(text, ws)
-            else:
-                # Short response - use direct synthesis for speed
-                try:
-                    audio_data = await self.tts_client.synthesize(text)
-                    if audio_data:
-                        # Send in small chunks for smoother playback
-                        chunk_size = 160  # 20ms chunks
-                        for i in range(0, len(audio_data), chunk_size):
-                            await self._send_audio_binary(audio_data[i:i+chunk_size], ws)
-                            await asyncio.sleep(0.01)  # Minimal delay
-                except Exception as e:
-                    logger.error(f"Error synthesizing speech: {e}")
+            async with self._ws_lock:  # Use lock to prevent concurrent sends
+                # Set speaking state to prevent processing our own output
+                self.is_speaking = True
+                if hasattr(self.stt_integration, 'set_speaking_state'):
+                    self.stt_integration.set_speaking_state(True)
                     
-            self.last_tts_time = time.time()
-            self.responses_sent += 1
-            logger.info(f"Sent response for: '{text}'")
-            
+                self.last_response_time = time.time()
+                self.last_response_text = text
+                
+                logger.info(f"Sending response: '{text}'")
+                
+                # Optimal response strategy based on text length
+                if len(text) > 100:
+                    # Long response - use streaming synthesis for faster start
+                    await self._stream_long_response(text, ws)
+                else:
+                    # Short response - use direct synthesis for speed
+                    try:
+                        audio_data = await self.tts_client.synthesize(text)
+                        if audio_data:
+                            # Send in small chunks for smoother playback
+                            chunk_size = 160  # 20ms chunks
+                            for i in range(0, len(audio_data), chunk_size):
+                                await self._send_audio_binary(audio_data[i:i+chunk_size], ws)
+                                await asyncio.sleep(0.01)  # Minimal delay
+                    except Exception as e:
+                        logger.error(f"Error synthesizing speech: {e}")
+                        
+                self.last_tts_time = time.time()
+                self.responses_sent += 1
+                logger.info(f"Sent response for: '{text}'")
+                
         except Exception as e:
             logger.error(f"Error sending response: {e}", exc_info=True)
         finally:
@@ -561,7 +520,7 @@ class SimpleWebSocketHandler:
                 # Continue with next sentence
     
     async def _send_audio_binary(self, audio_data: bytes, ws=None):
-        """Send audio using binary WebSocket messages for maximum efficiency."""
+        """Send audio with proper error handling."""
         if not self.stream_sid:
             logger.warning("Cannot send audio: missing stream_sid")
             return
@@ -569,6 +528,10 @@ class SimpleWebSocketHandler:
         # Use stored WebSocket if not provided
         if ws is None:
             ws = self._ws
+        
+        if not ws:
+            logger.warning("Cannot send audio: no WebSocket connection")
+            return
         
         try:
             # Create a properly formatted message for Twilio Media Streams
@@ -579,14 +542,17 @@ class SimpleWebSocketHandler:
                     "payload": base64.b64encode(audio_data).decode('utf-8')
                 }
             }
+            
             # Send as text - this is what Twilio expects
             await ws.send_text(json.dumps(message))
                 
+        except WebSocketDisconnect:
+            logger.info("WebSocket disconnected during audio send")
         except Exception as e:
             logger.error(f"Error sending audio chunk: {e}")
     
     async def start_conversation(self, ws):
-        """Start conversation with proper initialization."""
+        """Start conversation with proper initialization and greeting."""
         # Store WebSocket reference
         self._ws = ws
         
@@ -597,6 +563,7 @@ class SimpleWebSocketHandler:
         if self.stt_integration:
             try:
                 await self.stt_integration.start_streaming()
+                logger.info("STT streaming started successfully")
             except Exception as e:
                 logger.error(f"Error starting STT streaming: {e}")
                 # Create a new STT integration if start failed
@@ -607,12 +574,74 @@ class SimpleWebSocketHandler:
             self._reinitialize_stt()
             await self.stt_integration.start_streaming()
         
-        # Send welcome message with minimal delay
-        await asyncio.sleep(0.05)
-        await self._send_response("How can I help you today?", ws)
+        # DON'T send welcome message immediately - wait for media stream to start
+        logger.info("Conversation initialized, waiting for media stream to start")
+    
+    async def send_initial_greeting(self):
+        """Send initial greeting after media stream starts."""
+        if not self.stream_started:
+            self.stream_started = True
+            # Wait a brief moment for the stream to be fully established
+            await asyncio.sleep(0.5)
+            logger.info("Sending initial greeting")
+            await self._send_response("Hello! How can I help you today?")
+    
+    def _reinitialize_stt(self):
+        """Re-initialize STT components with improved error handling."""
+        try:
+            # Create a completely new speech recognizer instance
+            credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            
+            # Important: Set these to None first to ensure proper cleanup
+            self.speech_recognizer = None
+            self.stt_integration = None
+            
+            # Create fresh instances
+            self.speech_recognizer = GoogleCloudStreamingSTT(
+                language="en-US",
+                sample_rate=8000,
+                encoding="MULAW",
+                channels=1,
+                interim_results=True,
+                project_id=self.project_id,
+                location="global",
+                credentials_file=credentials_file
+            )
+            
+            # Create a new STT integration with the new recognizer
+            self.stt_integration = STTIntegration(
+                speech_recognizer=self.speech_recognizer,
+                language="en-US"
+            )
+            
+            logger.info("Re-initialized STT components successfully")
+            
+            # Restart streaming to ensure a clean state
+            asyncio.create_task(self._restart_streaming())
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error re-initializing STT components: {e}")
+            # Try to recover by using components from the pipeline
+            if hasattr(self.pipeline, 'speech_recognizer') and self.pipeline.speech_recognizer:
+                self.speech_recognizer = self.pipeline.speech_recognizer
+                self.stt_integration = self.pipeline.stt_helper
+                logger.info("Recovered STT components from pipeline")
+                return True
+            return False
+
+    async def _restart_streaming(self):
+        """Restart streaming session with error handling."""
+        try:
+            if self.stt_integration:
+                await self.stt_integration.start_streaming()
+                logger.info("Restarted streaming session")
+        except Exception as e:
+            logger.error(f"Error restarting streaming: {e}")
     
     async def _cleanup(self):
-        """Clean up resources with thorough cleanup of streaming sessions."""
+        """Clean up resources with improved error handling."""
         logger.info(f"Starting cleanup for call {self.call_sid}")
         
         try:
@@ -694,6 +723,7 @@ class SimpleWebSocketHandler:
             "is_processing": self.is_processing,
             "conversation_active": self.conversation_active,
             "call_ended": self.call_ended,
+            "stream_started": self.stream_started,
             "session_start_time": self.session_start_time,
             "last_transcription_time": self.last_transcription_time,
             "last_audio_time": self.last_audio_time,

@@ -1,8 +1,7 @@
 # main.py
 
 """
-Main application entry point with FastAPI implementation.
-Fixed for proper initialization and error handling.
+Fixed main application entry point with improved WebSocket handling.
 """
 import os
 import logging
@@ -190,15 +189,25 @@ app.add_middleware(
 app.include_router(twilio_router, prefix="/voice", tags=["voice"])
 app.include_router(health_router, prefix="/health", tags=["health"])
 
-# Active WebSocket connections
-active_connections: Dict[str, WebSocket] = {}
+# Active WebSocket connections with improved tracking
+active_connections: Dict[str, Dict[str, Any]] = {}
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for Twilio Media Streams."""
+    """Enhanced WebSocket endpoint for Twilio Media Streams with proper error handling."""
+    handler = None
+    
     try:
         await websocket.accept()
-        active_connections[session_id] = websocket
+        
+        # Track connection
+        connection_info = {
+            "websocket": websocket,
+            "connected_at": time.time(),
+            "session_id": session_id,
+            "status": "connected"
+        }
+        active_connections[session_id] = connection_info
         
         logger.info(f"WebSocket connection established for session {session_id}")
         
@@ -216,19 +225,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
                 pipeline = SimplePipeline()
                 
-                # Create WebSocket handler
+                # Create WebSocket handler with improved error handling
                 handler = SimpleWebSocketHandler(session_id, pipeline)
                 
                 # Start the conversation
                 await handler.start_conversation(websocket)
                 
-                # Handle WebSocket messages
+                # Update connection status
+                active_connections[session_id]["status"] = "active"
+                active_connections[session_id]["handler"] = handler
+                
+                # Handle WebSocket messages with proper error handling
                 while True:
                     try:
-                        # Receive message from Twilio
-                        message = await websocket.receive_text()
-                        data = json.loads(message)
+                        # Receive message from Twilio with timeout
+                        message = await asyncio.wait_for(
+                            websocket.receive_text(), 
+                            timeout=60.0  # 60 second timeout
+                        )
                         
+                        data = json.loads(message)
                         event_type = data.get('event')
                         
                         if event_type == 'start':
@@ -237,50 +253,100 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                             handler.stream_sid = stream_sid
                             logger.info(f"Media stream started: {stream_sid}")
                             
+                            # Send initial greeting after media stream starts
+                            await handler.send_initial_greeting()
+                            
                         elif event_type == 'media':
-                            # Audio data received
-                            await handler._handle_audio(data, websocket)
+                            # Audio data received - handle with connection checks
+                            if not handler.connection_closed:
+                                await handler._handle_audio(data, websocket)
+                            else:
+                                logger.debug("Skipping audio processing - connection marked as closed")
                             
                         elif event_type == 'stop':
                             # Media stream stopped
                             logger.info(f"Media stream stopped for session {session_id}")
                             break
                             
+                    except asyncio.TimeoutError:
+                        logger.warning(f"WebSocket timeout for session {session_id}")
+                        # Send a ping to check if connection is still alive
+                        try:
+                            await websocket.send_text(json.dumps({"event": "ping"}))
+                        except:
+                            logger.info(f"WebSocket appears disconnected for session {session_id}")
+                            break
+                            
                     except WebSocketDisconnect:
                         logger.info(f"WebSocket disconnected for session {session_id}")
                         break
+                        
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Invalid JSON received: {e}")
+                        continue
+                        
                     except Exception as e:
                         logger.error(f"Error processing WebSocket message: {e}")
-                        # Continue processing other messages
+                        # Continue processing other messages instead of breaking
                         continue
                         
             except Exception as e:
                 logger.error(f"Error setting up voice handler: {e}")
-                await websocket.send_text(json.dumps({
-                    "error": f"Setup error: {str(e)}"
-                }))
+                try:
+                    await websocket.send_text(json.dumps({
+                        "error": f"Setup error: {str(e)}"
+                    }))
+                except:
+                    pass  # Connection might already be closed
                 
         else:
             logger.error("Voice AI components not available")
-            await websocket.send_text(json.dumps({
-                "error": "Voice AI components not initialized"
-            }))
+            try:
+                await websocket.send_text(json.dumps({
+                    "error": "Voice AI components not initialized"
+                }))
+            except:
+                pass  # Connection might already be closed
         
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for session {session_id}")
+        logger.info(f"WebSocket disconnected during setup for session {session_id}")
     except Exception as e:
         logger.error(f"WebSocket connection error: {e}")
         
     finally:
-        # Clean up
-        if session_id in active_connections:
-            del active_connections[session_id]
-        
-        # Clean up agent if available
-        if agent_router:
-            agent_router.cleanup_session(session_id)
-        
-        logger.info(f"WebSocket connection closed for session {session_id}")
+        # Enhanced cleanup with proper error handling
+        try:
+            # Update connection status
+            if session_id in active_connections:
+                active_connections[session_id]["status"] = "disconnected"
+                active_connections[session_id]["disconnected_at"] = time.time()
+            
+            # Clean up handler
+            if handler:
+                try:
+                    await handler._cleanup()
+                except Exception as e:
+                    logger.error(f"Error during handler cleanup: {e}")
+            
+            # Clean up agent if available
+            if agent_router:
+                try:
+                    agent_router.cleanup_session(session_id)
+                except Exception as e:
+                    logger.error(f"Error cleaning up agent session: {e}")
+            
+            # Remove from active connections after a delay (for debugging)
+            async def delayed_cleanup():
+                await asyncio.sleep(5)  # Keep connection info for 5 seconds
+                if session_id in active_connections:
+                    del active_connections[session_id]
+            
+            asyncio.create_task(delayed_cleanup())
+            
+            logger.info(f"WebSocket connection closed and cleaned up for session {session_id}")
+            
+        except Exception as e:
+            logger.error(f"Error during WebSocket cleanup: {e}")
 
 @app.get("/")
 async def root():
@@ -297,11 +363,30 @@ async def root():
         }
     }
 
+@app.get("/connections")
+async def get_connections():
+    """Get information about active WebSocket connections."""
+    return {
+        "active_connections": len(active_connections),
+        "connections": {
+            session_id: {
+                "session_id": info["session_id"],
+                "connected_at": info["connected_at"],
+                "status": info["status"],
+                "duration": time.time() - info["connected_at"],
+                "disconnected_at": info.get("disconnected_at"),
+                "has_handler": "handler" in info
+            }
+            for session_id, info in active_connections.items()
+        }
+    }
+
 @app.get("/stats")
 async def get_stats():
     """Get comprehensive system statistics."""
     stats = {
-        "active_sessions": len(active_connections),
+        "active_sessions": len([c for c in active_connections.values() if c["status"] == "active"]),
+        "total_connections": len(active_connections),
         "components": {},
         "timestamp": time.time()
     }
@@ -334,6 +419,25 @@ async def get_stats():
         except Exception as e:
             logger.error(f"Error getting knowledge base stats: {e}")
             stats["components"]["knowledge_base"] = {"error": str(e)}
+    
+    # Add connection statistics
+    connection_stats = {
+        "total": len(active_connections),
+        "active": len([c for c in active_connections.values() if c["status"] == "active"]),
+        "disconnected": len([c for c in active_connections.values() if c["status"] == "disconnected"])
+    }
+    
+    if active_connections:
+        durations = [
+            time.time() - info["connected_at"] 
+            for info in active_connections.values()
+            if info["status"] == "active"
+        ]
+        if durations:
+            connection_stats["avg_duration"] = sum(durations) / len(durations)
+            connection_stats["max_duration"] = max(durations)
+    
+    stats["connections"] = connection_stats
     
     return stats
 
@@ -373,6 +477,10 @@ async def test_endpoint():
                 "openai_key_set": bool(os.getenv("OPENAI_API_KEY")),
                 "pinecone_key_set": bool(os.getenv("PINECONE_API_KEY")),
                 "twilio_configured": bool(os.getenv("TWILIO_ACCOUNT_SID"))
+            },
+            "connections": {
+                "active": len([c for c in active_connections.values() if c["status"] == "active"]),
+                "total": len(active_connections)
             }
         }
     except Exception as e:
