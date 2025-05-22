@@ -32,7 +32,7 @@ class IndexManager:
             config: Optional configuration object
         """
         self.config = config or rag_config
-        self.storage_dir = getattr(self.config, 'storage_dir', './storage')
+        self.storage_dir = self.config.storage_dir
         
         # Create storage directory if it doesn't exist
         os.makedirs(self.storage_dir, exist_ok=True)
@@ -52,8 +52,8 @@ class IndexManager:
         # Log the index and namespace that will be used
         logger.info(f"IndexManager initialized with:")
         logger.info(f"- storage_dir: {self.storage_dir}")
-        logger.info(f"- pinecone_index_name: {getattr(self.config, 'pinecone_index_name', 'default')}")
-        logger.info(f"- pinecone_namespace: {getattr(self.config, 'pinecone_namespace', 'default')}")
+        logger.info(f"- pinecone_index_name: {self.config.pinecone_index_name}")
+        logger.info(f"- pinecone_namespace: {self.config.pinecone_namespace}")
     
     async def init(self):
         """Initialize the index manager asynchronously."""
@@ -63,33 +63,18 @@ class IndexManager:
         start_time = time.time()
         
         try:
-            # Get configuration values with fallbacks
-            embedding_model = getattr(self.config, 'openai_embedding_model', 'text-embedding-ada-002')
-            api_key = getattr(self.config, 'openai_api_key', os.getenv('OPENAI_API_KEY'))
-            model = getattr(self.config, 'openai_model', 'gpt-3.5-turbo')
-            temperature = getattr(self.config, 'llm_temperature', 0.7)
-            pinecone_api_key = getattr(self.config, 'pinecone_api_key', os.getenv('PINECONE_API_KEY'))
-            index_name = getattr(self.config, 'pinecone_index_name', 'voice-ai-knowledge')
-            namespace = getattr(self.config, 'pinecone_namespace', 'default')
-            
-            # Validate required settings
-            if not api_key:
-                raise ValueError("OpenAI API key is required")
-            if not pinecone_api_key:
-                raise ValueError("Pinecone API key is required")
-            
             # Initialize embedding model
             self.embed_model = OpenAIEmbedding(
-                model=embedding_model,
-                api_key=api_key,
+                model=self.config.openai_embedding_model,
+                api_key=self.config.openai_api_key,
                 dimensions=1536  # Default for text-embedding-ada-002
             )
             
             # Initialize OpenAI LLM for completions
             self.llm = OpenAI(
-                model=model,
-                temperature=temperature,
-                api_key=api_key
+                model=self.config.openai_model,
+                temperature=self.config.llm_temperature,
+                api_key=self.config.openai_api_key
             )
             
             # Set up global Settings instead of ServiceContext (which is deprecated)
@@ -98,93 +83,67 @@ class IndexManager:
             
             # Initialize Pinecone with v3 API
             self.pinecone_client = Pinecone(
-                api_key=pinecone_api_key
+                api_key=self.config.pinecone_api_key
             )
             
             # Create Pinecone index if it doesn't exist
+            index_name = self.config.pinecone_index_name
+            
             # List indexes using the new API
-            try:
-                index_names = [index.name for index in self.pinecone_client.list_indexes()]
-            except Exception as e:
-                logger.error(f"Error listing Pinecone indexes: {e}")
-                index_names = []
+            index_names = [index.name for index in self.pinecone_client.list_indexes()]
             
             logger.info(f"Found existing Pinecone indexes: {', '.join(index_names) if index_names else 'None'}")
             
             if index_name not in index_names:
                 logger.info(f"Creating new Pinecone index: {index_name}")
                 
-                try:
-                    # Create index with ServerlessSpec for AWS free tier
-                    self.pinecone_client.create_index(
-                        name=index_name,
-                        dimension=1536,  # Default for text-embedding-ada-002
-                        metric="cosine",
-                        spec=ServerlessSpec(
-                            cloud="aws",
-                            region="us-east-1"  # AWS free tier region
-                        )
+                # Create index with ServerlessSpec for AWS free tier
+                self.pinecone_client.create_index(
+                    name=index_name,
+                    dimension=1536,  # Default for text-embedding-ada-002
+                    metric="cosine",
+                    spec=ServerlessSpec(
+                        cloud="aws",
+                        region="us-east-1"  # AWS free tier region
                     )
-                    
-                    # Wait for index to be ready
-                    max_wait_time = 300  # 5 minutes
-                    wait_start = time.time()
-                    while time.time() - wait_start < max_wait_time:
-                        try:
-                            index_info = self.pinecone_client.describe_index(index_name)
-                            if index_info.status.ready:
-                                break
-                        except Exception as e:
-                            logger.debug(f"Index not ready yet: {e}")
-                        logger.info("Waiting for index to be ready...")
-                        await asyncio.sleep(10)
-                    else:
-                        raise TimeoutError(f"Index {index_name} did not become ready within {max_wait_time} seconds")
-                        
-                except Exception as e:
-                    logger.error(f"Error creating Pinecone index: {e}")
-                    raise
+                )
+                
+                # Wait for index to be ready
+                while True:
+                    try:
+                        index_info = self.pinecone_client.describe_index(index_name)
+                        if index_info.status.ready:
+                            break
+                    except:
+                        pass
+                    logger.info("Waiting for index to be ready...")
+                    await asyncio.sleep(10)
             else:
                 logger.info(f"Using existing Pinecone index: {index_name}")
             
             # Connect to the Pinecone index with the new API
-            try:
-                self.pinecone_index = self.pinecone_client.Index(index_name)
-            except Exception as e:
-                logger.error(f"Error connecting to Pinecone index: {e}")
-                raise
+            self.pinecone_index = self.pinecone_client.Index(index_name)
             
             # Create vector store with explicit namespace
+            namespace = self.config.pinecone_namespace
             logger.info(f"Creating vector store with namespace: {namespace}")
             
-            try:
-                self.vector_store = PineconeVectorStore(
-                    pinecone_index=self.pinecone_index,
-                    namespace=namespace
-                )
-            except Exception as e:
-                logger.error(f"Error creating vector store: {e}")
-                raise
+            self.vector_store = PineconeVectorStore(
+                pinecone_index=self.pinecone_index,
+                namespace=namespace
+            )
             
             # Create storage context
-            try:
-                self.storage_context = StorageContext.from_defaults(
-                    vector_store=self.vector_store
-                )
-            except Exception as e:
-                logger.error(f"Error creating storage context: {e}")
-                raise
+            self.storage_context = StorageContext.from_defaults(
+                vector_store=self.vector_store
+            )
             
             # Create vector store index - no need to pass ServiceContext anymore
             # as we've set the global Settings
-            try:
-                self.index = VectorStoreIndex.from_documents(
-                    documents=[],  # Empty initially
-                    storage_context=self.storage_context
-                )
-            except Exception as e:
-                logger.error(f"Error creating vector store index: {e}")
-                raise
+            self.index = VectorStoreIndex.from_documents(
+                documents=[],  # Empty initially
+                storage_context=self.storage_context
+            )
             
             # Get index stats
             try:
@@ -326,8 +285,7 @@ class IndexManager:
             stats = self.pinecone_index.describe_index_stats()
             
             # Get document count for the namespace
-            namespace = getattr(self.config, 'pinecone_namespace', 'default')
-            namespace_stats = stats.get("namespaces", {}).get(namespace, {})
+            namespace_stats = stats.get("namespaces", {}).get(self.config.pinecone_namespace, {})
             doc_count = namespace_stats.get("vector_count", 0)
             
             return doc_count
@@ -348,13 +306,12 @@ class IndexManager:
             
         try:
             # Delete all vectors in the namespace using the v3 API
-            namespace = getattr(self.config, 'pinecone_namespace', 'default')
             self.pinecone_index.delete(
                 delete_all=True,
-                namespace=namespace
+                namespace=self.config.pinecone_namespace
             )
             
-            logger.info(f"Cleared index namespace: {namespace}")
+            logger.info(f"Cleared index namespace: {self.config.pinecone_namespace}")
             return True
             
         except Exception as e:
@@ -371,15 +328,14 @@ class IndexManager:
         if not self.initialized:
             await self.init()
             
-        index_name = getattr(self.config, 'pinecone_index_name', 'voice-ai-knowledge')
-        namespace = getattr(self.config, 'pinecone_namespace', 'default')
+        index_name = self.config.pinecone_index_name
+        namespace = self.config.pinecone_namespace
         
         info = {
             "index_name": index_name,
             "namespace": namespace,
             "vector_count": 0,
-            "namespaces": [],
-            "initialized": self.initialized
+            "namespaces": []
         }
         
         try:

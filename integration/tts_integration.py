@@ -1,24 +1,17 @@
-# integration/tts_integration.py
-
 """
-Optimized TTS integration using Google Cloud TTS with low-latency optimizations.
+Updated TTS integration using the fixed Google Cloud TTS.
 """
 import logging
 import asyncio
-import os
-import time
-import re
-from typing import Optional, Dict, Any, List, AsyncIterator
+from typing import Optional, Dict, Any
 
-from google.cloud import texttospeech
-from google.oauth2 import service_account
+from text_to_speech.google_cloud_tts import GoogleCloudTTS
 
 logger = logging.getLogger(__name__)
 
 class TTSIntegration:
     """
-    Optimized Text-to-Speech integration using Google Cloud TTS.
-    Implements streaming, chunking, and caching for faster responses.
+    Updated Text-to-Speech integration using the fixed Google Cloud TTS.
     """
     
     def __init__(
@@ -27,21 +20,17 @@ class TTSIntegration:
         voice_gender: Optional[str] = None,
         language_code: Optional[str] = "en-US",
         enable_caching: bool = True,
-        credentials_file: Optional[str] = None,
-        voice_type: str = "NEURAL2",
-        container_format: Optional[str] = "mulaw"
+        credentials_file: Optional[str] = None
     ):
         """
-        Initialize the TTS integration with optimized settings.
+        Initialize the TTS integration with fixed Google Cloud TTS.
         
         Args:
-            voice_name: Voice name (e.g., "en-US-Neural2-C")
-            voice_gender: Voice gender (None for Neural2 voices)
+            voice_name: Voice name to use (e.g., "en-US-Neural2-C")
+            voice_gender: Voice gender (MALE, FEMALE, or None for Neural2 voices)
             language_code: Language code (defaults to en-US)
             enable_caching: Whether to enable TTS caching
             credentials_file: Path to Google Cloud credentials file
-            voice_type: Voice type (NEURAL2, STANDARD, etc.)
-            container_format: Audio container format (mulaw, linear16, mp3)
         """
         # Set default voice name if not provided
         if not voice_name:
@@ -56,22 +45,8 @@ class TTSIntegration:
         self.language_code = language_code or "en-US"
         self.enable_caching = enable_caching
         self.credentials_file = credentials_file
-        self.voice_type = voice_type
-        self.container_format = container_format or "mulaw"
         self.tts_client = None
         self.initialized = False
-        
-        # Response chunking settings
-        self.sentence_splitter = re.compile(r'(?<=[.!?])\s+')
-        self.max_chunk_size = 100  # Maximum characters per chunk
-        
-        # Cache for common responses
-        self.response_cache = {}
-        
-        # Performance metrics
-        self.synthesis_times = []
-        self.total_characters = 0
-        self.total_synthesis_time = 0
         
         logger.info(f"TTSIntegration initialized with voice: {self.voice_name}")
     
@@ -81,262 +56,58 @@ class TTSIntegration:
             return
             
         try:
-            # Initialize Google Cloud TTS client with proper credentials
-            if self.credentials_file and os.path.exists(self.credentials_file):
-                # Use service account credentials
-                credentials = service_account.Credentials.from_service_account_file(
-                    self.credentials_file
-                )
-                self.tts_client = texttospeech.TextToSpeechClient(credentials=credentials)
-                logger.info(f"Initialized TTS client with credentials from {self.credentials_file}")
-            else:
-                # Use default credentials (ADC)
-                self.tts_client = texttospeech.TextToSpeechClient()
-                logger.info("Initialized TTS client with default credentials")
-            
-            # Create audio config optimized for telephony
-            if self.container_format == "mulaw":
-                audio_encoding = texttospeech.AudioEncoding.MULAW
-            elif self.container_format == "linear16":
-                audio_encoding = texttospeech.AudioEncoding.LINEAR16
-            elif self.container_format == "mp3":
-                audio_encoding = texttospeech.AudioEncoding.MP3
-            else:
-                audio_encoding = texttospeech.AudioEncoding.MULAW  # Default for telephony
-            
-            self.audio_config = texttospeech.AudioConfig(
-                audio_encoding=audio_encoding,
-                sample_rate_hertz=8000,  # 8kHz for telephony
-                effects_profile_id=["telephony-class-application"]
-            )
-            
-            # Create voice selection params
-            self.voice_params = texttospeech.VoiceSelectionParams(
+            # Initialize Google Cloud TTS with telephony optimization
+            self.tts_client = GoogleCloudTTS(
+                credentials_file=self.credentials_file,
+                voice_name=self.voice_name,
+                voice_gender=self.voice_gender,
                 language_code=self.language_code,
-                name=self.voice_name
+                container_format="mulaw",  # For Twilio compatibility
+                sample_rate=8000,          # For Twilio compatibility
+                enable_caching=self.enable_caching,
+                voice_type="NEURAL2"
             )
-            
-            # Add gender only if it's set and appropriate
-            if self.voice_gender and not "Neural2" in self.voice_name:
-                if self.voice_gender.upper() == "MALE":
-                    self.voice_params.ssml_gender = texttospeech.SsmlVoiceGender.MALE
-                elif self.voice_gender.upper() == "FEMALE":
-                    self.voice_params.ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
-                elif self.voice_gender.upper() == "NEUTRAL":
-                    self.voice_params.ssml_gender = texttospeech.SsmlVoiceGender.NEUTRAL
             
             self.initialized = True
-            logger.info(f"TTS client initialized with voice: {self.voice_name}")
-            
-            # Initialize cache as a separate step *after* marking as initialized
-            # to avoid recursion issues
-            if self.enable_caching:
-                asyncio.create_task(self._initialize_cache())
-                
+            logger.info(f"Initialized TTS with Google Cloud TTS, voice: {self.voice_name}")
         except Exception as e:
-            logger.error(f"Error initializing TTS client: {e}")
+            logger.error(f"Error initializing Google Cloud TTS: {e}")
             raise
-    
-    async def _initialize_cache(self):
-        """Initialize cache with common phrases for immediate playback."""
-        common_phrases = [
-            "How can I help you today?",
-            "I'm sorry, could you repeat that?",
-            "Thank you for your question.",
-            "Let me think about that.",
-            "Is there anything else you'd like to know?",
-            "Let me check that for you.",
-            "Looking that up now.",
-            "Let me find that information."
-        ]
-        
-        for phrase in common_phrases:
-            try:
-                # Generate audio and add to cache
-                audio = await self._synthesize_internal(phrase)
-                self.response_cache[phrase] = audio
-                logger.debug(f"Cached phrase: {phrase} ({len(audio)} bytes)")
-            except Exception as e:
-                logger.error(f"Error caching phrase '{phrase}': {e}")
-    
-    async def synthesize(self, text: str) -> bytes:
-        """
-        Convert text to speech with optimized latency.
-        
-        Args:
-            text: Text to convert to speech
-            
-        Returns:
-            Audio data as bytes
-        """
-        if not text:
-            logger.warning("Empty text provided to synthesize")
-            return b''
-        
-        if not self.initialized:
-            await self.init()
-        
-        # Check cache for exact matches
-        if self.enable_caching and text in self.response_cache:
-            logger.debug(f"Cache hit for text: {text[:30]}...")
-            return self.response_cache[text]
-        
-        return await self._synthesize_internal(text)
-    
-    async def _synthesize_internal(self, text: str) -> bytes:
-        """
-        Internal synthesis method to avoid recursion issues.
-        
-        Args:
-            text: Text to synthesize
-            
-        Returns:
-            Audio data as bytes
-        """
-        start_time = time.time()
-        
-        try:
-            # Create synthesis input
-            synthesis_input = texttospeech.SynthesisInput(text=text)
-            
-            # Generate speech
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, 
-                lambda: self.tts_client.synthesize_speech(
-                    input=synthesis_input,
-                    voice=self.voice_params,
-                    audio_config=self.audio_config
-                )
-            )
-            
-            audio_content = response.audio_content
-            
-            # Update performance metrics
-            synthesis_time = time.time() - start_time
-            self.synthesis_times.append(synthesis_time)
-            self.total_characters += len(text)
-            self.total_synthesis_time += synthesis_time
-            
-            # Cache the result if it's not too long
-            if self.enable_caching and len(text) < 200 and text not in self.response_cache:
-                self.response_cache[text] = audio_content
-            
-            logger.debug(f"Synthesized {len(text)} chars in {synthesis_time:.2f}s")
-            return audio_content
-            
-        except Exception as e:
-            logger.error(f"Error in TTS synthesis: {e}")
-            raise
-    
-    async def synthesize_streaming(self, text: str) -> AsyncIterator[bytes]:
-        """
-        Stream synthesized speech for faster playback.
-        
-        This method breaks the text into smaller chunks and streams them
-        as they're synthesized for lower perceived latency.
-        
-        Args:
-            text: Text to synthesize
-            
-        Yields:
-            Audio chunks as they are generated
-        """
-        if not self.initialized:
-            await self.init()
-        
-        # Break text into sentences for faster response
-        if len(text) > self.max_chunk_size:
-            chunks = self._split_into_chunks(text)
-        else:
-            chunks = [text]
-        
-        # Synthesize and stream each chunk
-        for chunk in chunks:
-            # Skip empty chunks
-            if not chunk.strip():
-                continue
-                
-            # Check cache first
-            if self.enable_caching and chunk in self.response_cache:
-                yield self.response_cache[chunk]
-                continue
-            
-            # Synthesize new chunk
-            try:
-                audio_data = await self._synthesize_internal(chunk)
-                yield audio_data
-            except Exception as e:
-                logger.error(f"Error synthesizing chunk: {e}")
-                # Continue with next chunk instead of failing completely
-    
-    def _split_into_chunks(self, text: str) -> List[str]:
-        """
-        Split text into optimal chunks for faster synthesis.
-        
-        Args:
-            text: Text to split
-            
-        Returns:
-            List of text chunks
-        """
-        # First try to split by sentences
-        sentences = self.sentence_splitter.split(text)
-        
-        # Then ensure each sentence is not too long
-        chunks = []
-        for sentence in sentences:
-            if len(sentence) <= self.max_chunk_size:
-                chunks.append(sentence)
-            else:
-                # Split long sentences by commas or natural pauses
-                parts = re.split(r'(?<=[,:])\s+', sentence)
-                
-                current_chunk = ""
-                for part in parts:
-                    if len(current_chunk) + len(part) > self.max_chunk_size:
-                        if current_chunk:
-                            chunks.append(current_chunk)
-                        current_chunk = part
-                    else:
-                        if current_chunk:
-                            current_chunk += ", " + part
-                        else:
-                            current_chunk = part
-                
-                if current_chunk:
-                    chunks.append(current_chunk)
-        
-        return chunks
-    
+
     async def text_to_speech(self, text: str) -> bytes:
         """
-        Alias for synthesize method (for compatibility).
+        Convert text to speech using Google Cloud TTS.
         
         Args:
             text: Text to convert to speech
             
         Returns:
-            Audio data as bytes
+            Audio data as bytes (mulaw format for Twilio)
         """
-        return await self.synthesize(text)
+        if not self.initialized:
+            await self.init()
+        
+        try:
+            # Use Google Cloud TTS (returns mulaw format)
+            return await self.tts_client.synthesize(text)
+        except Exception as e:
+            logger.error(f"Error in TTS conversion: {e}")
+            raise
     
-    def get_stats(self) -> Dict[str, Any]:
-        """Get performance statistics for TTS synthesis."""
-        stats = {
+    def get_info(self) -> Dict[str, Any]:
+        """Get information about the TTS configuration."""
+        info = {
+            "provider": "Google Cloud TTS",
             "voice_name": self.voice_name,
+            "voice_gender": self.voice_gender,
             "language_code": self.language_code,
-            "cached_responses": len(self.response_cache),
-            "total_characters": self.total_characters,
-            "total_synthesis_time": self.total_synthesis_time
+            "sample_rate": 8000,
+            "format": "mulaw",
+            "initialized": self.initialized
         }
         
-        if self.synthesis_times:
-            stats.update({
-                "avg_synthesis_time": sum(self.synthesis_times) / len(self.synthesis_times),
-                "max_synthesis_time": max(self.synthesis_times),
-                "min_synthesis_time": min(self.synthesis_times),
-                "chars_per_second": self.total_characters / max(self.total_synthesis_time, 0.001)
-            })
+        # Add stats from TTS client if available
+        if self.tts_client and hasattr(self.tts_client, 'get_stats'):
+            info["stats"] = self.tts_client.get_stats()
         
-        return stats
+        return info

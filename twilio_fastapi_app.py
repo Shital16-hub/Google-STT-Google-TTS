@@ -1,17 +1,16 @@
-# twilio_fastapi_app.py
-
+#!/usr/bin/env python3
 """
-Updated FastAPI application with optimized STT and speaking state management
-for low-latency voice interactions.
+Updated Twilio application with FastAPI for improved performance.
+Handles proper STT session management and WebSocket lifecycle.
 """
 import os
+import sys
 import asyncio
 import logging
 import json
 import time
 import threading
 from typing import Dict, Any, Optional
-from contextlib import asynccontextmanager
 
 # FastAPI imports
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException
@@ -19,33 +18,47 @@ from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from pydantic import BaseModel
-from starlette.websockets import WebSocketState
 
 # Twilio imports
-from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Say, Pause
 from dotenv import load_dotenv
 
-# Import our optimized components
+# Import fixed handler
 from telephony.simple_websocket_handler import SimpleWebSocketHandler
 from telephony.config import HOST, PORT, DEBUG
 from voice_ai_agent import VoiceAIAgent
 from integration.pipeline import VoiceAIAgentPipeline
 from integration.tts_integration import TTSIntegration
-from speech_to_text.stt_integration import STTIntegration
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging with timestamp and thread ID for better debugging
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(threadName)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 # Suppress noisy logs
 logging.getLogger('google.cloud').setLevel(logging.WARNING)
 logging.getLogger('grpc').setLevel(logging.WARNING)
+
+# FastAPI app setup
+app = FastAPI(
+    title="Voice AI Agent API",
+    description="Voice AI Agent with continuous conversation support for Twilio",
+    version="2.2.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Global instances
 voice_ai_pipeline = None
@@ -72,10 +85,10 @@ class TwilioIncomingCallModel(BaseModel):
     CallSid: str
 
 async def initialize_system():
-    """Initialize the Voice AI system with optimized settings for low latency."""
+    """Initialize the Voice AI system with optimized conversation settings."""
     global voice_ai_pipeline, base_url
     
-    logger.info("Initializing Voice AI Agent with low-latency optimizations...")
+    logger.info("Initializing Voice AI Agent for continuous conversation...")
     
     # Validate required environment variables
     base_url = os.getenv('BASE_URL')
@@ -91,26 +104,26 @@ async def initialize_system():
     
     logger.info(f"Using BASE_URL: {base_url}")
     
-    # Initialize Voice AI Agent with low-latency optimizations
+    # Initialize Voice AI Agent with conversation-optimized settings
     agent = VoiceAIAgent(
         storage_dir='./storage',
         model_name='gpt-3.5-turbo',
         llm_temperature=0.7,
-        credentials_file=google_creds
+        credentials_file=google_creds  # Pass credentials explicitly
     )
     await agent.init()
     
-    # Initialize TTS
+    # Initialize TTS with fixed configuration
     tts = TTSIntegration(
         voice_name="en-US-Neural2-C",
-        voice_gender=None,
+        voice_gender=None,  # Don't set gender for Neural2 voices
         language_code="en-US",
         enable_caching=True,
         credentials_file=google_creds
     )
     await tts.init()
     
-    # Create optimized pipeline
+    # Create pipeline optimized for continuous conversation
     voice_ai_pipeline = VoiceAIAgentPipeline(
         speech_recognizer=agent.speech_recognizer,
         conversation_manager=agent.conversation_manager,
@@ -118,11 +131,23 @@ async def initialize_system():
         tts_integration=tts
     )
     
-    logger.info("System initialized with low-latency optimizations")
+    logger.info("System initialized successfully for continuous conversation")
     # Set the initialization event
     initialization_complete.set()
 
-async def shutdown_cleanup():
+@app.on_event("startup")
+async def startup_event():
+    """Initialize system on startup."""
+    try:
+        # Start initialization in background
+        asyncio.create_task(initialize_system())
+    except Exception as e:
+        logger.error(f"Error during startup: {e}", exc_info=True)
+        # Don't raise here to let the server start anyway
+        # The health endpoint will report the initialization status
+
+@app.on_event("shutdown")
+async def shutdown_event():
     """Clean up resources on shutdown."""
     logger.info("Shutting down Voice AI Agent API")
     
@@ -136,52 +161,13 @@ async def shutdown_cleanup():
     active_calls.clear()
     # We'll keep call_sessions for logging purposes
 
-# Define the lifespan context manager
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Lifespan context manager for the FastAPI application.
-    Handles startup and shutdown events.
-    """
-    # Startup: Initialize the system
-    try:
-        # Start initialization in background
-        asyncio.create_task(initialize_system())
-    except Exception as e:
-        logger.error(f"Error during startup: {e}", exc_info=True)
-        # Don't raise here to let the server start anyway
-        # The health endpoint will report the initialization status
-    
-    # Yield control back to FastAPI
-    yield
-    
-    # Shutdown: Clean up resources
-    await shutdown_cleanup()
-
-# FastAPI app setup with lifespan
-app = FastAPI(
-    title="Voice AI Agent API",
-    description="Voice AI Agent with low-latency optimizations",
-    version="3.0.0",
-    lifespan=lifespan
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 @app.get("/")
 async def index():
     """Health check endpoint."""
     return {
         "status": "running",
-        "message": "Voice AI Agent running with low-latency optimizations",
-        "version": "3.0.0",
+        "message": "Voice AI Agent running with continuous conversation support",
+        "version": "2.2.0",
         "active_calls": len(active_calls),
         "initialized": initialization_complete.is_set()
     }
@@ -221,7 +207,7 @@ async def health_check():
 
 @app.post("/voice/incoming")
 async def handle_incoming_call(request: Request):
-    """Handle incoming voice calls with optimized TwiML for low-latency."""
+    """Handle incoming voice calls with optimized TwiML for continuous conversation."""
     logger.info("Received incoming call request")
     
     # Wait for initialization to complete with timeout
@@ -288,7 +274,7 @@ async def handle_incoming_call(request: Request):
         connect.append(stream)
         response.append(connect)
         
-        logger.info(f"Generated TwiML for low-latency conversation - Call {call_sid}")
+        logger.info(f"Generated TwiML for continuous conversation - Call {call_sid}")
         return HTMLResponse(
             content=str(response),
             media_type="text/xml"
@@ -346,48 +332,10 @@ async def handle_status_callback(request: Request, background_tasks: BackgroundT
     return Response(status_code=204)
 
 async def cleanup_call(call_sid: str, handler):
-    """Clean up call resources with thorough cleanup of streaming sessions."""
+    """Clean up call resources."""
     try:
-        # Trigger cleanup with proper error handling
-        if handler:
-            # Use a timeout to prevent blocking
-            await asyncio.wait_for(handler._cleanup(), timeout=5.0)
-            
-            # Explicitly clean up speech recognizer
-            if hasattr(handler, 'speech_recognizer') and handler.speech_recognizer:
-                try:
-                    if hasattr(handler.speech_recognizer, 'cleanup'):
-                        await handler.speech_recognizer.cleanup()
-                    elif hasattr(handler.speech_recognizer, 'stop_streaming'):
-                        await handler.speech_recognizer.stop_streaming()
-                        
-                    # If we have a stream thread, make sure it's stopped
-                    if hasattr(handler.speech_recognizer, 'stream_thread') and handler.speech_recognizer.stream_thread:
-                        if handler.speech_recognizer.stream_thread.is_alive():
-                            logger.info(f"Force terminating stream thread for call {call_sid}")
-                            # Set stop event if available
-                            if hasattr(handler.speech_recognizer, 'stop_event'):
-                                handler.speech_recognizer.stop_event.set()
-                            
-                            # Give it a moment to terminate
-                            handler.speech_recognizer.stream_thread.join(timeout=1.0)
-                except Exception as e:
-                    logger.error(f"Error cleaning up speech recognizer: {e}")
-                finally:
-                    # Always clear the reference
-                    handler.speech_recognizer = None
-                    
-            # Ensure stt_integration is also cleaned
-            if hasattr(handler, 'stt_integration') and handler.stt_integration:
-                try:
-                    if hasattr(handler.stt_integration, 'end_streaming'):
-                        await handler.stt_integration.end_streaming()
-                except Exception as e:
-                    logger.error(f"Error cleaning up STT integration: {e}")
-                finally:
-                    handler.stt_integration = None
-    except asyncio.TimeoutError:
-        logger.warning(f"Timeout during cleanup for call {call_sid}")
+        # Trigger cleanup with session preservation logic
+        await handler._cleanup()
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
     
@@ -412,8 +360,8 @@ async def cleanup_sessions():
 
 @app.websocket("/ws/stream/{call_sid}")
 async def handle_media_stream(websocket: WebSocket, call_sid: str):
-    """Handle WebSocket media stream with improved error handling and resource management."""
-    logger.info(f"Starting WebSocket handler for call {call_sid} with pipeline: {voice_ai_pipeline is not None}")
+    """Handle WebSocket media stream with continuous conversation support."""
+    logger.info(f"WebSocket connection request for call {call_sid}")
     
     # Wait for initialization to complete with timeout
     try:
@@ -436,22 +384,7 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
         await websocket.accept()
         logger.info(f"WebSocket connection established for call {call_sid}")
         
-        # Check if call already exists - clean it up first
-        if call_sid in active_calls:
-            old_handler = active_calls[call_sid]
-            logger.warning(f"Found existing handler for call {call_sid}, cleaning up")
-            try:
-                # Force a thorough cleanup to ensure no hanging resources
-                await asyncio.wait_for(old_handler._cleanup(), timeout=3.0)
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout cleaning up old handler for {call_sid}")
-            except Exception as e:
-                logger.error(f"Error cleaning up existing handler: {e}")
-            finally:
-                # Always remove old handler to prevent resource leaks
-                del active_calls[call_sid]
-        
-        # Create completely new handler for each call
+        # Create handler optimized for continuous conversation
         handler = SimpleWebSocketHandler(call_sid, voice_ai_pipeline)
         active_calls[call_sid] = handler
         
@@ -460,191 +393,100 @@ async def handle_media_stream(websocket: WebSocket, call_sid: str):
             call_sessions[call_sid]["status"] = "connected"
             call_sessions[call_sid]["ws_connected_time"] = time.time()
         
-        # Create a task for starting the conversation
-        conversation_task = asyncio.create_task(handler.start_conversation(websocket))
-        
-        # Use a heartbeat task to detect WebSocket disconnections
-        heartbeat_task = asyncio.create_task(websocket_heartbeat(websocket, call_sid))
-        
-        # Process incoming messages with improved error handling
+        # Process incoming messages
         while True:
             try:
-                # Use receive() with a shorter timeout
-                message = await asyncio.wait_for(websocket.receive(), timeout=10.0)
-                
-                if "text" in message:
-                    # Handle text message
-                    try:
-                        data = json.loads(message["text"])
-                        event_type = data.get('event')
-                        
-                        if event_type == 'connected':
-                            logger.info(f"WebSocket connected for call {call_sid}")
-                            
-                        elif event_type == 'start':
-                            stream_sid = data.get('streamSid')
-                            logger.info(f"Stream started: {stream_sid}")
-                            handler.stream_sid = stream_sid
-                            
-                            # If the conversation task is still running, let it complete
-                            if not conversation_task.done():
-                                try:
-                                    # Add a timeout to prevent blocking
-                                    await asyncio.wait_for(conversation_task, timeout=2.0)
-                                except asyncio.TimeoutError:
-                                    logger.warning("Conversation start task timed out, proceeding anyway")
-                            
-                            # Update session
-                            if call_sid in call_sessions:
-                                call_sessions[call_sid]["stream_started"] = True
-                                call_sessions[call_sid]["stream_sid"] = stream_sid
-                            
-                        elif event_type == 'media':
-                            # Handle audio data with optimized processing
-                            await handler._handle_audio(data, websocket)
-                            
-                        elif event_type == 'stop':
-                            logger.info(f"Stream stopped for call {call_sid}")
-                            
-                            # Cancel heartbeat
-                            heartbeat_task.cancel()
-                            
-                            # Run cleanup
-                            await handler._cleanup()
-                            
-                            # Update session
-                            if call_sid in call_sessions:
-                                call_sessions[call_sid]["stream_stopped"] = True
-                            break
-                            
-                    except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON received")
-                        continue
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
-                        continue
-                        
-                elif "bytes" in message:
-                    # Handle binary message - log for now
-                    logger.debug("Received binary message from client")
+                # Receive message with timeout (implementing timeout in FastAPI websockets)
+                # We'll use a task with timeout
+                try:
+                    message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Check if we should still be connected
+                    logger.debug("WebSocket receive timeout, checking connection status")
                     continue
-                    
-                else:
-                    logger.warning(f"Received unexpected message type: {message.keys()}")
-                    
-            except asyncio.TimeoutError:
-                # Check if we should still be connected
-                logger.debug("WebSocket receive timeout, checking connection status")
                 
-                # Check if WebSocket is still connected
-                if websocket.client_state != WebSocketState.CONNECTED:
-                    logger.info("WebSocket no longer connected, exiting loop")
-                    break
+                if not message:
+                    logger.debug("Received empty message, continuing...")
+                    continue
+                
+                # Parse and handle message
+                try:
+                    data = json.loads(message)
+                    event_type = data.get('event')
                     
-                continue
+                    if event_type == 'connected':
+                        logger.info(f"WebSocket connected for call {call_sid}")
+                        
+                    elif event_type == 'start':
+                        stream_sid = data.get('streamSid')
+                        logger.info(f"Stream started: {stream_sid}")
+                        handler.stream_sid = stream_sid
+                        
+                        # Start the conversation properly
+                        await handler.start_conversation(websocket)
+                        
+                        # Update session
+                        if call_sid in call_sessions:
+                            call_sessions[call_sid]["stream_started"] = True
+                            call_sessions[call_sid]["stream_sid"] = stream_sid
+                        
+                    elif event_type == 'media':
+                        # Handle audio data for continuous conversation
+                        await handler._handle_audio(data, websocket)
+                        
+                    elif event_type == 'stop':
+                        logger.info(f"Stream stopped for call {call_sid}")
+                        
+                        # Run cleanup
+                        await handler._cleanup()
+                        
+                        # Update session
+                        if call_sid in call_sessions:
+                            call_sessions[call_sid]["stream_stopped"] = True
+                        break
+                        
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON received: {message}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+                    continue
                 
             except WebSocketDisconnect:
                 logger.info(f"WebSocket connection closed for call {call_sid}")
                 break
-                
             except Exception as e:
                 logger.error(f"Error in WebSocket loop: {e}")
-                
-                # Determine if we should attempt to recover
-                if str(e).startswith("object NoneType can't be used in 'await' expression"):
-                    logger.warning("Attempting to recover from NoneType error by reinitializing STT")
-                    if handler:
-                        # Try to reinitialize the STT components
-                        success = handler._reinitialize_stt()
-                        if success:
-                            logger.info("Successfully recovered from NoneType error")
-                            continue
                 break
         
     except Exception as e:
         logger.error(f"Error establishing WebSocket: {e}", exc_info=True)
         
     finally:
-        # Cancel the tasks if they exist
-        if 'conversation_task' in locals() and not conversation_task.done():
-            conversation_task.cancel()
-            
-        if 'heartbeat_task' in locals() and not heartbeat_task.done():
-            heartbeat_task.cancel()
-            
-        # Cleanup resources with improved error handling
+        # Cleanup resources
         if handler:
             try:
-                # Use a timeout to prevent blocking
-                await asyncio.wait_for(handler._cleanup(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(f"Timeout during handler cleanup for call {call_sid}")
+                await handler._cleanup()
             except Exception as e:
                 logger.error(f"Error during handler cleanup: {e}")
         
-        # Remove from active calls
         if call_sid in active_calls:
             del active_calls[call_sid]
         
         # Update session
         if call_sid in call_sessions:
             call_sessions[call_sid]["ws_disconnected_time"] = time.time()
-            call_sessions[call_sid]["status"] = "disconnected"
         
-        # Ensure WebSocket is closed
         try:
-            if websocket.client_state == WebSocketState.CONNECTED:
-                await websocket.close()
-        except Exception as e:
-            logger.error(f"Error closing WebSocket: {e}")
+            await websocket.close()
+        except:
+            pass
         
         logger.info(f"WebSocket cleanup complete for call {call_sid}")
 
-async def websocket_heartbeat(websocket: WebSocket, call_sid: str):
-    """Send periodic heartbeats to keep the WebSocket connection alive and detect disconnections."""
-    ping_count = 0
-    max_failed_pings = 3
-    failed_pings = 0
-    
-    try:
-        while True:
-            await asyncio.sleep(15)  # Send heartbeat every 15 seconds (reduced from 30)
-            
-            # Check if WebSocket is still connected
-            if websocket.client_state == WebSocketState.CONNECTED:
-                ping_count += 1
-                # Send a simple ping message
-                try:
-                    ping_message = {"type": "ping", "timestamp": time.time(), "count": ping_count}
-                    await websocket.send_text(json.dumps(ping_message))
-                    
-                    # Reset failed pings counter on successful ping
-                    failed_pings = 0
-                    
-                    if ping_count % 4 == 0:  # Log every 4th ping (about every minute)
-                        logger.debug(f"Sent heartbeat ping to call {call_sid} (#{ping_count})")
-                except Exception as e:
-                    # Track failed pings
-                    failed_pings += 1
-                    logger.warning(f"Failed to send heartbeat (attempt {failed_pings}/{max_failed_pings}): {e}")
-                    
-                    # If we've failed too many times, consider the connection dead
-                    if failed_pings >= max_failed_pings:
-                        logger.error(f"Too many failed heartbeats for {call_sid}, closing connection")
-                        break
-            else:
-                logger.info(f"WebSocket for call {call_sid} is no longer connected")
-                break
-    except asyncio.CancelledError:
-        # Task was cancelled, clean exit
-        pass
-    except Exception as e:
-        logger.error(f"Error in WebSocket heartbeat: {e}")
-
-
 @app.get("/stats")
 async def get_stats():
-    """Get comprehensive statistics including latency metrics."""
+    """Get comprehensive statistics including conversation metrics."""
     stats = {
         "timestamp": time.time(),
         "system": {
@@ -695,13 +537,10 @@ async def get_config():
         "base_url": base_url,
         "google_credentials": os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
         "google_project": os.getenv('GOOGLE_CLOUD_PROJECT'),
-        "optimizations": {
-            "low_latency_stt": True, 
-            "speaking_state_management": True,
-            "early_result_processing": True,
-            "auto_reconnection": True,
-            "heartbeat_monitoring": True,
-            "resource_cleanup": True
+        "conversation_features": {
+            "continuous_streaming": True,
+            "session_management": True,
+            "auto_reconnection": True
         }
     }
     return config
@@ -723,7 +562,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
     )
 
 if __name__ == '__main__':
-    print("Starting Voice AI Agent with low-latency optimizations...")
+    print("Starting Voice AI Agent with FastAPI and continuous conversation support...")
     print(f"Base URL: {os.getenv('BASE_URL', 'Not set')}")
     print(f"Google Credentials: {os.getenv('GOOGLE_APPLICATION_CREDENTIALS', 'Not set')}")
     

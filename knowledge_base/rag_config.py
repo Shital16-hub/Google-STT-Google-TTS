@@ -62,10 +62,6 @@ class RAGConfig(BaseSettings):
         default=int(os.getenv("RETRIEVAL_TOP_K", "3")),
         description="Number of top documents to retrieve"
     )
-    default_retrieve_count: int = Field(
-        default=int(os.getenv("DEFAULT_RETRIEVE_COUNT", "3")),
-        description="Default number of documents to retrieve"
-    )
     similarity_threshold: float = Field(
         default=float(os.getenv("SIMILARITY_THRESHOLD", "0.7")),
         description="Minimum similarity threshold for retrieval"

@@ -1,6 +1,6 @@
-# text_to_speech/google_cloud_tts.py
 """
-Fixed Google Cloud Text-to-Speech client without OFFLINE_TELEPHONY usage.
+Google Cloud Text-to-Speech client optimized for Twilio telephony.
+Fixed implementation with proper voice configuration and error handling.
 """
 import logging
 import hashlib
@@ -30,6 +30,16 @@ class GoogleCloudTTS:
     ):
         """
         Initialize Google Cloud TTS client optimized for Twilio.
+        
+        Args:
+            credentials_file: Path to credentials JSON file
+            voice_name: Voice name (e.g., "en-US-Neural2-C")
+            voice_gender: Voice gender (deprecated for Neural2 voices)
+            language_code: Language code (e.g., "en-US")
+            container_format: Audio format ("mulaw" for Twilio)
+            sample_rate: Sample rate (8000 for Twilio)
+            enable_caching: Whether to cache synthesized audio
+            voice_type: Voice type ("NEURAL2", "STANDARD", "WAVENET")
         """
         self.credentials_file = credentials_file
         self.language_code = language_code
@@ -130,7 +140,7 @@ class GoogleCloudTTS:
         return config
     
     def _create_voice_config(self) -> texttospeech.VoiceSelectionParams:
-        """Create voice configuration with latest language models."""
+        """Create voice configuration with proper handling for different voice types."""
         voice_config = texttospeech.VoiceSelectionParams(
             language_code=self.language_code
         )
@@ -138,9 +148,17 @@ class GoogleCloudTTS:
         # Set voice name if specified (preferred method)
         if self.voice_name:
             voice_config.name = self.voice_name
-        
-        # Only set gender for non-Neural2 voices
-        if not self.voice_name or "Neural2" not in self.voice_name:
+            # For Neural2 voices, don't set gender as it's included in the name
+            if not ("Neural2" in self.voice_name or "Studio" in self.voice_name):
+                if self.voice_gender:
+                    if self.voice_gender == "MALE":
+                        voice_config.ssml_gender = texttospeech.SsmlVoiceGender.MALE
+                    elif self.voice_gender == "FEMALE":
+                        voice_config.ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
+                    elif self.voice_gender == "NEUTRAL":
+                        voice_config.ssml_gender = texttospeech.SsmlVoiceGender.NEUTRAL
+        else:
+            # Set gender only if no specific voice name
             if self.voice_gender:
                 if self.voice_gender == "MALE":
                     voice_config.ssml_gender = texttospeech.SsmlVoiceGender.MALE
@@ -172,7 +190,12 @@ class GoogleCloudTTS:
     async def synthesize(self, text: str) -> bytes:
         """
         Synthesize text to speech optimized for Twilio.
-        Fixed to avoid OFFLINE_TELEPHONY error.
+        
+        Args:
+            text: Text to synthesize
+            
+        Returns:
+            Audio data as bytes (MULAW format for Twilio)
         """
         if not text or not text.strip():
             logger.warning("Empty text provided for synthesis")
@@ -191,20 +214,12 @@ class GoogleCloudTTS:
             # Prepare the synthesis input
             synthesis_input = texttospeech.SynthesisInput(text=text)
             
-            # Get voice configuration
-            voice_config = self._create_voice_config()
-            
-            # Create synthesis request WITHOUT custom voice parameters
-            # This avoids the OFFLINE_TELEPHONY error
-            request = texttospeech.SynthesizeSpeechRequest(
+            # Make the synthesis request
+            response = self.client.synthesize_speech(
                 input=synthesis_input,
-                voice=voice_config,
+                voice=self.voice_config,
                 audio_config=self.audio_config
-                # DO NOT include custom_voice parameter - this causes OFFLINE_TELEPHONY error
             )
-            
-            # Perform the synthesis
-            response = self.client.synthesize_speech(request)
             
             audio_content = response.audio_content
             
@@ -220,7 +235,7 @@ class GoogleCloudTTS:
             logger.error(f"Error during TTS synthesis: {e}")
             # Log more details about the error
             if "voice" in str(e).lower():
-                logger.error(f"Voice configuration: {self._create_voice_config()}")
+                logger.error(f"Voice configuration: {self.voice_config}")
                 logger.error(f"Available voices might need to be checked")
             raise
     
