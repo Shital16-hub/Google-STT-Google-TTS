@@ -21,6 +21,7 @@ from core.conversation_manager import ConversationManager
 from core.session_manager import SessionManager
 
 from knowledge_base.query_engine import QueryEngine
+from knowledge_base.rag_config import rag_config
 from prompts.prompt_manager import PromptManager
 from agents.router import AgentRouter
 from services.dispatcher import DispatcherService
@@ -52,34 +53,80 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Initializing application components...")
     try:
-        # Initialize knowledge base components
-        query_engine = QueryEngine(config=settings.knowledge_base)
-        await query_engine.init()
+        # Initialize knowledge base components with better error handling
+        try:
+            # Use the rag_config directly to avoid configuration issues
+            query_engine = QueryEngine(config=rag_config)
+            await query_engine.init()
+            logger.info("Query engine initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize query engine: {e}")
+            # Try with minimal configuration
+            try:
+                from knowledge_base.index_manager import IndexManager
+                index_manager = IndexManager(config=rag_config)
+                await index_manager.init()
+                query_engine = QueryEngine(index_manager=index_manager, config=rag_config)
+                await query_engine.init()
+                logger.info("Query engine initialized with fallback method")
+            except Exception as e2:
+                logger.error(f"Fallback initialization also failed: {e2}")
+                raise e2
         
         # Initialize prompt system
-        prompt_manager = PromptManager(prompt_dir=settings.prompts_dir)
+        try:
+            prompt_manager = PromptManager(prompt_dir=settings.prompts_dir)
+            logger.info("Prompt manager initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize prompt manager: {e}")
+            # Create a minimal prompt manager
+            prompt_manager = PromptManager(prompt_dir="./prompts")
+            logger.info("Prompt manager initialized with default directory")
         
         # Initialize conversation manager
-        conversation_manager = ConversationManager(
-            query_engine=query_engine,
-            config=settings.conversation
-        )
-        await conversation_manager.init()
+        try:
+            conversation_manager = ConversationManager(
+                query_engine=query_engine,
+                config=settings.conversation
+            )
+            await conversation_manager.init()
+            logger.info("Conversation manager initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize conversation manager: {e}")
+            # Create with minimal config
+            conversation_manager = ConversationManager(
+                query_engine=query_engine
+            )
+            await conversation_manager.init()
+            logger.info("Conversation manager initialized with minimal config")
         
         # Initialize agent router
-        agent_router = AgentRouter(
-            conversation_manager=conversation_manager,
-            query_engine=query_engine,
-            prompt_manager=prompt_manager
-        )
+        try:
+            agent_router = AgentRouter(
+                conversation_manager=conversation_manager,
+                query_engine=query_engine,
+                prompt_manager=prompt_manager
+            )
+            logger.info("Agent router initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize agent router: {e}")
+            raise
         
         # Initialize dispatcher service
-        dispatcher_service = DispatcherService()
+        try:
+            dispatcher_service = DispatcherService()
+            logger.info("Dispatcher service initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize dispatcher service: {e}")
+            raise
         
         logger.info("All components initialized successfully")
         
     except Exception as e:
-        logger.error(f"Error during startup: {e}")
+        logger.error(f"Critical error during startup: {e}")
+        # Log the full stack trace for debugging
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise
     
     yield
@@ -89,11 +136,19 @@ async def lifespan(app: FastAPI):
     try:
         # Clean up conversation manager
         if conversation_manager:
-            await conversation_manager.cleanup()
+            try:
+                await conversation_manager.cleanup()
+                logger.info("Conversation manager cleaned up")
+            except Exception as e:
+                logger.error(f"Error cleaning up conversation manager: {e}")
         
         # Clean up query engine
         if query_engine:
-            await query_engine.cleanup()
+            try:
+                await query_engine.cleanup()
+                logger.info("Query engine cleaned up")
+            except Exception as e:
+                logger.error(f"Error cleaning up query engine: {e}")
         
         logger.info("Shutdown complete")
         
@@ -181,7 +236,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 del active_connections[session_id]
             
             # Clean up agent
-            agent_router.cleanup_session(session_id)
+            if agent_router:
+                agent_router.cleanup_session(session_id)
             
             # Log session duration if available
             if session_start:
@@ -217,16 +273,32 @@ async def get_stats():
     
     # Add component stats
     if agent_router:
-        stats["components"]["agent_router"] = agent_router.get_stats()
+        try:
+            stats["components"]["agent_router"] = agent_router.get_stats()
+        except Exception as e:
+            logger.error(f"Error getting agent router stats: {e}")
+            stats["components"]["agent_router"] = {"error": str(e)}
     
     if dispatcher_service:
-        stats["components"]["dispatcher"] = dispatcher_service.get_stats()
+        try:
+            stats["components"]["dispatcher"] = dispatcher_service.get_stats()
+        except Exception as e:
+            logger.error(f"Error getting dispatcher stats: {e}")
+            stats["components"]["dispatcher"] = {"error": str(e)}
     
     if conversation_manager:
-        stats["components"]["conversation"] = await conversation_manager.get_stats()
+        try:
+            stats["components"]["conversation"] = await conversation_manager.get_stats()
+        except Exception as e:
+            logger.error(f"Error getting conversation stats: {e}")
+            stats["components"]["conversation"] = {"error": str(e)}
     
     if query_engine:
-        stats["components"]["knowledge_base"] = await query_engine.get_stats()
+        try:
+            stats["components"]["knowledge_base"] = await query_engine.get_stats()
+        except Exception as e:
+            logger.error(f"Error getting knowledge base stats: {e}")
+            stats["components"]["knowledge_base"] = {"error": str(e)}
     
     return stats
 

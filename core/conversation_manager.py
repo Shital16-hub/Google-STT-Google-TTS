@@ -76,18 +76,41 @@ class ConversationManager:
         self.total_turns = 0
         self.response_times: List[float] = []
         
+        # Initialization flag
+        self._initialized = False
+        
         logger.info(f"Initialized conversation manager for session {self.session_id}")
     
     async def init(self):
         """Initialize async components if needed."""
-        # This method can be used for async init tasks
-        # Currently we don't need it but it's here for API consistency
-        logger.debug(f"Conversation manager init called for session {self.session_id}")
+        if self._initialized:
+            return
+            
+        try:
+            # Ensure query engine is initialized
+            if self.query_engine and not getattr(self.query_engine, 'initialized', False):
+                await self.query_engine.init()
+            
+            self._initialized = True
+            logger.debug(f"Conversation manager init completed for session {self.session_id}")
+            
+        except Exception as e:
+            logger.error(f"Error during conversation manager init: {e}")
+            raise
     
     async def cleanup(self):
         """Clean up any resources if needed."""
-        # This is a placeholder for future cleanup needs
-        logger.debug(f"Conversation manager cleanup called for session {self.session_id}")
+        try:
+            self._initialized = False
+            # Clear conversation history
+            self.conversation_history.clear()
+            self.collected_info.clear()
+            self.confirmed_info.clear()
+            
+            logger.debug(f"Conversation manager cleanup completed for session {self.session_id}")
+            
+        except Exception as e:
+            logger.error(f"Error during conversation manager cleanup: {e}")
     
     async def process_message(
         self,
@@ -104,6 +127,9 @@ class ConversationManager:
         Returns:
             Response with context
         """
+        if not self._initialized:
+            await self.init()
+            
         start_time = time.time()
         self.total_turns += 1
         
@@ -372,7 +398,8 @@ class ConversationManager:
             "current_state": self.state_manager.current_state,
             "collected_info_count": len(self.collected_info),
             "confirmed_info_count": len(self.confirmed_info),
-            "conversation_length": len(self.conversation_history)
+            "conversation_length": len(self.conversation_history),
+            "initialized": self._initialized
         }
         
         # Add response time stats

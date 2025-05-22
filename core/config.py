@@ -1,4 +1,4 @@
-# core/fixed_config.py
+# core/config.py
 
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
@@ -69,7 +69,7 @@ class KnowledgeBaseSettings(BaseModel):
     chunk_overlap: int = Field(default=int(os.getenv("CHUNK_OVERLAP", "50")))
     default_retrieve_count: int = Field(default=int(os.getenv("DEFAULT_RETRIEVE_COUNT", "3")))
     minimum_relevance_score: float = Field(default=float(os.getenv("MINIMUM_RELEVANCE_SCORE", "0.6")))
-    similarity_threshold: float = Field(default=float(os.getenv("SIMILARITY_THRESHOLD", "0.7")))  # Add this line
+    similarity_threshold: float = Field(default=float(os.getenv("SIMILARITY_THRESHOLD", "0.7")))
     embedding_batch_size: int = Field(default=int(os.getenv("EMBEDDING_BATCH_SIZE", "32")))
     enable_caching: bool = Field(default=os.getenv("ENABLE_CACHING", "true").lower() == "true")
     parallel_processing: bool = Field(default=os.getenv("PARALLEL_PROCESSING", "true").lower() == "true")
@@ -87,10 +87,7 @@ class KnowledgeBaseSettings(BaseModel):
     llm_temperature: float = Field(default=float(os.getenv("OPENAI_TEMPERATURE", "0.7")))
     pinecone_api_key: str = Field(default=os.getenv("PINECONE_API_KEY", ""))
     max_tokens: int = Field(default=int(os.getenv("OPENAI_MAX_TOKENS", "256")))
-
-
-
-
+    streaming_enabled: bool = Field(default=os.getenv("STREAMING_ENABLED", "True").lower() == "true")
 
 class ConversationSettings(BaseModel):
     """Conversation configuration."""

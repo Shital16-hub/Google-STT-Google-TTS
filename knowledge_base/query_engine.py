@@ -87,7 +87,7 @@ class QueryEngine:
         self.config = config or rag_config
         self.index_manager = index_manager
         self.top_k = getattr(self.config, 'retrieval_top_k', getattr(self.config, 'default_retrieve_count', 3))
-        self.similarity_threshold = self.config.similarity_threshold
+        self.similarity_threshold = getattr(self.config, 'similarity_threshold', 0.7)
         
         # Component placeholders
         self.retriever = None
@@ -112,13 +112,16 @@ class QueryEngine:
             await self.index_manager.init()
             
         try:
+            # Get streaming setting with fallback
+            streaming_enabled = getattr(self.config, 'streaming_enabled', True)
+            
             # Initialize the OpenAI LLM with streaming support
             self.llm = OpenAI(
                 model=self.config.openai_model,
                 temperature=self.config.llm_temperature,
                 max_tokens=self.config.max_tokens,
                 api_key=self.config.openai_api_key,
-                streaming=self.config.streaming_enabled
+                streaming=streaming_enabled
             )
             
             # Set LLM in global settings
@@ -241,6 +244,39 @@ class QueryEngine:
         # Combine all parts
         return "\n\n".join(context_parts)
     
+    def _process_retrieved_nodes(self, nodes: List[NodeWithScore]) -> List[Dict[str, Any]]:
+        """Process retrieved nodes into document format."""
+        results = []
+        for node in nodes:
+            if node.score >= self.similarity_threshold:
+                source = None
+                if hasattr(node, 'metadata') and node.metadata:
+                    source = node.metadata.get('file_name', 'Unknown')
+                
+                doc = {
+                    "id": node.node_id,
+                    "text": node.text,
+                    "metadata": node.metadata if hasattr(node, 'metadata') else {},
+                    "score": node.score,
+                    "source": source
+                }
+                results.append(doc)
+        return results
+    
+    def _get_source_info(self, nodes: List[NodeWithScore]) -> List[Dict[str, Any]]:
+        """Extract source information from nodes."""
+        sources = []
+        for i, node in enumerate(nodes):
+            metadata = node.metadata if hasattr(node, 'metadata') else {}
+            source = metadata.get('file_name', f'Source {i+1}')
+            sources.append({
+                "id": i,
+                "source": source,
+                "metadata": metadata,
+                "score": node.score
+            })
+        return sources
+    
     async def query(self, query_text: str, context: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
         Query the knowledge base.
@@ -349,7 +385,7 @@ class QueryEngine:
             ]
             
             # Format context for LLM
-            context_str = self.format_retrieved_context(filtered_nodes)
+            context_str = self.format_retrieved_context(self._process_retrieved_nodes(filtered_nodes))
             retrieval_time = time.time() - context_start_time
             
             # Create streaming handler
@@ -403,7 +439,7 @@ class QueryEngine:
                 "error": str(e)
             }
     
-    async def _run_streaming_query(self, query_bundle, streaming_llm, prompt):
+    async def _run_streaming_query(self, query_bundle, streaming_llm, nodes):
         """Run the streaming query in a background task."""
         try:
             # Create streaming-enabled query engine
@@ -441,6 +477,17 @@ class QueryEngine:
             "retrieval_top_k": self.top_k,
             "similarity_threshold": self.similarity_threshold,
             "openai_model": self.config.openai_model,
-            "streaming_enabled": self.config.streaming_enabled,
+            "streaming_enabled": getattr(self.config, 'streaming_enabled', True),
             "max_tokens": self.config.max_tokens
         }
+    
+    async def cleanup(self):
+        """Clean up query engine resources."""
+        try:
+            self.initialized = False
+            self.retriever = None
+            self.query_engine = None
+            self.llm = None
+            logger.info("Query engine cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during query engine cleanup: {e}")
