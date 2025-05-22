@@ -2,29 +2,34 @@
 
 """
 Main application entry point with FastAPI implementation.
+Fixed for proper initialization and error handling.
 """
 import os
 import logging
 import asyncio
+import json
+import time
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-# Import the right modules in the right order to avoid circular dependencies
+# Import configurations and core modules
 from core.config import Settings
-# Import these individually instead of from core/__init__.py
 from core.state_manager import StateManager, ConversationState
 from core.conversation_manager import ConversationManager
 from core.session_manager import SessionManager
 
+# Import knowledge base components
 from knowledge_base.query_engine import QueryEngine
 from knowledge_base.rag_config import rag_config
 from prompts.prompt_manager import PromptManager
 from agents.router import AgentRouter
 from services.dispatcher import DispatcherService
+
+# Import API routes
 from api.twilio_routes import router as twilio_router
 from api.health import router as health_router
 
@@ -33,7 +38,7 @@ settings = Settings()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, settings.log_level.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -53,41 +58,48 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Initializing application components...")
     try:
-        # Initialize knowledge base components with better error handling
+        # Initialize knowledge base components
+        logger.info("Initializing query engine...")
         try:
-            # Use the rag_config directly to avoid configuration issues
             query_engine = QueryEngine(config=rag_config)
             await query_engine.init()
             logger.info("Query engine initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize query engine: {e}")
             # Try with minimal configuration
-            try:
-                from knowledge_base.index_manager import IndexManager
-                index_manager = IndexManager(config=rag_config)
-                await index_manager.init()
-                query_engine = QueryEngine(index_manager=index_manager, config=rag_config)
-                await query_engine.init()
-                logger.info("Query engine initialized with fallback method")
-            except Exception as e2:
-                logger.error(f"Fallback initialization also failed: {e2}")
-                raise e2
+            from knowledge_base.index_manager import IndexManager
+            index_manager = IndexManager(config=rag_config)
+            await index_manager.init()
+            query_engine = QueryEngine(index_manager=index_manager, config=rag_config)
+            await query_engine.init()
+            logger.info("Query engine initialized with fallback method")
         
         # Initialize prompt system
+        logger.info("Initializing prompt manager...")
         try:
             prompt_manager = PromptManager(prompt_dir=settings.prompts_dir)
             logger.info("Prompt manager initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize prompt manager: {e}")
+            logger.warning(f"Failed to initialize prompt manager: {e}")
             # Create a minimal prompt manager
             prompt_manager = PromptManager(prompt_dir="./prompts")
             logger.info("Prompt manager initialized with default directory")
         
-        # Initialize conversation manager
+        # Initialize conversation manager with proper config conversion
+        logger.info("Initializing conversation manager...")
         try:
+            # Convert settings object to dictionary for conversation manager
+            conversation_config = {
+                "max_conversation_history": getattr(settings.conversation, 'max_conversation_history', 5),
+                "context_window_size": getattr(settings.conversation, 'context_window_size', 4096),
+                "max_tokens": getattr(settings.conversation, 'max_tokens', 256),
+                "temperature": getattr(settings.conversation, 'temperature', 0.7)
+            }
+            
             conversation_manager = ConversationManager(
                 query_engine=query_engine,
-                config=settings.conversation
+                prompt_manager=prompt_manager,
+                config=conversation_config  # Pass dict instead of settings object
             )
             await conversation_manager.init()
             logger.info("Conversation manager initialized successfully")
@@ -95,12 +107,14 @@ async def lifespan(app: FastAPI):
             logger.error(f"Failed to initialize conversation manager: {e}")
             # Create with minimal config
             conversation_manager = ConversationManager(
-                query_engine=query_engine
+                query_engine=query_engine,
+                config={}
             )
             await conversation_manager.init()
             logger.info("Conversation manager initialized with minimal config")
         
         # Initialize agent router
+        logger.info("Initializing agent router...")
         try:
             agent_router = AgentRouter(
                 conversation_manager=conversation_manager,
@@ -113,6 +127,7 @@ async def lifespan(app: FastAPI):
             raise
         
         # Initialize dispatcher service
+        logger.info("Initializing dispatcher service...")
         try:
             dispatcher_service = DispatcherService()
             logger.info("Dispatcher service initialized successfully")
@@ -124,7 +139,6 @@ async def lifespan(app: FastAPI):
         
     except Exception as e:
         logger.error(f"Critical error during startup: {e}")
-        # Log the full stack trace for debugging
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
         raise
@@ -181,72 +195,92 @@ active_connections: Dict[str, WebSocket] = {}
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for real-time communication."""
+    """WebSocket endpoint for Twilio Media Streams."""
     try:
         await websocket.accept()
         active_connections[session_id] = websocket
         
-        # Session tracking
-        session_start = None
-        current_agent = None
+        logger.info(f"WebSocket connection established for session {session_id}")
         
-        try:
-            session_start = asyncio.get_event_loop().time()
-            logger.info(f"WebSocket connection established for session {session_id}")
-            
-            while True:
-                # Receive message
-                message = await websocket.receive_text()
+        # Import voice components
+        from telephony.simple_websocket_handler import SimpleWebSocketHandler
+        
+        # Create pipeline components if available
+        if query_engine and conversation_manager:
+            try:
+                # Create a simplified pipeline for voice calls
+                class SimplePipeline:
+                    def __init__(self):
+                        self.query_engine = query_engine
+                        self.conversation_manager = conversation_manager
                 
-                # Route message through agent system
-                response = await agent_router.route_message(
-                    session_id=session_id,
-                    message=message
-                )
+                pipeline = SimplePipeline()
                 
-                # Check if we need to handle handoff
-                if response.get("requires_handoff"):
-                    # Create service request
-                    request_id = await dispatcher_service.create_service_request(
-                        session_id=session_id,
-                        agent_type=current_agent.agent_type if current_agent else None,
-                        customer_info=response.get("collected_info", {}),
-                        service_requirements=response.get("service_requirements", {}),
-                        handoff_reason=response.get("handoff_reason", "unspecified")
-                    )
-                    
-                    # Add request ID to response
-                    response["service_request_id"] = request_id
+                # Create WebSocket handler
+                handler = SimpleWebSocketHandler(session_id, pipeline)
                 
-                # Send response
-                await websocket.send_json(response)
+                # Start the conversation
+                await handler.start_conversation(websocket)
                 
-                # Update current agent if needed
-                if response.get("agent_type"):
-                    current_agent = agent_router.get_agent(
-                        session_id,
-                        response["agent_type"]
-                    )
+                # Handle WebSocket messages
+                while True:
+                    try:
+                        # Receive message from Twilio
+                        message = await websocket.receive_text()
+                        data = json.loads(message)
+                        
+                        event_type = data.get('event')
+                        
+                        if event_type == 'start':
+                            # Media stream started
+                            stream_sid = data.get('streamSid')
+                            handler.stream_sid = stream_sid
+                            logger.info(f"Media stream started: {stream_sid}")
+                            
+                        elif event_type == 'media':
+                            # Audio data received
+                            await handler._handle_audio(data, websocket)
+                            
+                        elif event_type == 'stop':
+                            # Media stream stopped
+                            logger.info(f"Media stream stopped for session {session_id}")
+                            break
+                            
+                    except WebSocketDisconnect:
+                        logger.info(f"WebSocket disconnected for session {session_id}")
+                        break
+                    except Exception as e:
+                        logger.error(f"Error processing WebSocket message: {e}")
+                        # Continue processing other messages
+                        continue
+                        
+            except Exception as e:
+                logger.error(f"Error setting up voice handler: {e}")
+                await websocket.send_text(json.dumps({
+                    "error": f"Setup error: {str(e)}"
+                }))
                 
-        except WebSocketDisconnect:
-            logger.info(f"WebSocket disconnected for session {session_id}")
-        finally:
-            # Clean up session
-            if session_id in active_connections:
-                del active_connections[session_id]
-            
-            # Clean up agent
-            if agent_router:
-                agent_router.cleanup_session(session_id)
-            
-            # Log session duration if available
-            if session_start:
-                duration = asyncio.get_event_loop().time() - session_start
-                logger.info(f"Session {session_id} ended after {duration:.2f} seconds")
-                
+        else:
+            logger.error("Voice AI components not available")
+            await websocket.send_text(json.dumps({
+                "error": "Voice AI components not initialized"
+            }))
+        
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for session {session_id}")
     except Exception as e:
-        logger.error(f"Error in WebSocket connection: {e}")
-        raise
+        logger.error(f"WebSocket connection error: {e}")
+        
+    finally:
+        # Clean up
+        if session_id in active_connections:
+            del active_connections[session_id]
+        
+        # Clean up agent if available
+        if agent_router:
+            agent_router.cleanup_session(session_id)
+        
+        logger.info(f"WebSocket connection closed for session {session_id}")
 
 @app.get("/")
 async def root():
@@ -268,7 +302,8 @@ async def get_stats():
     """Get comprehensive system statistics."""
     stats = {
         "active_sessions": len(active_connections),
-        "components": {}
+        "components": {},
+        "timestamp": time.time()
     }
     
     # Add component stats
@@ -302,9 +337,56 @@ async def get_stats():
     
     return stats
 
+@app.get("/test")
+async def test_endpoint():
+    """Test endpoint to verify the application is working."""
+    try:
+        # Test knowledge base
+        kb_status = "unknown"
+        if query_engine:
+            try:
+                kb_stats = await query_engine.get_stats()
+                kb_status = f"ready with {kb_stats.get('document_count', 0)} documents"
+            except Exception as e:
+                kb_status = f"error: {str(e)}"
+        
+        # Test conversation manager
+        conv_status = "unknown"
+        if conversation_manager:
+            try:
+                conv_stats = await conversation_manager.get_stats()
+                conv_status = f"ready (session: {conv_stats.get('session_id', 'unknown')})"
+            except Exception as e:
+                conv_status = f"error: {str(e)}"
+        
+        return {
+            "status": "ok",
+            "timestamp": time.time(),
+            "components": {
+                "knowledge_base": kb_status,
+                "conversation_manager": conv_status,
+                "agent_router": "ready" if agent_router else "not initialized",
+                "dispatcher_service": "ready" if dispatcher_service else "not initialized"
+            },
+            "environment": {
+                "google_credentials": os.path.exists(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")),
+                "openai_key_set": bool(os.getenv("OPENAI_API_KEY")),
+                "pinecone_key_set": bool(os.getenv("PINECONE_API_KEY")),
+                "twilio_configured": bool(os.getenv("TWILIO_ACCOUNT_SID"))
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error in test endpoint: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": time.time()
+        }
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Handle HTTP exceptions."""
+    logger.warning(f"HTTP exception: {exc.status_code} - {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": exc.detail}
@@ -323,7 +405,9 @@ if __name__ == "__main__":
     import uvicorn
     
     # Get port from environment or use default
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 5000))
+    
+    logger.info(f"Starting Voice AI Agent on port {port}")
     
     # Start server
     uvicorn.run(
@@ -331,5 +415,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         reload=settings.debug,
-        workers=1  # Use single worker for shared state
+        workers=1,  # Use single worker for shared state
+        log_level=settings.log_level.lower()
     )

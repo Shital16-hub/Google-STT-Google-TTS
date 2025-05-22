@@ -1,6 +1,6 @@
+# text_to_speech/google_cloud_tts.py
 """
-Google Cloud Text-to-Speech client optimized for Twilio telephony.
-Fixed implementation with proper voice configuration and error handling.
+Fixed Google Cloud Text-to-Speech client without OFFLINE_TELEPHONY usage.
 """
 import logging
 import hashlib
@@ -30,16 +30,6 @@ class GoogleCloudTTS:
     ):
         """
         Initialize Google Cloud TTS client optimized for Twilio.
-        
-        Args:
-            credentials_file: Path to credentials JSON file
-            voice_name: Voice name (e.g., "en-US-Neural2-C")
-            voice_gender: Voice gender (deprecated for Neural2 voices)
-            language_code: Language code (e.g., "en-US")
-            container_format: Audio format ("mulaw" for Twilio)
-            sample_rate: Sample rate (8000 for Twilio)
-            enable_caching: Whether to cache synthesized audio
-            voice_type: Voice type ("NEURAL2", "STANDARD", "WAVENET")
         """
         self.credentials_file = credentials_file
         self.language_code = language_code
@@ -148,21 +138,9 @@ class GoogleCloudTTS:
         # Set voice name if specified (preferred method)
         if self.voice_name:
             voice_config.name = self.voice_name
-            
-            # For Neural2 voices, use customization features if available
-            if "Neural2" in self.voice_name:
-                # Neural2 voices don't use gender parameter as it's included in the name
-                pass
-            # Handle other voice types that may need gender parameter
-            elif self.voice_gender:
-                if self.voice_gender == "MALE":
-                    voice_config.ssml_gender = texttospeech.SsmlVoiceGender.MALE
-                elif self.voice_gender == "FEMALE":
-                    voice_config.ssml_gender = texttospeech.SsmlVoiceGender.FEMALE
-                elif self.voice_gender == "NEUTRAL":
-                    voice_config.ssml_gender = texttospeech.SsmlVoiceGender.NEUTRAL
-        else:
-            # Set gender only if no specific voice name but gender is specified
+        
+        # Only set gender for non-Neural2 voices
+        if not self.voice_name or "Neural2" not in self.voice_name:
             if self.voice_gender:
                 if self.voice_gender == "MALE":
                     voice_config.ssml_gender = texttospeech.SsmlVoiceGender.MALE
@@ -171,7 +149,6 @@ class GoogleCloudTTS:
                 elif self.voice_gender == "NEUTRAL":
                     voice_config.ssml_gender = texttospeech.SsmlVoiceGender.NEUTRAL
         
-        # Return the voice configuration
         return voice_config
     
     def _get_cache_key(self, text: str) -> str:
@@ -195,12 +172,7 @@ class GoogleCloudTTS:
     async def synthesize(self, text: str) -> bytes:
         """
         Synthesize text to speech optimized for Twilio.
-        
-        Args:
-            text: Text to synthesize
-            
-        Returns:
-            Audio data as bytes (MULAW format for Twilio)
+        Fixed to avoid OFFLINE_TELEPHONY error.
         """
         if not text or not text.strip():
             logger.warning("Empty text provided for synthesis")
@@ -222,24 +194,14 @@ class GoogleCloudTTS:
             # Get voice configuration
             voice_config = self._create_voice_config()
             
-            # Create custom voice parameters for Neural2 voices
-            custom_voice_params = None
-            if self.voice_name and "Neural2" in self.voice_name:
-                custom_voice_params = texttospeech.CustomVoiceParams(
-                    reported_usage=texttospeech.CustomVoiceParams.ReportedUsage.OFFLINE_TELEPHONY,
-                    model="neural2"
-                )
-            
-            # Make the synthesis request
+            # Create synthesis request WITHOUT custom voice parameters
+            # This avoids the OFFLINE_TELEPHONY error
             request = texttospeech.SynthesizeSpeechRequest(
                 input=synthesis_input,
                 voice=voice_config,
                 audio_config=self.audio_config
+                # DO NOT include custom_voice parameter - this causes OFFLINE_TELEPHONY error
             )
-            
-            # Add custom voice parameters if available
-            if custom_voice_params:
-                request.custom_voice = custom_voice_params
             
             # Perform the synthesis
             response = self.client.synthesize_speech(request)
