@@ -1,0 +1,325 @@
+# Roadside Assistance Agent Configuration
+# High-priority emergency response agent for towing and roadside services
+
+agent_id: "roadside-assistance"
+version: "1.2.0"
+status: "active"
+last_updated: "2025-01-15T10:30:00Z"
+
+# Agent Metadata
+metadata:
+  name: "Roadside Assistance Coordinator"
+  description: "Emergency roadside assistance and towing coordination agent"
+  priority_level: 1  # Highest priority (1-5 scale)
+  category: "emergency_services"
+  tags: ["roadside", "emergency", "towing", "breakdown"]
+
+# Vector Database Configuration
+vector_config:
+  qdrant_collection: "roadside_assistance_v1"
+  vector_size: 1536  # OpenAI ada-002 embedding dimensions
+  distance_metric: "cosine"
+  
+  # Performance optimization settings
+  faiss_promotion_threshold: 50  # queries/hour to promote to FAISS hot tier
+  redis_cache_ttl: 180  # seconds (3 minutes for emergency scenarios)
+  auto_optimize_schedule: "0 1 * * *"  # Daily optimization at 1 AM
+  
+  # Emergency-specific caching
+  priority_caching: true
+  emergency_keywords_cache_ttl: 60  # 1 minute for emergency keywords
+  hot_procedures_cache: true
+
+# Knowledge Base Sources
+knowledge_sources:
+  - type: "documents"
+    path: "kb/roadside/"
+    categories:
+      - "towing_procedures"
+      - "emergency_protocols"
+      - "service_areas"
+      - "pricing_guides"
+      - "safety_procedures"
+    auto_update: true
+    update_schedule: "0 */6 * * *"  # Every 6 hours
+    
+  - type: "api"
+    name: "roadside_procedures_api"
+    endpoint: "https://api.roadsidedb.com/procedures"
+    auth_type: "bearer_token"
+    auth_token_env: "ROADSIDE_API_TOKEN"
+    refresh_interval: 3600  # 1 hour
+    
+  - type: "database"
+    name: "service_locations"
+    connection_string_env: "ROADSIDE_DB_CONNECTION"
+    query: "SELECT * FROM service_locations WHERE active = true"
+    refresh_interval: 1800  # 30 minutes
+
+# Agent Specialization Configuration
+specialization:
+  system_prompt: |
+    You are a professional roadside assistance coordinator with expertise in emergency vehicle services.
+    
+    CRITICAL GUIDELINES:
+    - Treat all calls as potential emergencies requiring urgent attention
+    - Always gather location information first for safety and dispatch
+    - Prioritize customer safety over cost considerations
+    - Maintain calm, professional demeanor during stressful situations
+    - Provide accurate ETAs and keep customers informed
+    - Know when to escalate to emergency services (911)
+    
+    CORE RESPONSIBILITIES:
+    - Coordinate towing services and roadside assistance
+    - Assess emergency situations and dispatch appropriate help
+    - Provide cost estimates and service explanations
+    - Guide customers through safety procedures while waiting
+    - Handle payment processing and service confirmations
+    
+    COMMUNICATION STYLE:
+    - Clear, concise, and reassuring
+    - Use simple language, avoid technical jargon
+    - Confirm critical details (location, contact info)
+    - Express empathy while maintaining efficiency
+    
+    Always end emergency calls with: "Help is on the way. Stay safe and keep your phone nearby."
+    
+  max_context_tokens: 2048
+  response_style: "urgent_professional"
+  temperature: 0.2  # Lower temperature for consistent emergency responses
+  max_response_tokens: 200  # Concise responses for urgent situations
+  
+  # Emergency detection patterns
+  emergency_keywords:
+    high_priority: ["accident", "crash", "injured", "stuck", "emergency", "urgent", "help"]
+    medium_priority: ["breakdown", "won't start", "flat tire", "dead battery"]
+    location_required: ["where", "location", "address", "mile marker", "exit"]
+
+# Voice Configuration
+voice_settings:
+  tts_voice: "en-US-Neural2-C"  # Clear, professional female voice
+  speaking_rate: 1.0  # Normal rate for emergency clarity
+  pitch: 0.0
+  volume_gain_db: 2.0  # Slightly louder for phone environments
+  personality: "helpful_urgent"
+  
+  # Emergency-specific voice settings
+  emergency_mode:
+    speaking_rate: 0.9  # Slightly slower for critical information
+    pause_after_address: 1.0  # Second pause after address confirmation
+    emphasis_on_safety: true
+
+# Tool Integration Configuration
+tools:
+  - name: "dispatch_tow_truck"
+    type: "api_call"
+    description: "Dispatch tow truck to customer location"
+    endpoint: "/api/dispatch/tow"
+    method: "POST"
+    auth_type: "bearer_token"
+    auth_token_env: "DISPATCH_API_TOKEN"
+    timeout: 8000  # 8 seconds
+    retry_attempts: 3
+    parameters:
+      required: ["customer_location", "vehicle_type", "service_type"]
+      optional: ["special_instructions", "customer_contact", "preferred_eta"]
+    response_mapping:
+      eta: "estimated_arrival_time"
+      driver_name: "driver_info.name"
+      driver_contact: "driver_info.contact"
+      truck_id: "vehicle_info.truck_number"
+    
+  - name: "calculate_service_cost"
+    type: "api_call"
+    description: "Calculate cost estimate for roadside service"
+    endpoint: "/api/pricing/calculate"
+    method: "POST"
+    timeout: 3000
+    parameters:
+      required: ["service_type", "location", "vehicle_type"]
+      optional: ["time_of_day", "distance", "complexity"]
+    cache_ttl: 300  # Cache pricing for 5 minutes
+    
+  - name: "check_service_availability"
+    type: "api_call"
+    description: "Check availability of service in customer area"
+    endpoint: "/api/availability/check"
+    method: "GET"
+    timeout: 2000
+    parameters:
+      required: ["location", "service_type"]
+    cache_ttl: 180  # Cache availability for 3 minutes
+    
+  - name: "process_emergency_payment"
+    type: "payment_processor"
+    description: "Process payment for emergency roadside services"
+    provider: "stripe"
+    timeout: 10000
+    parameters:
+      required: ["amount", "customer_id", "service_type"]
+      optional: ["emergency_fee", "after_hours_fee"]
+    security:
+      pci_compliant: true
+      encrypt_card_data: true
+    
+  - name: "send_dispatch_sms"
+    type: "communication"
+    description: "Send SMS updates to customer about service status"
+    provider: "twilio"
+    timeout: 5000
+    parameters:
+      required: ["customer_phone", "message"]
+      optional: ["driver_info", "eta_update"]
+    rate_limit: "10/minute"
+    
+  - name: "escalate_to_emergency"
+    type: "escalation"
+    description: "Escalate to emergency services when needed"
+    timeout: 2000
+    parameters:
+      required: ["situation_type", "location", "urgency_level"]
+    triggers:
+      - "customer_injured"
+      - "vehicle_fire" 
+      - "dangerous_location"
+      - "medical_emergency"
+
+# Routing Configuration
+routing:
+  # Primary routing keywords (high confidence)
+  primary_keywords:
+    - "tow"
+    - "towing"
+    - "stuck"
+    - "breakdown"
+    - "accident"
+    - "roadside"
+    - "emergency"
+    - "help"
+    - "car won't start"
+    - "flat tire"
+    - "dead battery"
+    - "jump start"
+    
+  # Secondary keywords (medium confidence)
+  secondary_keywords:
+    - "vehicle"
+    - "car trouble"
+    - "stranded"
+    - "mechanic"
+    - "repair"
+    - "service"
+    - "assistance"
+    
+  # Context patterns that boost confidence
+  context_patterns:
+    - "on the side of the road"
+    - "highway"
+    - "parking lot"
+    - "won't move"
+    - "engine trouble"
+    - "need help with car"
+    
+  # Confidence thresholds
+  confidence_threshold: 0.80  # Route to this agent if confidence > 80%
+  priority_boost: 0.15  # Boost confidence by 15% for emergency keywords
+  
+  # Emergency override - route immediately on these phrases
+  emergency_override_phrases:
+    - "car accident"
+    - "crashed"
+    - "someone is hurt"
+    - "emergency"
+    - "urgent"
+    - "stuck on highway"
+
+# Performance Configuration
+performance:
+  target_response_time_ms: 500  # Target total response time
+  max_response_time_ms: 1000   # Maximum acceptable response time
+  
+  # Caching strategy for emergency scenarios
+  cache_strategy:
+    frequent_locations: 300     # Cache common locations for 5 min
+    service_procedures: 1800    # Cache procedures for 30 min
+    pricing_info: 600          # Cache pricing for 10 min
+    driver_availability: 60     # Cache availability for 1 min
+    
+  # Load balancing for high-priority agent
+  load_balancing:
+    max_concurrent_sessions: 50
+    queue_timeout_seconds: 30
+    priority_queue: true        # Priority queue for emergency calls
+    
+# Monitoring and Analytics
+monitoring:
+  # Key performance indicators
+  kpis:
+    - "average_response_time"
+    - "customer_satisfaction_score"
+    - "successful_dispatch_rate"
+    - "emergency_escalation_rate"
+    - "first_call_resolution_rate"
+    
+  # Critical alerts
+  alerts:
+    - condition: "response_time > 1000ms"
+      severity: "warning"
+      notification: ["slack", "email"]
+    - condition: "dispatch_failure_rate > 5%"
+      severity: "critical"
+      notification: ["pagerduty", "slack"]
+    - condition: "customer_satisfaction < 4.0"
+      severity: "warning"
+      notification: ["email"]
+      
+  # Business metrics tracking
+  business_metrics:
+    track_revenue: true
+    track_service_types: true
+    track_response_times: true
+    track_customer_locations: true
+    track_emergency_escalations: true
+
+# Security Configuration
+security:
+  # Data handling for emergency services
+  data_retention_days: 90      # Keep emergency records for 90 days
+  encrypt_customer_location: true
+  encrypt_payment_info: true
+  log_all_emergency_calls: true
+  
+  # Access controls
+  role_based_access:
+    - role: "emergency_dispatcher"
+      permissions: ["dispatch", "escalate", "access_location"]
+    - role: "payment_processor" 
+      permissions: ["process_payment", "view_billing"]
+    - role: "supervisor"
+      permissions: ["all"]
+      
+# Backup and Failover
+failover:
+  backup_agent: "general-support"  # Failover to general support if unavailable
+  health_check_interval: 30       # Health check every 30 seconds
+  max_failures_before_failover: 3
+  automatic_recovery: true
+  recovery_check_interval: 60     # Check for recovery every minute
+
+# Integration Testing
+testing:
+  smoke_tests:
+    - "dispatch_availability_check"
+    - "pricing_calculation"
+    - "location_validation"
+    - "emergency_escalation_path"
+  
+  load_tests:
+    concurrent_sessions: 25
+    test_duration_minutes: 10
+    success_rate_threshold: 95
+    
+  emergency_simulation:
+    enabled: true
+    scenarios: ["highway_breakdown", "accident_response", "after_hours_emergency"]
+    schedule: "0 3 * * 1"  # Weekly Monday 3 AM

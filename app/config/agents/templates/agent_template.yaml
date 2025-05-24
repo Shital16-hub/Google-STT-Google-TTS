@@ -1,0 +1,372 @@
+# Agent Configuration Template
+# Use this template to create new specialized agents for the multi-agent voice AI system
+# Replace all placeholder values (marked with < >) with appropriate values for your agent
+
+agent_id: "<agent-identifier>"  # Unique identifier (e.g., "customer-service", "sales-support")
+version: "1.0.0"                # Semantic version number
+status: "<status>"              # active, inactive, testing, deprecated
+last_updated: "<ISO-8601-timestamp>"  # e.g., "2025-01-15T10:30:00Z"
+
+# Agent Metadata
+metadata:
+  name: "<Human Readable Agent Name>"
+  description: "<Brief description of agent purpose and capabilities>"
+  priority_level: <1-5>         # 1 = highest priority, 5 = lowest priority
+  category: "<category>"        # e.g., "customer_service", "technical_support", "sales"
+  tags: ["<tag1>", "<tag2>", "<tag3>"]  # Relevant tags for categorization
+  
+  # Optional metadata fields
+  created_by: "<developer-name>"
+  team: "<responsible-team>"
+  contact: "<maintainer-email>"
+  documentation_url: "<docs-url>"
+
+# Vector Database Configuration
+vector_config:
+  qdrant_collection: "<collection_name>"  # Unique collection name
+  vector_size: 1536                       # Embedding dimensions (usually 1536 for OpenAI)
+  distance_metric: "<metric>"             # cosine, dot, euclidean, manhattan
+  
+  # Performance optimization settings
+  faiss_promotion_threshold: <number>     # queries/hour to promote to FAISS hot tier
+  redis_cache_ttl: <seconds>             # TTL for Redis cache (typically 60-1800)
+  auto_optimize_schedule: "<cron>"       # Cron schedule for optimization (e.g., "0 2 * * *")
+  
+  # Agent-specific caching configuration
+  specialized_cache_settings:
+    <cache_type>_cache_ttl: <seconds>    # Custom cache TTL for specific data types
+    priority_caching: <true/false>       # Enable priority caching for important queries
+    # Add more cache settings as needed
+
+# Knowledge Base Sources
+knowledge_sources:
+  # Document-based knowledge
+  - type: "documents"
+    path: "kb/<agent-specific-folder>/"
+    categories:
+      - "<category1>"  # e.g., "procedures", "policies", "troubleshooting"
+      - "<category2>"
+      - "<category3>"
+    auto_update: <true/false>
+    update_schedule: "<cron>"  # e.g., "0 */6 * * *" for every 6 hours
+    
+  # API-based knowledge sources
+  - type: "api"
+    name: "<api-name>"
+    endpoint: "<api-endpoint-url>"
+    auth_type: "<auth-type>"        # api_key, bearer_token, basic_auth, oauth
+    auth_key_env: "<ENV_VAR_NAME>"  # Environment variable for authentication
+    refresh_interval: <seconds>
+    timeout: <milliseconds>
+    
+  # Database knowledge sources
+  - type: "database"
+    name: "<database-name>"
+    connection_string_env: "<DB_CONNECTION_ENV>"
+    query: "<SQL-query>"
+    refresh_interval: <seconds>
+    
+  # Add more sources as needed
+  # - type: "web_scraping"
+  # - type: "file_system"
+  # - type: "external_service"
+
+# Agent Specialization Configuration
+specialization:
+  system_prompt: |
+    You are a <role-description> with expertise in <domain-expertise>.
+    
+    CORE RESPONSIBILITIES:
+    - <responsibility1>
+    - <responsibility2>
+    - <responsibility3>
+    
+    CRITICAL GUIDELINES:
+    - <guideline1>
+    - <guideline2>
+    - <guideline3>
+    
+    COMMUNICATION STYLE:
+    - <style-description>
+    - <tone-specification>
+    - <language-preferences>
+    
+    LIMITATIONS AND ESCALATION:
+    - <limitation1> - escalate to <target>
+    - <limitation2> - escalate to <target>
+    
+    SAFETY AND COMPLIANCE:
+    - <safety-requirement1>
+    - <compliance-requirement1>
+    
+    Always end interactions with: "<standard-closing-phrase>"
+    
+  max_context_tokens: <token-limit>      # Typically 2048-4096
+  response_style: "<style>"              # professional, friendly, technical, empathetic
+  temperature: <0.0-1.0>                # Lower for consistency, higher for creativity
+  max_response_tokens: <token-limit>     # Typical range: 150-500
+  
+  # Domain-specific keywords and patterns
+  domain_keywords:
+    <category1>: ["<keyword1>", "<keyword2>", "<keyword3>"]
+    <category2>: ["<keyword4>", "<keyword5>", "<keyword6>"]
+    # Add more categories as needed
+
+# Voice Configuration
+voice_settings:
+  tts_voice: "<voice-id>"        # e.g., "en-US-Neural2-C"
+  speaking_rate: <0.5-2.0>       # 1.0 = normal rate
+  pitch: <-20.0-20.0>           # 0.0 = normal pitch
+  volume_gain_db: <-96.0-16.0>  # 0.0 = normal volume
+  personality: "<personality>"   # friendly, professional, urgent, empathetic
+  
+  # Specialized voice settings for different contexts
+  specialized_modes:
+    <mode_name>:
+      speaking_rate: <rate>
+      pause_after_<trigger>: <seconds>
+      emphasis_on_<element>: <true/false>
+      # Add mode-specific settings
+
+# Tool Integration Configuration
+tools:
+  # Template for API-based tools
+  - name: "<tool_name>"
+    type: "api_call"
+    description: "<tool_description>"
+    endpoint: "<api_endpoint>"
+    method: "<HTTP_method>"        # GET, POST, PUT, DELETE
+    auth_type: "<auth_type>"
+    auth_token_env: "<ENV_VAR>"
+    timeout: <milliseconds>
+    retry_attempts: <number>
+    parameters:
+      required: ["<param1>", "<param2>"]
+      optional: ["<param3>", "<param4>"]
+    response_mapping:
+      <output_field>: "<api_response_path>"
+    cache_ttl: <seconds>          # Optional caching
+    
+  # Template for database tools
+  - name: "<db_tool_name>"
+    type: "database_query"
+    description: "<tool_description>"
+    connection_env: "<DB_CONNECTION_ENV>"
+    timeout: <milliseconds>
+    security_level: "<level>"      # low, medium, high
+    parameters:
+      required: ["<param1>"]
+      optional: ["<param2>"]
+    data_masking:
+      mask_<field_type>: <true/false>
+    
+  # Template for communication tools
+  - name: "<comm_tool_name>"
+    type: "communication"
+    description: "<tool_description>"
+    providers: ["<provider1>", "<provider2>"]  # email, sms, slack
+    timeout: <milliseconds>
+    parameters:
+      required: ["<param1>", "<param2>"]
+      optional: ["<param3>"]
+    templates:
+      - "<template1>"
+      - "<template2>"
+    rate_limit: "<limit>"         # e.g., "10/minute"
+    
+  # Template for escalation tools
+  - name: "<escalation_tool_name>"
+    type: "escalation"
+    description: "<tool_description>"
+    timeout: <milliseconds>
+    parameters:
+      required: ["<param1>", "<param2>"]
+      optional: ["<param3>"]
+    triggers:
+      - "<trigger_condition1>"
+      - "<trigger_condition2>"
+    routing:
+      <condition>: "<target_team>"
+
+# Routing Configuration
+routing:
+  # Primary keywords with high confidence routing
+  primary_keywords:
+    - "<keyword1>"
+    - "<keyword2>"
+    - "<keyword3>"
+    
+  # Secondary keywords with medium confidence
+  secondary_keywords:
+    - "<keyword4>"
+    - "<keyword5>"
+    - "<keyword6>"
+    
+  # Context patterns that increase routing confidence
+  context_patterns:
+    - "<pattern1>"
+    - "<pattern2>"
+    - "<pattern3>"
+    
+  # Confidence and routing thresholds
+  confidence_threshold: <0.0-1.0>        # Route to this agent if confidence > threshold
+  <domain>_keywords_boost: <0.0-1.0>     # Boost confidence for domain-specific terms
+  
+  # Special routing conditions
+  priority_patterns:
+    - "<urgent_pattern1>"
+    - "<urgent_pattern2>"
+  
+  # Override conditions for immediate routing
+  override_conditions:
+    <condition>: <action>
+
+# Performance Configuration
+performance:
+  target_response_time_ms: <milliseconds>     # Target response time
+  max_response_time_ms: <milliseconds>        # Maximum acceptable response time
+  
+  # Caching strategy for performance optimization
+  cache_strategy:
+    <data_type1>: <ttl_seconds>
+    <data_type2>: <ttl_seconds>
+    <data_type3>: <ttl_seconds>
+    
+  # Load balancing configuration
+  load_balancing:
+    max_concurrent_sessions: <number>
+    queue_timeout_seconds: <seconds>
+    priority_queue: <true/false>
+    # Additional load balancing settings
+
+# Monitoring and Analytics
+monitoring:
+  # Key Performance Indicators to track
+  kpis:
+    - "<kpi1>"  # e.g., "average_response_time"
+    - "<kpi2>"  # e.g., "customer_satisfaction_score"
+    - "<kpi3>"  # e.g., "successful_resolution_rate"
+    
+  # Alert conditions and notifications
+  alerts:
+    - condition: "<metric> <operator> <threshold>"  # e.g., "response_time > 1000ms"
+      severity: "<severity>"                        # warning, critical
+      notification: ["<channel1>", "<channel2>"]   # slack, email, pagerduty
+      description: "<alert_description>"
+      
+  # Business metrics to track
+  business_metrics:
+    track_<metric1>: <true/false>
+    track_<metric2>: <true/false>
+    track_<metric3>: <true/false>
+
+# Security Configuration
+security:
+  # Data handling and retention
+  data_retention_days: <days>
+  encrypt_<data_type>: <true/false>
+  mask_<sensitive_field>: <true/false>
+  log_<activity_type>: <true/false>
+  
+  # Access control configuration
+  role_based_access:
+    - role: "<role_name>"
+      permissions: ["<permission1>", "<permission2>"]
+    - role: "<role_name2>"
+      permissions: ["<permission3>", "<permission4>"]
+  
+  # Compliance requirements
+  compliance:
+    <regulation>: <true/false>    # e.g., pci_compliance, gdpr_compliance
+    audit_logging: <true/false>
+    data_encryption: <true/false>
+
+# Backup and Failover Configuration
+failover:
+  backup_agent: "<backup_agent_id>"      # Agent to fallback to if unavailable
+  health_check_interval: <seconds>       # How often to check agent health
+  max_failures_before_failover: <number>
+  automatic_recovery: <true/false>
+  recovery_check_interval: <seconds>
+  
+  # Additional failover settings
+  failover_conditions:
+    <condition>: <action>
+
+# Testing Configuration
+testing:
+  # Basic functionality tests
+  smoke_tests:
+    - "<test1>"
+    - "<test2>"
+    - "<test3>"
+  
+  # Domain-specific tests
+  domain_tests:
+    test_scenarios:
+      - "<scenario1>"
+      - "<scenario2>"
+      - "<scenario3>"
+    
+    <domain>_tests:
+      - "<domain_test1>"
+      - "<domain_test2>"
+    
+  # Load and performance tests
+  load_tests:
+    concurrent_sessions: <number>
+    test_duration_minutes: <minutes>
+    success_rate_threshold: <percentage>
+
+# Learning and Improvement (Optional)
+continuous_improvement:
+  # Feedback collection settings
+  feedback_collection:
+    <feedback_type1>: <true/false>
+    <feedback_type2>: <true/false>
+    
+  # Knowledge update settings
+  knowledge_updates:
+    <update_type1>: <true/false>
+    <update_frequency>: "<frequency>"
+    
+  # Performance optimization settings
+  performance_optimization:
+    <optimization_type1>: <true/false>
+    <optimization_type2>: <true/false>
+
+# Custom Configuration Sections (Optional)
+# Add any agent-specific configuration sections here
+custom_config:
+  <custom_section1>:
+    <setting1>: <value1>
+    <setting2>: <value2>
+  
+  <custom_section2>:
+    <setting3>: <value3>
+    <setting4>: <value4>
+
+# Environment-Specific Overrides (Optional)
+environment_overrides:
+  development:
+    <setting>: <dev_value>
+  staging:
+    <setting>: <staging_value>
+  production:
+    <setting>: <prod_value>
+
+# Documentation and Comments
+documentation:
+  setup_notes: |
+    <setup_instructions>
+  
+  configuration_notes: |
+    <configuration_explanation>
+  
+  troubleshooting_notes: |
+    <common_issues_and_solutions>
+  
+  changelog:
+    - version: "1.0.0"
+      date: "<date>"
+      changes: ["<change1>", "<change2>"]

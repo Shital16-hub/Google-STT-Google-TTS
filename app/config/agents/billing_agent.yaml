@@ -1,0 +1,378 @@
+# Billing Support Agent Configuration
+# Specialized agent for payment processing, billing inquiries, and financial support
+
+agent_id: "billing-support"
+version: "1.1.0"
+status: "active"
+last_updated: "2025-01-15T10:30:00Z"
+
+# Agent Metadata
+metadata:
+  name: "Billing Support Specialist"
+  description: "Expert billing and payment support for customer financial inquiries"
+  priority_level: 2  # High priority (1-5 scale)
+  category: "financial_services"
+  tags: ["billing", "payment", "refund", "subscription", "financial"]
+
+# Vector Database Configuration
+vector_config:
+  qdrant_collection: "billing_support_v1"
+  vector_size: 1536  # OpenAI ada-002 embedding dimensions
+  distance_metric: "cosine"
+  
+  # Performance optimization settings
+  faiss_promotion_threshold: 75  # queries/hour to promote to FAISS hot tier
+  redis_cache_ttl: 300  # seconds (5 minutes for billing info)
+  auto_optimize_schedule: "0 2 * * *"  # Daily optimization at 2 AM
+  
+  # Billing-specific caching
+  payment_policy_cache_ttl: 600  # 10 minutes for payment policies
+  account_info_cache_ttl: 120    # 2 minutes for account information
+  pricing_cache_ttl: 900         # 15 minutes for pricing information
+
+# Knowledge Base Sources
+knowledge_sources:
+  - type: "documents"
+    path: "kb/billing/"
+    categories:
+      - "payment_policies"
+      - "refund_procedures"
+      - "subscription_management"
+      - "billing_troubleshooting"
+      - "payment_methods"
+      - "dispute_resolution"
+    auto_update: true
+    update_schedule: "0 */4 * * *"  # Every 4 hours
+    
+  - type: "api"
+    name: "billing_system_api"
+    endpoint: "https://api.billing.internal/policies"
+    auth_type: "api_key"
+    auth_key_env: "BILLING_API_KEY"
+    refresh_interval: 1800  # 30 minutes
+    
+  - type: "database"
+    name: "payment_methods"
+    connection_string_env: "BILLING_DB_CONNECTION"
+    query: "SELECT * FROM payment_methods WHERE active = true"
+    refresh_interval: 3600  # 1 hour
+    
+  - type: "external_api"
+    name: "stripe_products"
+    endpoint: "https://api.stripe.com/v1/products"
+    auth_type: "bearer_token"
+    auth_token_env: "STRIPE_SECRET_KEY"
+    refresh_interval: 7200  # 2 hours
+
+# Agent Specialization Configuration
+specialization:
+  system_prompt: |
+    You are a professional billing support specialist with expertise in payment processing and financial customer service.
+    
+    CORE RESPONSIBILITIES:
+    - Handle billing inquiries and payment issues with empathy and accuracy
+    - Process refunds and payment adjustments according to company policies
+    - Explain charges, fees, and billing cycles clearly
+    - Assist with subscription management and plan changes
+    - Resolve payment disputes and unauthorized charge claims
+    - Guide customers through payment method updates and troubleshooting
+    
+    CRITICAL GUIDELINES:
+    - Always verify customer identity before discussing account details
+    - Be transparent about fees, charges, and refund timelines
+    - Offer payment plan options for customers experiencing financial difficulty
+    - Escalate complex financial disputes to specialized team
+    - Follow PCI compliance guidelines for all payment data handling
+    - Document all billing interactions thoroughly
+    
+    COMMUNICATION STYLE:
+    - Professional yet empathetic, especially for billing concerns
+    - Clear explanations of complex billing concepts
+    - Patient with confused or frustrated customers
+    - Proactive in offering solutions and alternatives
+    - Transparent about what you can and cannot do
+    
+    NEVER:
+    - Store or request full credit card numbers in conversation
+    - Make promises about refunds without verifying eligibility
+    - Waive fees without proper authorization
+    - Share account information without proper verification
+    
+    Always offer to send written confirmation of any billing changes or resolutions.
+    
+  max_context_tokens: 2048
+  response_style: "empathetic_professional"
+  temperature: 0.3  # Balanced temperature for helpful but consistent responses
+  max_response_tokens: 250  # Detailed responses for complex billing issues
+  
+  # Billing-specific keywords and patterns
+  billing_keywords:
+    payment_issues: ["declined", "failed", "error", "won't go through", "payment problem"]
+    refund_requests: ["refund", "money back", "cancel charge", "dispute", "unauthorized"]
+    account_changes: ["update payment", "change card", "new address", "billing info"]
+    subscription_management: ["cancel subscription", "upgrade plan", "downgrade", "pause"]
+    billing_inquiries: ["charge", "bill", "statement", "invoice", "receipt"]
+
+# Voice Configuration
+voice_settings:
+  tts_voice: "en-US-Neural2-J"  # Warm, professional voice
+  speaking_rate: 0.95  # Slightly slower for complex financial information
+  pitch: -2.0  # Slightly lower pitch for trustworthy tone
+  volume_gain_db: 1.0
+  personality: "empathetic_professional"
+  
+  # Financial conversation settings
+  financial_mode:
+    speaking_rate: 0.9   # Slower for numbers and important details
+    pause_after_amounts: 0.8  # Pause after stating dollar amounts
+    emphasis_on_confirmation: true
+    spell_out_important_numbers: true
+
+# Tool Integration Configuration
+tools:
+  - name: "lookup_customer_account"
+    type: "database_query"
+    description: "Look up customer account and billing information"
+    connection_env: "BILLING_DB_CONNECTION"
+    timeout: 5000
+    security_level: "high"
+    parameters:
+      required: ["customer_identifier"]
+      optional: ["date_range", "transaction_type"]
+    data_masking:
+      mask_credit_cards: true
+      mask_ssn: true
+      show_last_4_digits_only: true
+    
+  - name: "process_refund"
+    type: "payment_processor"
+    description: "Process customer refunds through payment gateway"
+    provider: "stripe"
+    timeout: 15000
+    retry_attempts: 2
+    parameters:
+      required: ["transaction_id", "refund_amount", "refund_reason"]
+      optional: ["customer_note", "partial_refund"]
+    authorization_required: true
+    approval_workflow:
+      auto_approve_under: 50.00  # Auto-approve refunds under $50
+      manager_approval_required: 500.00  # Manager approval over $500
+    
+  - name: "update_payment_method"
+    type: "payment_processor"
+    description: "Update customer payment method securely"
+    provider: "stripe"
+    timeout: 10000
+    security_level: "pci_compliant"
+    parameters:
+      required: ["customer_id"]
+      optional: ["set_as_default", "verify_new_method"]
+    validation:
+      verify_card: true
+      check_fraud_signals: true
+    
+  - name: "calculate_prorated_amount"
+    type: "calculation"
+    description: "Calculate prorated amounts for plan changes"
+    timeout: 2000
+    parameters:
+      required: ["current_plan", "new_plan", "change_date"]
+      optional: ["billing_cycle", "effective_date"]
+    cache_ttl: 300
+    
+  - name: "generate_invoice"
+    type: "document_generator"
+    description: "Generate invoice or receipt for customer"
+    timeout: 8000
+    parameters:
+      required: ["customer_id", "transaction_id"]
+      optional: ["include_details", "format"]
+    formats: ["pdf", "email", "sms"]
+    
+  - name: "create_payment_plan"
+    type: "financial_tool"
+    description: "Create payment plan for customers with financial hardship"
+    timeout: 5000
+    parameters:
+      required: ["total_amount", "customer_id", "plan_duration"]
+      optional: ["down_payment", "frequency", "interest_rate"]
+    approval_required: true
+    eligibility_check: true
+    
+  - name: "send_billing_notification"
+    type: "communication"
+    description: "Send billing-related notifications to customer"
+    providers: ["email", "sms"]
+    timeout: 5000
+    parameters:
+      required: ["customer_contact", "notification_type", "message"]
+      optional: ["include_invoice", "payment_link"]
+    templates:
+      - "payment_confirmation"
+      - "refund_processed"
+      - "payment_failed"
+      - "subscription_changed"
+    
+  - name: "escalate_billing_dispute"
+    type: "escalation"
+    description: "Escalate complex billing disputes to specialized team"
+    timeout: 3000
+    parameters:
+      required: ["dispute_type", "customer_id", "dispute_details"]
+      optional: ["supporting_documents", "urgency_level"]
+    routing:
+      chargeback_disputes: "chargeback_team"
+      fraud_claims: "fraud_team"
+      billing_errors: "billing_supervisor"
+
+# Routing Configuration
+routing:
+  # Primary routing keywords (high confidence)
+  primary_keywords:
+    - "bill"
+    - "billing"
+    - "payment"
+    - "charge"
+    - "refund"
+    - "money"
+    - "invoice"
+    - "receipt"
+    - "subscription"
+    - "cancel"
+    - "upgrade"
+    - "downgrade"
+    - "credit card"
+    - "debit card"
+    
+  # Secondary keywords (medium confidence)
+  secondary_keywords:
+    - "account"
+    - "balance"
+    - "statement"
+    - "transaction"
+    - "fee"
+    - "cost"
+    - "price"
+    - "plan"
+    - "membership"
+    
+  # Financial context patterns
+  context_patterns:
+    - "charged my card"
+    - "don't recognize this charge"
+    - "want my money back"
+    - "billing problem"
+    - "payment declined"
+    - "update my payment"
+    - "change my plan"
+    - "cancel my subscription"
+    
+  # Confidence thresholds
+  confidence_threshold: 0.75  # Route to this agent if confidence > 75%
+  financial_keywords_boost: 0.20  # Boost confidence by 20% for financial terms
+  
+  # Priority routing patterns
+  priority_patterns:
+    - "unauthorized charge"
+    - "billing error"
+    - "overcharged"
+    - "payment failed"
+    - "account suspended"
+
+# Performance Configuration
+performance:
+  target_response_time_ms: 600   # Target total response time
+  max_response_time_ms: 1200    # Maximum acceptable response time
+  
+  # Caching strategy for billing information
+  cache_strategy:
+    account_info: 120          # Cache account info for 2 min
+    payment_policies: 600      # Cache policies for 10 min
+    pricing_info: 900         # Cache pricing for 15 min
+    transaction_history: 300   # Cache history for 5 min
+    
+  # Load balancing
+  load_balancing:
+    max_concurrent_sessions: 40
+    queue_timeout_seconds: 60
+    priority_queue: false
+
+# Monitoring and Analytics
+monitoring:
+  # Key performance indicators
+  kpis:
+    - "average_resolution_time"
+    - "customer_satisfaction_score"
+    - "refund_processing_success_rate"
+    - "billing_inquiry_resolution_rate"
+    - "payment_update_success_rate"
+    
+  # Critical alerts
+  alerts:
+    - condition: "refund_failure_rate > 2%"
+      severity: "critical"
+      notification: ["pagerduty", "slack"]
+    - condition: "response_time > 1200ms"
+      severity: "warning"
+      notification: ["slack", "email"]
+    - condition: "customer_satisfaction < 4.2"
+      severity: "warning"
+      notification: ["email"]
+      
+  # Business metrics tracking
+  business_metrics:
+    track_refund_amounts: true
+    track_resolution_types: true
+    track_payment_method_updates: true
+    track_subscription_changes: true
+    track_dispute_outcomes: true
+
+# Security Configuration
+security:
+  # PCI compliance requirements
+  pci_compliance: true
+  data_retention_days: 365    # Keep billing records for 1 year
+  encrypt_financial_data: true
+  mask_sensitive_info: true
+  
+  # Access controls
+  role_based_access:
+    - role: "billing_agent"
+      permissions: ["view_account", "process_small_refunds", "update_payment_methods"]
+    - role: "billing_supervisor"
+      permissions: ["all_billing_operations", "approve_large_refunds"]
+    - role: "financial_analyst"
+      permissions: ["view_reports", "access_analytics"]
+  
+  # Audit logging
+  audit_logging:
+    log_all_financial_transactions: true
+    log_account_access: true
+    log_payment_updates: true
+    retention_period_days: 2555  # 7 years for financial records
+
+# Backup and Failover
+failover:
+  backup_agent: "general-support"
+  health_check_interval: 45
+  max_failures_before_failover: 2
+  automatic_recovery: true
+  recovery_check_interval: 90
+
+# Integration Testing
+testing:
+  smoke_tests:
+    - "account_lookup"
+    - "refund_calculation"
+    - "payment_method_validation"
+    - "invoice_generation"
+  
+  financial_tests:
+    test_refund_scenarios: ["partial_refund", "full_refund", "denied_refund"]
+    test_payment_scenarios: ["successful_payment", "declined_payment", "fraud_detection"]
+    compliance_checks: ["pci_validation", "data_encryption", "access_controls"]
+    
+  load_tests:
+    concurrent_sessions: 20
+    test_duration_minutes: 15
+    success_rate_threshold: 98
