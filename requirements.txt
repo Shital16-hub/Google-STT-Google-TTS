@@ -1,65 +1,128 @@
-# Core framework
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
-pydantic>=2.0.0
-python-dotenv>=1.0.0
+# Multi-Agent Voice AI System Dependencies
+# Fixed for Python 3.10.12 with correct available versions
 
-# WebSockets
-websockets>=11.0.0
+# ==========================================
+# CORE FRAMEWORK
+# ==========================================
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+websockets==12.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
 
-# Async HTTP client
-httpx>=0.24.0
+# ==========================================
+# ASYNC & CONCURRENCY
+# ==========================================
+asyncio-throttle==1.0.2
+aiofiles==23.2.1
+aiohttp==3.9.1
+redis[hiredis]==5.0.1
+
+# ==========================================
+# DATABASE & STORAGE
+# ==========================================
+# PostgreSQL async driver
+asyncpg==0.29.0
+sqlalchemy[asyncio]==2.0.23
+alembic==1.13.1
+
+# Vector databases
+qdrant-client==1.7.0
+faiss-cpu==1.7.4
+
+# ==========================================
+# AI & MACHINE LEARNING
+# ==========================================
+# OpenAI
+openai==1.6.1
+
+# Google Cloud AI
+google-cloud-speech==2.21.0
+google-cloud-texttospeech==2.16.3
+google-cloud-translate==3.12.1
+
+# LangChain & LangGraph
+langchain==0.1.0
+langchain-community==0.0.13
+langchain-openai==0.0.2
+langgraph==0.0.20
+
+# Sentence transformers
+sentence-transformers==2.2.2
 
 # Audio processing
-audioread>=3.0.0
-librosa>=0.10.0
-soundfile>=0.12.0
-numpy>=1.24.0
-scipy>=1.10.0
+pydub==0.25.1
+librosa==0.10.1
+SoundFile==0.12.1
+webrtcvad==2.0.10
 
-# Twilio integration
-twilio>=8.8.0
+# ==========================================
+# MONITORING & OBSERVABILITY
+# ==========================================
+prometheus-client==0.19.0
+structlog==23.2.0
+colorlog==6.8.0
+psutil==5.9.6
 
-# Google Cloud APIs - Updated for v2 API with proper protobuf support
-google-cloud-speech>=2.27.0
-google-cloud-texttospeech>=2.16.0
-google-auth>=2.23.0
-google-api-core>=2.11.0
-google-cloud-core>=2.3.2
-grpcio>=1.56.0
-protobuf>=4.25.0,<5.0.0
+# ==========================================
+# DATA PROCESSING & ANALYTICS
+# ==========================================
+pandas==2.1.4
+numpy==1.24.4
+scipy==1.11.4
+scikit-learn==1.3.2
+orjson==3.9.10
 
-# AI/ML components - Updated for latest LlamaIndex
-llama-index>=0.10.11
-llama-index-core>=0.10.11
-llama-index-embeddings-openai>=0.1.5
-llama-index-llms-openai>=0.1.5
-llama-index-vector-stores-pinecone>=0.1.3
-openai>=1.5.0
-pinecone-client>=3.0.0
-transformers>=4.30.0
-torch>=2.0.0
+# ==========================================
+# EXTERNAL INTEGRATIONS
+# ==========================================
+twilio==8.10.0
+requests==2.31.0
+httpx==0.25.2
+stripe==7.8.0
+sendgrid==6.11.0
+boto3==1.34.0
+google-cloud-storage==2.10.0
 
-# Language processing
-spacy>=3.6.0
-nltk>=3.8.0
-langdetect>=1.0.9
+# ==========================================
+# CONFIGURATION & VALIDATION
+# ==========================================
+python-dotenv==1.0.0
+pyyaml==6.0.1
+jsonschema==4.20.0
 
-# Document processing
-beautifulsoup4>=4.12.0
-pdfplumber>=0.7.0
-PyMuPDF>=1.23.0
-pypdf>=3.12.0
-python-docx>=0.8.11
-openpyxl>=3.1.0
-lxml>=4.9.0
+# ==========================================
+# SECURITY & AUTHENTICATION (Fixed versions)
+# ==========================================
+cryptography==41.0.7
+pyjwt==2.8.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
 
-# Utilities
-python-multipart>=0.0.6  # For FastAPI form data handling
-aiofiles>=0.8.0  # For async file operations
-pydantic-settings>=2.0.0
-requests>=2.31.0
-pandas>=2.0.0
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-typing-extensions>=4.7.0
+# ==========================================
+# UTILITIES & HELPERS
+# ==========================================
+python-dateutil==2.8.2
+pytz==2023.3
+nltk==3.8.1
+regex==2023.10.3
+urllib3==2.1.0
+certifi==2023.11.17
+click==8.1.7
+rich==13.7.0
+jinja2==3.1.2
+aiohttp-cors==0.7.0
+cachetools==5.3.2
+
+# ==========================================
+# PRODUCTION DEPLOYMENT
+# ==========================================
+gunicorn==21.2.0
+setproctitle==1.3.3
+
+# ==========================================
+# COMPATIBILITY FIXES
+# ==========================================
+typing-extensions==4.8.0
+annotated-types==0.6.0
+pydantic-core==2.14.6
