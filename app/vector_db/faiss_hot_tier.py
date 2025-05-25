@@ -15,7 +15,7 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 
-from app.config.latency_config import LatencyConfig
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

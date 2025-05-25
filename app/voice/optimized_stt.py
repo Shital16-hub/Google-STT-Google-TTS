@@ -52,8 +52,8 @@ except ImportError:
     HAS_AUDIO_LIBS = False
     logging.warning("Audio processing libraries not available. Install: pip install numpy soundfile librosa webrtcvad")
 
-from app.core.latency_optimizer import latency_monitor
-from app.voice.voice_activity_detection import VoiceActivityDetector
+from core.latency_optimizer import latency_monitor
+from voice.voice_activity_detection import VoiceActivityDetector
 
 # Configure logging
 logger = logging.getLogger(__name__)

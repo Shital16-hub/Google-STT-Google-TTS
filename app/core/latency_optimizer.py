@@ -6,15 +6,100 @@ import asyncio
 import logging
 import time
 import statistics
-from typing import Dict, Any, List, Optional, Tuple
+import functools
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
 from enum import Enum
 import json
 
-from app.config.latency_config import LatencyConfig
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
+
+# Global reference to the latency optimizer instance
+_global_optimizer: Optional['LatencyOptimizer'] = None
+
+def set_global_optimizer(optimizer: 'LatencyOptimizer'):
+    """Set the global optimizer instance for the decorator"""
+    global _global_optimizer
+    _global_optimizer = optimizer
+
+def latency_monitor(component_name: str):
+    """
+    Decorator to monitor function execution latency
+    Integrates with the existing LatencyOptimizer system
+    """
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs) -> Any:
+            start_time = time.time()
+            session_id = kwargs.get('session_id', 'unknown')
+            
+            try:
+                result = await func(*args, **kwargs)
+                execution_time = (time.time() - start_time) * 1000  # milliseconds
+                
+                # Track with the global optimizer if available
+                if _global_optimizer:
+                    await _global_optimizer.track_component_latency(
+                        component=component_name,
+                        duration=execution_time,
+                        session_id=session_id
+                    )
+                else:
+                    logger.debug(
+                        f"Component {component_name} completed",
+                        execution_time_ms=execution_time,
+                        session_id=session_id
+                    )
+                
+                return result
+            except Exception as e:
+                execution_time = (time.time() - start_time) * 1000
+                logger.error(
+                    f"Component {component_name} failed",
+                    execution_time_ms=execution_time,
+                    session_id=session_id,
+                    error=str(e)
+                )
+                raise
+        
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs) -> Any:
+            start_time = time.time()
+            session_id = kwargs.get('session_id', 'unknown')
+            
+            try:
+                result = func(*args, **kwargs)
+                execution_time = (time.time() - start_time) * 1000
+                
+                # For sync functions, we can't directly await, so just log
+                logger.debug(
+                    f"Component {component_name} completed",
+                    execution_time_ms=execution_time,
+                    session_id=session_id
+                )
+                
+                return result
+            except Exception as e:
+                execution_time = (time.time() - start_time) * 1000
+                logger.error(
+                    f"Component {component_name} failed",
+                    execution_time_ms=execution_time,
+                    session_id=session_id,
+                    error=str(e)
+                )
+                raise
+        
+        # Return appropriate wrapper based on function type
+        import asyncio
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return sync_wrapper
+    
+    return decorator
 
 class PerformanceAlert(Enum):
     """Performance alert levels."""
@@ -136,13 +221,13 @@ class LatencyOptimizer:
         
         # Component performance tracking
         self.component_stats = {
-            "stt": ComponentPerformance("stt", target_latency=LatencyConfig.TARGET_STT_LATENCY),
-            "routing": ComponentPerformance("routing", target_latency=LatencyConfig.TARGET_ROUTING_TIME),
-            "retrieval": ComponentPerformance("retrieval", target_latency=LatencyConfig.TARGET_RETRIEVAL_TIME),
-            "agent": ComponentPerformance("agent", target_latency=LatencyConfig.TARGET_AGENT_TIME),
-            "tools": ComponentPerformance("tools", target_latency=LatencyConfig.TARGET_TOOL_TIME),
-            "tts": ComponentPerformance("tts", target_latency=LatencyConfig.TARGET_TTS_TIME),
-            "total": ComponentPerformance("total", target_latency=LatencyConfig.TARGET_TOTAL_LATENCY)
+            "stt": ComponentPerformance("stt", target_latency=120),  # ms
+            "routing": ComponentPerformance("routing", target_latency=15),
+            "retrieval": ComponentPerformance("retrieval", target_latency=10),
+            "agent": ComponentPerformance("agent", target_latency=280),
+            "tools": ComponentPerformance("tools", target_latency=30),
+            "tts": ComponentPerformance("tts", target_latency=150),
+            "total": ComponentPerformance("total", target_latency=650)
         }
         
         # System state tracking
@@ -175,6 +260,9 @@ class LatencyOptimizer:
         """Initialize the latency optimizer."""
         logger.info("Initializing latency optimizer...")
         
+        # Set this instance as the global optimizer for the decorator
+        set_global_optimizer(self)
+        
         # Establish performance baselines
         await self._establish_baselines()
         
@@ -198,7 +286,7 @@ class LatencyOptimizer:
             if duration > self.component_stats[component].target_latency * 2:
                 await self._send_alert(
                     level=PerformanceAlert.CRITICAL,
-                    message=f"Extreme latency in {component}: {duration:.3f}s (target: {self.component_stats[component].target_latency:.3f}s)",
+                    message=f"Extreme latency in {component}: {duration:.3f}ms (target: {self.component_stats[component].target_latency:.3f}ms)",
                     component=component,
                     session_id=session_id
                 )
@@ -222,7 +310,7 @@ class LatencyOptimizer:
         analysis = {
             "session_id": session_id,
             "total_latency": total_time,
-            "target_met": total_time <= LatencyConfig.TARGET_TOTAL_LATENCY,
+            "target_met": total_time <= 650,  # ms
             "bottlenecks": await self._identify_session_bottlenecks(session_metrics),
             "optimization_suggestions": await self._generate_session_optimizations(session_metrics)
         }
@@ -235,11 +323,11 @@ class LatencyOptimizer:
         
         # Check each component against its target
         component_mappings = {
-            "routing_time": ("routing", LatencyConfig.TARGET_ROUTING_TIME),
-            "retrieval_time": ("retrieval", LatencyConfig.TARGET_RETRIEVAL_TIME),
-            "agent_time": ("agent", LatencyConfig.TARGET_AGENT_TIME),
-            "tool_time": ("tools", LatencyConfig.TARGET_TOOL_TIME),
-            "tts_time": ("tts", LatencyConfig.TARGET_TTS_TIME)
+            "routing_time": ("routing", 15),
+            "retrieval_time": ("retrieval", 10),
+            "agent_time": ("agent", 280),
+            "tool_time": ("tools", 30),
+            "tts_time": ("tts", 150)
         }
         
         for metric_key, (component, target) in component_mappings.items():
@@ -514,12 +602,13 @@ class LatencyOptimizer:
             
             for query in common_queries:
                 try:
-                    await self.orchestrator.router.route_request(
-                        user_input=query,
-                        conversation_history=[],
-                        user_context={},
-                        session_metadata={}
-                    )
+                    if hasattr(self.orchestrator, 'router'):
+                        await self.orchestrator.router.route_request(
+                            user_input=query,
+                            conversation_history=[],
+                            user_context={},
+                            session_metadata={}
+                        )
                 except Exception as e:
                     logger.error(f"Error warming routing cache: {e}")
         
@@ -532,7 +621,7 @@ class LatencyOptimizer:
                 "Thank you for contacting us."
             ]
             
-            if self.orchestrator and self.orchestrator.tts:
+            if self.orchestrator and hasattr(self.orchestrator, 'tts'):
                 for response in common_responses:
                     try:
                         await self.orchestrator.tts.synthesize(response)
@@ -543,10 +632,11 @@ class LatencyOptimizer:
         """Optimize vector database index performance."""
         logger.info(f"🔍 Optimizing vector index for {component}")
         
-        if self.orchestrator and self.orchestrator.vector_store:
+        if self.orchestrator and hasattr(self.orchestrator, 'vector_store'):
             try:
                 # Trigger index optimization
-                await self.orchestrator.vector_store.optimize_performance()
+                if hasattr(self.orchestrator.vector_store, 'optimize_performance'):
+                    await self.orchestrator.vector_store.optimize_performance()
             except Exception as e:
                 logger.error(f"Error optimizing vector index: {e}")
     
@@ -580,13 +670,13 @@ class LatencyOptimizer:
         
         # Set initial baselines from configuration
         self.performance_baselines = {
-            "stt": LatencyConfig.TARGET_STT_LATENCY,
-            "routing": LatencyConfig.TARGET_ROUTING_TIME,
-            "retrieval": LatencyConfig.TARGET_RETRIEVAL_TIME,
-            "agent": LatencyConfig.TARGET_AGENT_TIME,
-            "tools": LatencyConfig.TARGET_TOOL_TIME,
-            "tts": LatencyConfig.TARGET_TTS_TIME,
-            "total": LatencyConfig.TARGET_TOTAL_LATENCY
+            "stt": 120,
+            "routing": 15,
+            "retrieval": 10,
+            "agent": 280,
+            "tools": 30,
+            "tts": 150,
+            "total": 650
         }
         
         logger.info("✅ Performance baselines established")
@@ -599,7 +689,7 @@ class LatencyOptimizer:
                 await asyncio.sleep(60)
                 
                 # Run optimization if needed
-                if time.time() - self.last_optimization_time > LatencyConfig.OPTIMIZATION_INTERVAL:
+                if time.time() - self.last_optimization_time > 300:  # 5 minutes
                     await self.optimize_system()
                 
                 # Send health alerts if needed

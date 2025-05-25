@@ -10,8 +10,8 @@ from datetime import datetime
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
-from app.agents.base_agent import BaseAgent, ToolExecutionResult, AgentCapability
-from app.config.latency_config import LatencyConfig
+from agents.base_agent import BaseAgent, ToolExecutionResult, AgentCapability
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

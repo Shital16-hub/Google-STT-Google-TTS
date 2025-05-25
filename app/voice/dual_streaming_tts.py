@@ -50,7 +50,7 @@ except ImportError:
     HAS_AUDIO_LIBS = False
     logging.warning("Audio processing libraries not available. Install: pip install soundfile librosa webrtcvad")
 
-from app.core.latency_optimizer import latency_monitor
+from core.latency_optimizer import latency_monitor
 
 # Configure logging
 logger = logging.getLogger(__name__)

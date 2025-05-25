@@ -15,7 +15,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-from app.config.latency_config import LatencyConfig
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

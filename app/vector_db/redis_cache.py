@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import redis.asyncio as redis
 from redis.asyncio import ConnectionPool
 
-from app.config.latency_config import LatencyConfig
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

@@ -27,31 +27,31 @@ from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 from twilio.rest import Client as TwilioClient
 
 # Core system imports
-from app.core.orchestrator import MultiAgentOrchestrator
-from app.core.latency_optimizer import LatencyOptimizer
-from app.core.conversation_manager import EnhancedConversationManager
+from core.orchestrator import MultiAgentOrchestrator
+from core.latency_optimizer import LatencyOptimizer
+from core.conversation_manager import EnhancedConversationManager
 
 # Vector database imports
-from app.vector_db.hybrid_vector_store import HybridVectorStore
-from app.vector_db.qdrant_manager import QdrantManager
-from app.vector_db.redis_cache import RedisCache
+from vector_db.hybrid_vector_store import HybridVectorStore
+from vector_db.qdrant_manager import QdrantManager
+from vector_db.redis_cache import RedisCache
 
 # Agent imports
-from app.agents.agent_registry import AgentRegistry
-from app.agents.intelligent_router import IntelligentRouter
+from agents.agent_registry import AgentRegistry
+from agents.intelligent_router import IntelligentRouter
 
 # Voice processing imports
-from app.voice.optimized_stt import OptimizedSTT
-from app.voice.dual_streaming_tts import DualStreamingTTS
+from voice.optimized_stt import OptimizedSTT
+from voice.dual_streaming_tts import DualStreamingTTS
 
 # Configuration imports
-from app.config.production_settings import ProductionConfig
-from app.config.latency_config import LatencyConfig
+from config.production_settings import ProductionConfig
+from config.latency_config import LatencyConfig
 
 # Monitoring imports
-from app.monitoring.performance_tracker import PerformanceTracker
-from app.monitoring.business_analytics import BusinessAnalytics
-from app.monitoring.alerting_system import AlertingSystem
+from monitoring.performance_tracker import PerformanceTracker
+from monitoring.business_analytics import BusinessAnalytics
+from monitoring.alerting_system import AlertingSystem
 
 # Load environment variables
 from dotenv import load_dotenv

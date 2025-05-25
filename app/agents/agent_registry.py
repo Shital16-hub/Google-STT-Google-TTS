@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
 
-from app.agents.base_agent import BaseAgent, AgentStatus
-from app.config.latency_config import LatencyConfig
+from agents.base_agent import BaseAgent, AgentStatus
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

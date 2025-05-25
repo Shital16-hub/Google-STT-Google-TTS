@@ -12,10 +12,10 @@ from dataclasses import dataclass, field
 from collections import defaultdict, deque
 from enum import Enum
 
-from app.vector_db.redis_cache import RedisCache
-from app.vector_db.faiss_hot_tier import FAISSHotTier
-from app.vector_db.qdrant_manager import QdrantManager
-from app.config.latency_config import LatencyConfig
+from vector_db.redis_cache import RedisCache
+from vector_db.faiss_hot_tier import FAISSHotTier
+from vector_db.qdrant_manager import QdrantManager
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

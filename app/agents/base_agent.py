@@ -16,7 +16,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from app.config.latency_config import LatencyConfig
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

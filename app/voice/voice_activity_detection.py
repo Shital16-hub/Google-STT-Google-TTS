@@ -48,7 +48,7 @@ except ImportError:
     webrtcvad = None
     logging.warning("Audio libraries not available. Install: pip install webrtcvad soundfile librosa")
 
-from app.core.latency_optimizer import latency_monitor
+from core.latency_optimizer import latency_monitor
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -51,7 +51,7 @@ except ImportError as e:
     class SystemMessage(BaseMessage): pass
 
 # System imports (these should work regardless)
-from app.config.latency_config import latency_config
+from config.latency_config import latency_config
 
 logger = logging.getLogger(__name__)
 

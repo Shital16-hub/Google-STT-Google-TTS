@@ -30,9 +30,9 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemoryCheckpointer
 
-from app.agents.base_agent import BaseSpecializedAgent, AgentResponse, ConversationState
-from app.core.latency_optimizer import latency_monitor
-from app.vector_db.hybrid_vector_store import HybridVectorStore
+from agents.base_agent import BaseSpecializedAgent, AgentResponse, ConversationState
+from core.latency_optimizer import latency_monitor
+from vector_db.hybrid_vector_store import HybridVectorStore
 
 # Configure logging
 logger = logging.getLogger(__name__)

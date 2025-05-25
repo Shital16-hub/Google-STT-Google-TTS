@@ -14,7 +14,7 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import ResponseHandlingException
 from sentence_transformers import SentenceTransformer
 
-from app.config.latency_config import LatencyConfig
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 

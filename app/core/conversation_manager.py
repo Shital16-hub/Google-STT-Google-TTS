@@ -13,8 +13,8 @@ from collections import defaultdict, deque
 from enum import Enum
 import hashlib
 
-from app.core.orchestrator import MultiAgentOrchestrator
-from app.config.latency_config import LatencyConfig
+from core.orchestrator import MultiAgentOrchestrator
+from config.latency_config import LatencyConfig
 
 logger = logging.getLogger(__name__)
 
