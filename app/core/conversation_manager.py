@@ -870,4 +870,4 @@ class EnhancedConversationManager:
         total_sessions = len(self.session_metrics.get("completed_sessions", []))
         logger.info(f"📈 Processed {total_sessions} total sessions")
         
-        logger.info("✅ Enhanced conversation manager shutdown complete")"""
+        logger.info("✅ Enhanced conversation manager shutdown complete")
