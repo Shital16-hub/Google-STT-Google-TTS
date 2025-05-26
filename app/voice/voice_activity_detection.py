@@ -668,12 +668,13 @@ class VoiceActivityDetector:
             engine_metrics["usage_count"] += 1
             engine_metrics["total_processing_time"] += result.processing_time_ms
             
-            # Update engine status
+            # Update engine status - FIXED VERSION
             if engine in self.engine_status:
                 status = self.engine_status[engine]
                 status["last_used"] = datetime.now()
-                if status["usage_count"] := engine_metrics["usage_count"]:
-                    status["average_latency_ms"] = engine_metrics["total_processing_time"] / status["usage_count"]
+                usage_count = engine_metrics["usage_count"]  # Extract the value first
+                if usage_count > 0:  # Then use it in condition
+                    status["average_latency_ms"] = engine_metrics["total_processing_time"] / usage_count
             
         except Exception as e:
             logger.warning(f"Metrics update failed: {str(e)}")
@@ -1184,7 +1185,9 @@ class VADIntegrationHelper:
             """Detect if speaker has finished talking"""
             return await self.vad.detect_end_of_speech(audio_stream, max_silence_ms)
             
-        return detect_endpoint"""
+        return detect_endpoint
+        
+"""
 Voice Activity Detection - Advanced VAD with Ultra-Low Latency
 Part of the Multi-Agent Voice AI System Transformation
 

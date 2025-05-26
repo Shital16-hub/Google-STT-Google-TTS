@@ -3,26 +3,42 @@ aiohttp
 requests
 fastapi
 uvicorn
+aiofiles
+websockets
 
 # Database & Caching
 redis
+aioredis
 sqlalchemy
+asyncpg
 psycopg2-binary
+qdrant-client
 
 # Data Processing
 pandas
 numpy
 scipy
+scikit-learn
 
 # Audio Processing (Core)
 soundfile
 librosa
 webrtcvad
 
+# AI/ML & NLP (torch excluded since it's pre-installed on RunPod)
+openai
+sentence-transformers
+transformers
+faiss-cpu
+langchain
+langchain-openai
+langchain-core
+langchain-community
+langgraph
+
 # Speech Services
 google-cloud-speech
 google-cloud-texttospeech
-openai
 boto3
 
 # External API Integrations
@@ -45,10 +61,21 @@ psutil
 # Template Engine
 jinja2
 
-# Utilities
+# Async & Concurrency
+asyncio-throttle
+
+# Data Validation
+pydantic
+
+# Configuration & Environment
 python-dotenv
+pyyaml
 pytz
 
 # Development
 pytest
 pytest-asyncio
+
+# Additional utilities
+tenacity
+typing-extensions

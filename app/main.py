@@ -3,6 +3,11 @@
 Complete Multi-Agent Voice AI System - Production FastAPI Application
 Optimized for <2-second end-to-end latency with hot deployment capabilities.
 """
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import sys
 import asyncio
@@ -45,7 +50,7 @@ from voice.optimized_stt import OptimizedSTT
 from voice.dual_streaming_tts import DualStreamingTTS
 
 # Configuration imports
-from config.production_settings import ProductionConfig
+from config.production_settings import production_settings as ProductionConfig
 from config.latency_config import LatencyConfig
 
 # Monitoring imports
@@ -53,9 +58,7 @@ from monitoring.performance_tracker import PerformanceTracker
 from monitoring.business_analytics import BusinessAnalytics
 from monitoring.alerting_system import AlertingSystem
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+
 
 # Configure structured logging
 logging.basicConfig(
