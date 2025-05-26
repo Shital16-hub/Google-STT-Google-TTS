@@ -1,713 +1,751 @@
 """
-Optimized Qdrant Manager - High-performance vector database for cold storage
-Implements production-ready Qdrant with <50ms query latency
+Qdrant Manager - Tier 3 (Sub-15ms latency)
+Optimized Qdrant operations with advanced indexing and filtering.
+Primary storage tier for all vectors with high-performance configuration.
 """
 import asyncio
-import time
 import logging
+import time
 import json
 import uuid
-from typing import Dict, Any, List, Optional, Union, Tuple
-from dataclasses import dataclass
-
+from typing import Dict, Any, Optional, List, Tuple, Union
+from dataclasses import dataclass, field
+from datetime import datetime
 import numpy as np
+
 from qdrant_client import QdrantClient, AsyncQdrantClient
 from qdrant_client.http import models
 from qdrant_client.http.models import (
-    Distance, VectorParams, CreateCollection, PointStruct,
-    Filter, FieldCondition, Range, MatchValue, ScoredPoint,
-    OptimizersConfig, HnswConfig, PayloadIndexParams
+    Distance, VectorParams, OptimizersConfig, HnswConfig,
+    BinaryQuantizationConfig, BinaryQuantization,
+    PointStruct, Filter, FieldCondition, Range,
+    SearchRequest, SearchParams, UpdateStatus
 )
-
-from app.vector_db.hybrid_vector_store import VectorSearchResult
 
 logger = logging.getLogger(__name__)
 
 @dataclass
-class QdrantCollectionConfig:
-    """Configuration for Qdrant collection optimization"""
-    collection_name: str
-    vector_size: int = 1536
-    distance: Distance = Distance.COSINE
-    hnsw_ef_construct: int = 200
-    hnsw_m: int = 16
-    hnsw_ef: int = 128
-    segments_count: int = 2
-    optimizer_deleted_threshold: float = 0.2
-    optimizer_vacuum_min_vector_number: int = 1000
-    optimizer_default_segment_number: int = 2
-    on_disk_payload: bool = False
-    replication_factor: int = 1
+class SearchResult:
+    """Search result from Qdrant."""
+    vectors: List[Dict[str, Any]]
+    scores: List[float]
+    search_time_ms: float
+    collection_used: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class CollectionInfo:
+    """Information about a Qdrant collection."""
+    name: str
+    vector_count: int
+    config: Dict[str, Any]
+    created_at: float
+    last_updated: float = field(default_factory=time.time)
+    search_count: int = 0
+    average_search_time_ms: float = 0.0
+    optimization_level: str = "standard"
 
 class QdrantManager:
     """
-    Optimized Qdrant Manager for cold storage with <50ms query latency
-    
-    Features:
-    - Async operations for better performance
-    - Optimized HNSW parameters for speed
-    - Efficient batch operations
-    - Smart indexing strategies
-    - Memory-optimized configurations
+    High-performance Qdrant manager for primary vector storage.
+    Optimized for <15ms search latency with advanced indexing.
     """
     
-    # Performance targets
-    TARGET_QUERY_LATENCY = 50.0  # ms
-    BATCH_SIZE = 100             # documents per batch
-    MAX_RETRIES = 3              # retry attempts
-    
-    def __init__(
-        self,
-        host: str = "localhost",
-        port: int = 6333,
-        grpc_port: int = 6334,
-        prefer_grpc: bool = True,
-        timeout: float = 10.0
-    ):
+    def __init__(self,
+                 host: str = "localhost",
+                 port: int = 6333,
+                 grpc_port: int = 6334,
+                 prefer_grpc: bool = True,
+                 timeout: float = 10.0,
+                 api_key: Optional[str] = None,
+                 vector_dimension: int = 1536,
+                 distance_metric: str = "cosine",
+                 enable_quantization: bool = True,
+                 optimization_level: str = "ultra_high_performance",
+                 max_connections: int = 100,
+                 enable_replication: bool = False):
+        """Initialize Qdrant manager with performance optimizations."""
+        
         self.host = host
         self.port = port
         self.grpc_port = grpc_port
         self.prefer_grpc = prefer_grpc
         self.timeout = timeout
+        self.api_key = api_key
+        self.vector_dimension = vector_dimension
+        self.distance_metric = distance_metric
+        self.enable_quantization = enable_quantization
+        self.optimization_level = optimization_level
+        self.max_connections = max_connections
+        self.enable_replication = enable_replication
         
-        # Client connections
+        # Clients
         self.client: Optional[AsyncQdrantClient] = None
         self.sync_client: Optional[QdrantClient] = None
         
-        # Collection configurations
-        self.collections: Dict[str, QdrantCollectionConfig] = {}
+        # Collection tracking
+        self.collections: Dict[str, CollectionInfo] = {}
         
         # Performance tracking
-        self.query_stats = {
-            "total_queries": 0,
-            "successful_queries": 0,
-            "average_latency_ms": 0.0,
-            "p95_latency_ms": 0.0,
-            "error_count": 0,
-            "last_query_time": 0.0
+        self.stats = {
+            "total_searches": 0,
+            "total_inserts": 0,
+            "total_updates": 0,
+            "total_deletes": 0,
+            "average_search_time_ms": 0.0,
+            "average_insert_time_ms": 0.0,
+            "cache_hits": 0,
+            "collection_count": 0,
+            "total_vectors": 0,
+            "optimization_runs": 0
         }
         
-        # Agent-specific stats
-        self.agent_stats: Dict[str, Dict[str, Any]] = {}
+        # Configuration presets
+        self.optimization_configs = {
+            "ultra_high_performance": {
+                "hnsw_m": 32,
+                "hnsw_ef_construct": 256,
+                "hnsw_max_indexing_threads": 8,
+                "segments": 4,
+                "memmap_threshold": 50000,
+                "flush_interval": 1
+            },
+            "high_performance": {
+                "hnsw_m": 16,
+                "hnsw_ef_construct": 128,
+                "hnsw_max_indexing_threads": 4,
+                "segments": 2,
+                "memmap_threshold": 20000,
+                "flush_interval": 2
+            },
+            "balanced": {
+                "hnsw_m": 8,
+                "hnsw_ef_construct": 64,
+                "hnsw_max_indexing_threads": 2,
+                "segments": 1,
+                "memmap_threshold": 10000,
+                "flush_interval": 5
+            }
+        }
         
         self.initialized = False
-        
-        logger.info(f"🟢 Qdrant Manager initialized - {host}:{port}")
+        logger.info(f"Qdrant Manager initialized for {host}:{port} (optimization: {optimization_level})")
     
-    async def init(self):
-        """Initialize Qdrant connections with optimized settings"""
-        logger.info("🔄 Initializing Qdrant Manager...")
+    async def initialize(self):
+        """Initialize Qdrant connections with performance optimizations."""
+        logger.info("🚀 Initializing Qdrant Manager...")
         
         try:
-            # Initialize async client for main operations
-            self.client = AsyncQdrantClient(
-                host=self.host,
-                port=self.grpc_port if self.prefer_grpc else self.port,
-                grpc_port=self.grpc_port,
-                prefer_grpc=self.prefer_grpc,
-                timeout=self.timeout
-            )
+            # Initialize async client (preferred for performance)
+            if self.prefer_grpc:
+                self.client = AsyncQdrantClient(
+                    host=self.host,
+                    port=self.grpc_port,
+                    grpc_port=self.grpc_port,
+                    prefer_grpc=True,
+                    timeout=self.timeout,
+                    api_key=self.api_key
+                )
+            else:
+                self.client = AsyncQdrantClient(
+                    host=self.host,
+                    port=self.port,
+                    timeout=self.timeout,
+                    api_key=self.api_key
+                )
             
-            # Initialize sync client for administrative operations
+            # Initialize sync client for management operations
             self.sync_client = QdrantClient(
                 host=self.host,
-                port=self.grpc_port if self.prefer_grpc else self.port,
+                port=self.port,
                 grpc_port=self.grpc_port,
                 prefer_grpc=self.prefer_grpc,
-                timeout=self.timeout
+                timeout=self.timeout,
+                api_key=self.api_key
             )
             
             # Test connection
-            await self._test_connection()
+            collections = await self.client.get_collections()
+            logger.info(f"✅ Qdrant connection established: {len(collections.collections)} collections found")
             
-            # Get existing collections
-            await self._discover_existing_collections()
+            # Load existing collections
+            await self._load_existing_collections()
             
             self.initialized = True
             logger.info("✅ Qdrant Manager initialization complete")
             
         except Exception as e:
-            logger.error(f"❌ Qdrant Manager initialization failed: {e}")
+            logger.error(f"❌ Qdrant initialization failed: {e}")
             raise
     
-    async def _test_connection(self):
-        """Test Qdrant connection"""
-        try:
-            collections = await self.client.get_collections()
-            logger.info(f"🔗 Connected to Qdrant - {len(collections.collections)} collections found")
-        except Exception as e:
-            logger.error(f"❌ Qdrant connection test failed: {e}")
-            raise
-    
-    async def _discover_existing_collections(self):
-        """Discover and configure existing collections"""
+    async def _load_existing_collections(self):
+        """Load information about existing collections."""
         try:
             collections_response = await self.client.get_collections()
             
             for collection in collections_response.collections:
-                collection_name = collection.name
+                collection_info = await self.client.get_collection(collection.name)
                 
-                # Get collection info
-                info = await self.client.get_collection(collection_name)
-                
-                # Create configuration
-                config = QdrantCollectionConfig(
-                    collection_name=collection_name,
-                    vector_size=info.config.params.vectors.size,
-                    distance=info.config.params.vectors.distance
+                self.collections[collection.name] = CollectionInfo(
+                    name=collection.name,
+                    vector_count=collection_info.points_count or 0,
+                    config=collection_info.config.dict() if collection_info.config else {},
+                    created_at=time.time(),  # We don't have actual creation time
+                    optimization_level=self.optimization_level
                 )
                 
-                self.collections[collection_name] = config
-                
-                # Initialize agent stats if it's an agent collection
-                if collection_name.startswith("agent-"):
-                    agent_id = collection_name.replace("agent-", "")
-                    self.agent_stats[agent_id] = {
-                        "collection_name": collection_name,
-                        "document_count": 0,
-                        "last_updated": time.time(),
-                        "query_count": 0,
-                        "average_latency": 0.0
-                    }
+                self.stats["total_vectors"] += collection_info.points_count or 0
             
-            logger.info(f"📚 Discovered {len(self.collections)} existing collections")
+            self.stats["collection_count"] = len(self.collections)
+            logger.info(f"Loaded {len(self.collections)} existing collections")
             
         except Exception as e:
-            logger.error(f"❌ Collection discovery failed: {e}")
+            logger.error(f"Error loading existing collections: {e}")
     
-    async def create_agent_collection(
-        self, 
-        agent_id: str, 
-        knowledge_sources: List[Dict[str, Any]]
-    ):
-        """Create optimized collection for an agent"""
-        collection_name = f"agent-{agent_id}"
-        
-        logger.info(f"📚 Creating Qdrant collection: {collection_name}")
+    async def create_optimized_collection(self,
+                                        collection_name: str,
+                                        agent_config: Optional[Dict[str, Any]] = None) -> bool:
+        """Create a performance-optimized collection for an agent."""
+        if not self.initialized:
+            raise RuntimeError("Qdrant Manager not initialized")
         
         try:
             # Check if collection already exists
-            try:
-                existing = await self.client.get_collection(collection_name)
-                logger.info(f"✅ Collection {collection_name} already exists")
-                return
-            except:
-                pass  # Collection doesn't exist, create it
+            if collection_name in self.collections:
+                logger.info(f"Collection {collection_name} already exists")
+                return True
             
-            # Create optimized collection configuration
-            config = QdrantCollectionConfig(collection_name=collection_name)
+            # Get optimization config
+            opt_config = self.optimization_configs.get(self.optimization_level, 
+                                                      self.optimization_configs["balanced"])
             
-            # Create collection with optimized parameters
+            # Create collection with optimized configuration
+            create_start = time.time()
+            
             await self.client.create_collection(
                 collection_name=collection_name,
                 vectors_config=VectorParams(
-                    size=config.vector_size,
-                    distance=config.distance,
-                    hnsw_config=HnswConfig(
-                        ef_construct=config.hnsw_ef_construct,
-                        m=config.hnsw_m,
-                        full_scan_threshold=20000,  # Use full scan for small collections
-                        max_indexing_threads=4,
-                        on_disk=False  # Keep in memory for speed
-                    ),
-                    on_disk=config.on_disk_payload
+                    size=self.vector_dimension,
+                    distance=Distance.COSINE if self.distance_metric == "cosine" else Distance.DOT,
+                    on_disk=False  # Keep in memory for speed
                 ),
                 optimizers_config=OptimizersConfig(
-                    deleted_threshold=config.optimizer_deleted_threshold,
-                    vacuum_min_vector_number=config.optimizer_vacuum_min_vector_number,
-                    default_segment_number=config.optimizer_default_segment_number,
-                    max_segment_size=20000,  # Smaller segments for faster queries
-                    memmap_threshold=20000,
-                    indexing_threshold=20000,
-                    flush_interval_sec=5,
-                    max_optimization_threads=2
+                    default_segment_number=opt_config["segments"],
+                    max_segment_size=20000,
+                    memmap_threshold=opt_config["memmap_threshold"],
+                    indexing_threshold=10000,
+                    flush_interval_sec=opt_config["flush_interval"],
+                    max_optimization_threads=4
                 ),
-                replication_factor=config.replication_factor,
-                write_consistency_factor=1,
-                timeout=60
+                hnsw_config=HnswConfig(
+                    m=opt_config["hnsw_m"],
+                    ef_construct=opt_config["hnsw_ef_construct"],
+                    full_scan_threshold=10000,
+                    max_indexing_threads=opt_config["hnsw_max_indexing_threads"]
+                ),
+                quantization_config=BinaryQuantization(
+                    binary=BinaryQuantizationConfig(always_ram=True)
+                ) if self.enable_quantization else None
             )
             
-            # Store configuration
-            self.collections[collection_name] = config
+            create_time = (time.time() - create_start) * 1000
             
-            # Initialize agent stats
-            self.agent_stats[agent_id] = {
-                "collection_name": collection_name,
-                "document_count": 0,
-                "last_updated": time.time(),
-                "query_count": 0,
-                "average_latency": 0.0,
-                "knowledge_sources": knowledge_sources
-            }
+            # Track collection
+            self.collections[collection_name] = CollectionInfo(
+                name=collection_name,
+                vector_count=0,
+                config=opt_config,
+                created_at=time.time(),
+                optimization_level=self.optimization_level
+            )
             
-            # Create payload indexes for better filtering performance
-            await self._create_payload_indexes(collection_name)
+            self.stats["collection_count"] += 1
             
-            logger.info(f"✅ Collection {collection_name} created successfully")
+            logger.info(f"✅ Created optimized collection '{collection_name}' in {create_time:.2f}ms")
+            return True
             
         except Exception as e:
-            logger.error(f"❌ Error creating collection {collection_name}: {e}")
-            raise
+            logger.error(f"❌ Failed to create collection {collection_name}: {e}")
+            return False
     
-    async def _create_payload_indexes(self, collection_name: str):
-        """Create payload indexes for efficient filtering"""
-        try:
-            # Index agent_id for fast agent-specific queries
-            await self.client.create_payload_index(
-                collection_name=collection_name,
-                field_name="agent_id",
-                field_schema=PayloadIndexParams(type="keyword")
-            )
-            
-            # Index document_type for filtering by document type
-            await self.client.create_payload_index(
-                collection_name=collection_name,
-                field_name="document_type",
-                field_schema=PayloadIndexParams(type="keyword")
-            )
-            
-            # Index timestamp for time-based filtering
-            await self.client.create_payload_index(
-                collection_name=collection_name,
-                field_name="timestamp",
-                field_schema=PayloadIndexParams(type="integer")
-            )
-            
-            logger.debug(f"🔍 Payload indexes created for {collection_name}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error creating payload indexes: {e}")
-    
-    async def add_documents_to_agent(
-        self, 
-        agent_id: str, 
-        documents: List[Dict[str, Any]]
-    ):
-        """Add documents to agent collection with batch optimization"""
-        collection_name = f"agent-{agent_id}"
+    async def add_vectors(self,
+                         vectors: List[Dict[str, Any]],
+                         collection_name: str,
+                         batch_size: int = 100) -> Dict[str, Any]:
+        """Add vectors to Qdrant with batch optimization."""
+        if not self.initialized:
+            raise RuntimeError("Qdrant Manager not initialized")
         
-        if collection_name not in self.collections:
-            logger.error(f"❌ Collection {collection_name} not found")
-            return
-        
-        logger.info(f"📄 Adding {len(documents)} documents to {collection_name}")
+        insert_start = time.time()
         
         try:
-            # Process documents in batches for optimal performance
-            total_added = 0
+            # Ensure collection exists
+            if collection_name not in self.collections:
+                await self.create_optimized_collection(collection_name)
             
-            for i in range(0, len(documents), self.BATCH_SIZE):
-                batch = documents[i:i + self.BATCH_SIZE]
-                points = []
+            # Prepare points for insertion
+            points = []
+            for vector_data in vectors:
+                # Extract vector
+                if "vector" in vector_data:
+                    vector = vector_data["vector"]
+                elif "embedding" in vector_data:
+                    vector = vector_data["embedding"]
+                else:
+                    logger.warning(f"No vector found in data: {vector_data}")
+                    continue
                 
-                for doc in batch:
-                    # Generate embeddings if not present
-                    if "embedding" not in doc:
-                        # In production, this would use the embedding service
-                        # For now, we'll skip documents without embeddings
-                        continue
-                    
-                    point_id = doc.get("id", str(uuid.uuid4()))
-                    
-                    # Create point with optimized payload
-                    point = PointStruct(
-                        id=point_id,
-                        vector=doc["embedding"],
-                        payload={
-                            "agent_id": agent_id,
-                            "text": doc.get("text", ""),
-                            "source": doc.get("source", "unknown"),
-                            "document_type": doc.get("document_type", "text"),
-                            "timestamp": int(time.time()),
-                            "metadata": doc.get("metadata", {})
-                        }
-                    )
-                    points.append(point)
+                # Ensure vector is the right type
+                if isinstance(vector, list):
+                    vector = np.array(vector, dtype=np.float32)
+                elif isinstance(vector, np.ndarray):
+                    vector = vector.astype(np.float32)
                 
-                if points:
-                    # Upsert batch with retry logic
-                    await self._upsert_points_with_retry(collection_name, points)
-                    total_added += len(points)
-                    
-                    logger.debug(f"📄 Batch {i//self.BATCH_SIZE + 1}: Added {len(points)} points")
+                # Create point
+                point = PointStruct(
+                    id=vector_data.get("id", str(uuid.uuid4())),
+                    vector=vector.tolist() if isinstance(vector, np.ndarray) else vector,
+                    payload=vector_data.get("metadata", {})
+                )
+                points.append(point)
             
-            # Update agent stats
-            if agent_id in self.agent_stats:
-                self.agent_stats[agent_id]["document_count"] += total_added
-                self.agent_stats[agent_id]["last_updated"] = time.time()
+            if not points:
+                return {"success": False, "error": "No valid vectors found"}
             
-            logger.info(f"✅ Added {total_added} documents to {collection_name}")
+            # Insert in batches for optimal performance
+            inserted_count = 0
             
-        except Exception as e:
-            logger.error(f"❌ Error adding documents to {collection_name}: {e}")
-            raise
-    
-    async def _upsert_points_with_retry(
-        self, 
-        collection_name: str, 
-        points: List[PointStruct]
-    ):
-        """Upsert points with retry logic"""
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                await self.client.upsert(
+            for i in range(0, len(points), batch_size):
+                batch = points[i:i + batch_size]
+                
+                operation_info = await self.client.upsert(
                     collection_name=collection_name,
-                    points=points,
+                    points=batch,
                     wait=True  # Wait for operation to complete
                 )
-                return
-            except Exception as e:
-                if attempt == self.MAX_RETRIES - 1:
-                    raise e
                 
-                wait_time = 2 ** attempt  # Exponential backoff
-                logger.warning(f"⚠️ Upsert attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
-                await asyncio.sleep(wait_time)
-    
-    async def query_agent(
-        self,
-        agent_id: str,
-        query: Union[str, np.ndarray],
-        top_k: int = 3,
-        similarity_threshold: float = 0.7
-    ) -> List[VectorSearchResult]:
-        """Query agent collection with optimized performance"""
-        collection_name = f"agent-{agent_id}"
-        
-        if collection_name not in self.collections:
-            logger.error(f"❌ Collection {collection_name} not found")
-            return []
-        
-        query_start = time.time()
-        
-        try:
-            # Convert query to vector if needed
-            if isinstance(query, str):
-                # In production, this would use the embedding service
-                logger.warning("String query provided but no embedding service configured")
-                return []
+                if operation_info.status == UpdateStatus.COMPLETED:
+                    inserted_count += len(batch)
+                else:
+                    logger.warning(f"Batch insertion not completed: {operation_info.status}")
             
-            query_vector = query.tolist() if isinstance(query, np.ndarray) else query
+            insert_time = (time.time() - insert_start) * 1000
             
-            # Prepare search request with optimized parameters
-            search_params = {
-                "collection_name": collection_name,
-                "query_vector": query_vector,
-                "limit": top_k,
-                "score_threshold": similarity_threshold,
-                "with_payload": True,
-                "with_vectors": False,  # Don't return vectors to save bandwidth
-                "query_filter": Filter(
-                    must=[
-                        FieldCondition(
-                            key="agent_id",
-                            match=MatchValue(value=agent_id)
-                        )
-                    ]
+            # Update statistics
+            self.stats["total_inserts"] += inserted_count
+            self.stats["total_vectors"] += inserted_count
+            
+            if self.stats["average_insert_time_ms"] == 0:
+                self.stats["average_insert_time_ms"] = insert_time
+            else:
+                self.stats["average_insert_time_ms"] = (
+                    (self.stats["average_insert_time_ms"] * (self.stats["total_inserts"] - inserted_count) + insert_time) /
+                    self.stats["total_inserts"]
                 )
+            
+            # Update collection info
+            if collection_name in self.collections:
+                self.collections[collection_name].vector_count += inserted_count
+                self.collections[collection_name].last_updated = time.time()
+            
+            logger.info(f"✅ Inserted {inserted_count} vectors into '{collection_name}' in {insert_time:.2f}ms")
+            
+            return {
+                "success": True,
+                "vectors_inserted": inserted_count,
+                "insert_time_ms": insert_time,
+                "collection": collection_name
             }
             
-            # Execute search with performance tracking
-            search_result = await self.client.search(**search_params)
+        except Exception as e:
+            logger.error(f"❌ Error inserting vectors into {collection_name}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def search(self,
+                    query_vector: np.ndarray,
+                    collection_name: str,
+                    top_k: int = 5,
+                    score_threshold: float = 0.7,
+                    filters: Optional[Dict[str, Any]] = None,
+                    exact: bool = False) -> Optional[SearchResult]:
+        """
+        High-performance vector search with advanced filtering.
+        Target: <15ms search latency.
+        """
+        if not self.initialized:
+            raise RuntimeError("Qdrant Manager not initialized")
+        
+        search_start = time.time()
+        
+        try:
+            # Check if collection exists
+            if collection_name not in self.collections:
+                logger.debug(f"Collection {collection_name} not found")
+                return None
             
-            # Convert to VectorSearchResult objects
-            results = []
-            for point in search_result:
-                result = VectorSearchResult(
-                    id=str(point.id),
-                    text=point.payload.get("text", ""),
-                    score=point.score,
-                    metadata=point.payload.get("metadata", {}),
-                    source_tier="qdrant",
-                    retrieval_time_ms=(time.time() - query_start) * 1000,
-                    agent_id=agent_id
-                )
-                results.append(result)
+            # Prepare query vector
+            if isinstance(query_vector, np.ndarray):
+                query_vector = query_vector.astype(np.float32).tolist()
             
-            # Update performance stats
-            query_latency = (time.time() - query_start) * 1000
-            await self._update_query_stats(agent_id, query_latency, len(results))
+            # Build search request
+            search_params = SearchParams(
+                hnsw_ef=128 if not exact else None,
+                exact=exact
+            )
             
-            # Log performance warnings
-            if query_latency > self.TARGET_QUERY_LATENCY:
-                logger.warning(f"⚠️ Query latency exceeded target: {query_latency:.1f}ms > {self.TARGET_QUERY_LATENCY:.1f}ms")
+            # Build filter if provided
+            filter_obj = None
+            if filters:
+                filter_obj = self._build_filter(filters)
             
-            logger.debug(f"🔍 Query returned {len(results)} results in {query_latency:.1f}ms")
+            # Execute search
+            search_results = await self.client.search(
+                collection_name=collection_name,
+                query_vector=query_vector,
+                query_filter=filter_obj,
+                limit=top_k,
+                score_threshold=score_threshold,
+                search_params=search_params
+            )
             
-            return results
+            search_time = (time.time() - search_start) * 1000
+            
+            # Process results
+            vectors = []
+            scores = []
+            
+            for result in search_results:
+                vectors.append({
+                    "id": result.id,
+                    "text": result.payload.get("text", ""),
+                    "metadata": result.payload
+                })
+                scores.append(result.score)
+            
+            # Update statistics
+            self._update_search_stats(collection_name, search_time)
+            
+            logger.debug(f"🎯 Qdrant search completed: {search_time:.2f}ms for {collection_name}")
+            
+            return SearchResult(
+                vectors=vectors,
+                scores=scores,
+                search_time_ms=search_time,
+                collection_used=collection_name,
+                metadata={
+                    "total_results": len(vectors),
+                    "score_threshold": score_threshold,
+                    "exact_search": exact,
+                    "filtered": filters is not None
+                }
+            )
             
         except Exception as e:
-            logger.error(f"❌ Query error for agent {agent_id}: {e}")
-            self.query_stats["error_count"] += 1
-            return []
+            logger.error(f"❌ Qdrant search error in {collection_name}: {e}")
+            return None
     
-    async def _update_query_stats(
-        self, 
-        agent_id: str, 
-        latency_ms: float, 
-        result_count: int
-    ):
-        """Update query performance statistics"""
-        # Update global stats
-        self.query_stats["total_queries"] += 1
-        self.query_stats["last_query_time"] = time.time()
+    def _build_filter(self, filters: Dict[str, Any]) -> Filter:
+        """Build Qdrant filter from dictionary."""
+        conditions = []
         
-        if result_count > 0:
-            self.query_stats["successful_queries"] += 1
+        for key, value in filters.items():
+            if isinstance(value, dict):
+                # Range filters
+                if "$gte" in value or "$lte" in value or "$gt" in value or "$lt" in value:
+                    range_filter = {}
+                    if "$gte" in value:
+                        range_filter["gte"] = value["$gte"]
+                    if "$lte" in value:
+                        range_filter["lte"] = value["$lte"]
+                    if "$gt" in value:
+                        range_filter["gt"] = value["$gt"]
+                    if "$lt" in value:
+                        range_filter["lt"] = value["$lt"]
+                    
+                    conditions.append(
+                        FieldCondition(
+                            key=key,
+                            range=Range(**range_filter)
+                        )
+                    )
+            elif isinstance(value, list):
+                # Match any value in list
+                for val in value:
+                    conditions.append(
+                        FieldCondition(
+                            key=key,
+                            match=models.MatchValue(value=val)
+                        )
+                    )
+            else:
+                # Exact match
+                conditions.append(
+                    FieldCondition(
+                        key=key,
+                        match=models.MatchValue(value=value)
+                    )
+                )
         
-        # Update average latency (exponential moving average)
-        if self.query_stats["average_latency_ms"] == 0:
-            self.query_stats["average_latency_ms"] = latency_ms
+        return Filter(must=conditions) if conditions else None
+    
+    def _update_search_stats(self, collection_name: str, search_time_ms: float):
+        """Update search statistics."""
+        self.stats["total_searches"] += 1
+        
+        # Update global average
+        if self.stats["average_search_time_ms"] == 0:
+            self.stats["average_search_time_ms"] = search_time_ms
         else:
-            alpha = 0.1
-            self.query_stats["average_latency_ms"] = (
-                alpha * latency_ms + 
-                (1 - alpha) * self.query_stats["average_latency_ms"]
+            self.stats["average_search_time_ms"] = (
+                (self.stats["average_search_time_ms"] * (self.stats["total_searches"] - 1) + search_time_ms) /
+                self.stats["total_searches"]
             )
         
-        # Update P95 latency (simplified)
-        self.query_stats["p95_latency_ms"] = max(
-            self.query_stats["p95_latency_ms"],
-            latency_ms
-        )
-        
-        # Update agent-specific stats
-        if agent_id in self.agent_stats:
-            agent_stats = self.agent_stats[agent_id]
-            agent_stats["query_count"] += 1
+        # Update collection-specific stats
+        if collection_name in self.collections:
+            collection_info = self.collections[collection_name]
+            collection_info.search_count += 1
             
-            if agent_stats["average_latency"] == 0:
-                agent_stats["average_latency"] = latency_ms
+            if collection_info.average_search_time_ms == 0:
+                collection_info.average_search_time_ms = search_time_ms
             else:
-                alpha = 0.1
-                agent_stats["average_latency"] = (
-                    alpha * latency_ms + 
-                    (1 - alpha) * agent_stats["average_latency"]
+                collection_info.average_search_time_ms = (
+                    (collection_info.average_search_time_ms * (collection_info.search_count - 1) + search_time_ms) /
+                    collection_info.search_count
                 )
     
-    async def delete_agent_collection(self, agent_id: str) -> bool:
-        """Delete agent collection"""
-        collection_name = f"agent-{agent_id}"
+    async def delete_vectors(self,
+                           collection_name: str,
+                           vector_ids: List[str]) -> bool:
+        """Delete vectors from collection."""
+        if not self.initialized:
+            return False
+        
+        try:
+            operation_info = await self.client.delete(
+                collection_name=collection_name,
+                points_selector=models.PointIdsList(
+                    points=vector_ids
+                ),
+                wait=True
+            )
+            
+            if operation_info.status == UpdateStatus.COMPLETED:
+                self.stats["total_deletes"] += len(vector_ids)
+                self.stats["total_vectors"] -= len(vector_ids)
+                
+                # Update collection stats
+                if collection_name in self.collections:
+                    self.collections[collection_name].vector_count -= len(vector_ids)
+                    self.collections[collection_name].last_updated = time.time()
+                
+                logger.info(f"Deleted {len(vector_ids)} vectors from {collection_name}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error deleting vectors from {collection_name}: {e}")
+            return False
+    
+    async def update_vectors(self,
+                           collection_name: str,
+                           vectors: List[Dict[str, Any]]) -> bool:
+        """Update existing vectors in collection."""
+        if not self.initialized:
+            return False
+        
+        try:
+            # Prepare points for update
+            points = []
+            for vector_data in vectors:
+                if "vector" in vector_data:
+                    vector = vector_data["vector"]
+                elif "embedding" in vector_data:
+                    vector = vector_data["embedding"]
+                else:
+                    continue
+                
+                # Ensure vector is the right type
+                if isinstance(vector, np.ndarray):
+                    vector = vector.astype(np.float32).tolist()
+                
+                point = PointStruct(
+                    id=vector_data.get("id", str(uuid.uuid4())),
+                    vector=vector,
+                    payload=vector_data.get("metadata", {})
+                )
+                points.append(point)
+            
+            if not points:
+                return False
+            
+            operation_info = await self.client.upsert(
+                collection_name=collection_name,
+                points=points,
+                wait=True
+            )
+            
+            if operation_info.status == UpdateStatus.COMPLETED:
+                self.stats["total_updates"] += len(points)
+                
+                # Update collection stats
+                if collection_name in self.collections:
+                    self.collections[collection_name].last_updated = time.time()
+                
+                logger.info(f"Updated {len(points)} vectors in {collection_name}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error updating vectors in {collection_name}: {e}")
+            return False
+    
+    async def optimize_collection(self, collection_name: str) -> bool:
+        """Optimize collection for better performance."""
+        if not self.initialized or collection_name not in self.collections:
+            return False
+        
+        try:
+            # Trigger optimization
+            operation_info = await self.client.update_collection(
+                collection_name=collection_name,
+                optimizer_config=OptimizersConfig(
+                    max_optimization_threads=4,
+                    flush_interval_sec=1
+                )
+            )
+            
+            self.stats["optimization_runs"] += 1
+            logger.info(f"Optimized collection: {collection_name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error optimizing collection {collection_name}: {e}")
+            return False
+    
+    async def get_collection_info(self, collection_name: str) -> Optional[Dict[str, Any]]:
+        """Get comprehensive information about a collection."""
+        if not self.initialized:
+            return None
+        
+        try:
+            collection_info = await self.client.get_collection(collection_name)
+            
+            return {
+                "name": collection_name,
+                "vector_count": collection_info.points_count,
+                "vector_size": collection_info.config.params.vectors.size,
+                "distance_metric": collection_info.config.params.vectors.distance.value,
+                "status": collection_info.status.value,
+                "optimizer_status": collection_info.optimizer_status.dict() if collection_info.optimizer_status else None,
+                "indexing_threshold": collection_info.config.optimizer_config.indexing_threshold,
+                "segments_count": len(collection_info.segments) if collection_info.segments else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting collection info for {collection_name}: {e}")
+            return None
+    
+    async def list_collections(self) -> List[str]:
+        """List all collections."""
+        if not self.initialized:
+            return []
+        
+        try:
+            collections_response = await self.client.get_collections()
+            return [collection.name for collection in collections_response.collections]
+        except Exception as e:
+            logger.error(f"Error listing collections: {e}")
+            return []
+    
+    async def delete_collection(self, collection_name: str) -> bool:
+        """Delete a collection."""
+        if not self.initialized:
+            return False
         
         try:
             await self.client.delete_collection(collection_name)
             
-            # Remove from tracking
+            # Update tracking
             if collection_name in self.collections:
+                self.stats["total_vectors"] -= self.collections[collection_name].vector_count
                 del self.collections[collection_name]
+                self.stats["collection_count"] -= 1
             
-            if agent_id in self.agent_stats:
-                del self.agent_stats[agent_id]
-            
-            logger.info(f"🗑️ Deleted collection {collection_name}")
+            logger.info(f"Deleted collection: {collection_name}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error deleting collection {collection_name}: {e}")
+            logger.error(f"Error deleting collection {collection_name}: {e}")
             return False
     
-    async def get_collection_info(self, agent_id: str) -> Dict[str, Any]:
-        """Get detailed collection information"""
-        collection_name = f"agent-{agent_id}"
+    async def create_index(self, collection_name: str, field_name: str, field_type: str = "keyword") -> bool:
+        """Create an index on a payload field for faster filtering."""
+        if not self.initialized:
+            return False
         
         try:
-            # Get collection info
-            info = await self.client.get_collection(collection_name)
-            
-            # Get collection stats
-            stats = {
-                "collection_name": collection_name,
-                "agent_id": agent_id,
-                "vector_count": info.points_count,
-                "vector_size": info.config.params.vectors.size,
-                "distance_metric": info.config.params.vectors.distance.value,
-                "segments_count": info.segments_count,
-                "status": info.status.value,
-                "optimizer_status": info.optimizer_status.value if info.optimizer_status else "unknown",
-                "indexed_vectors_count": info.indexed_vectors_count or 0
-            }
-            
-            # Add performance stats if available
-            if agent_id in self.agent_stats:
-                agent_stats = self.agent_stats[agent_id]
-                stats.update({
-                    "query_count": agent_stats["query_count"],
-                    "average_latency_ms": round(agent_stats["average_latency"], 2),
-                    "last_updated": agent_stats["last_updated"]
-                })
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting collection info for {agent_id}: {e}")
-            return {"error": str(e)}
-    
-    async def optimize_collection(self, agent_id: str) -> bool:
-        """Optimize collection for better performance"""
-        collection_name = f"agent-{agent_id}"
-        
-        try:
-            # Update collection configuration for optimal performance
-            config_update = {
-                "optimizers_config": OptimizersConfig(
-                    deleted_threshold=0.1,  # More aggressive cleanup
-                    vacuum_min_vector_number=500,
-                    default_segment_number=1,  # Merge segments
-                    max_segment_size=50000,
-                    indexing_threshold=10000,
-                    flush_interval_sec=3
-                )
-            }
-            
-            await self.client.update_collection(
+            await self.client.create_payload_index(
                 collection_name=collection_name,
-                **config_update
+                field_name=field_name,
+                field_schema=field_type
             )
             
-            logger.info(f"⚡ Optimized collection {collection_name}")
+            logger.info(f"Created index on {field_name} for collection {collection_name}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Error optimizing collection {collection_name}: {e}")
+            logger.error(f"Error creating index: {e}")
             return False
     
-    async def get_system_stats(self) -> Dict[str, Any]:
-        """Get comprehensive system statistics"""
-        try:
-            # Get cluster info
-            cluster_info = await self.client.cluster_info()
-            
-            stats = {
-                "timestamp": time.time(),
-                "cluster_info": {
-                    "peer_id": cluster_info.peer_id,
-                    "peers_count": len(cluster_info.peers),
-                    "raft_info": {
-                        "term": cluster_info.raft_info.term,
-                        "commit": cluster_info.raft_info.commit,
-                        "pending_operations": cluster_info.raft_info.pending_operations,
-                        "leader": cluster_info.raft_info.leader,
-                        "role": cluster_info.raft_info.role.value
-                    }
-                },
-                "performance": self.query_stats.copy(),
-                "collections": {
-                    "total_collections": len(self.collections),
-                    "agent_collections": len(self.agent_stats),
-                    "collection_details": {}
-                },
-                "agents": {}
-            }
-            
-            # Add collection details
-            for collection_name, config in self.collections.items():
-                try:
-                    info = await self.client.get_collection(collection_name)
-                    stats["collections"]["collection_details"][collection_name] = {
-                        "points_count": info.points_count,
-                        "segments_count": info.segments_count,
-                        "status": info.status.value,
-                        "vector_size": config.vector_size
-                    }
-                except:
-                    pass
-            
-            # Add agent-specific stats
-            for agent_id, agent_stats in self.agent_stats.items():
-                stats["agents"][agent_id] = {
-                    "collection_name": agent_stats["collection_name"],
-                    "document_count": agent_stats["document_count"],
-                    "query_count": agent_stats["query_count"],
-                    "average_latency_ms": round(agent_stats["average_latency"], 2),
-                    "last_updated": agent_stats["last_updated"],
-                    "performance_grade": self._calculate_agent_performance_grade(agent_stats)
+    def get_stats(self) -> Dict[str, Any]:
+        """Get comprehensive Qdrant manager statistics."""
+        return {
+            "configuration": {
+                "host": self.host,
+                "port": self.port,
+                "grpc_port": self.grpc_port,
+                "prefer_grpc": self.prefer_grpc,
+                "vector_dimension": self.vector_dimension,
+                "distance_metric": self.distance_metric,
+                "optimization_level": self.optimization_level,
+                "quantization_enabled": self.enable_quantization
+            },
+            "performance": {
+                **self.stats,
+                "target_latency_ms": 15.0,
+                "meets_target": self.stats["average_search_time_ms"] <= 15.0
+            },
+            "collections": {
+                name: {
+                    "vector_count": info.vector_count,
+                    "search_count": info.search_count,
+                    "average_search_time_ms": info.average_search_time_ms,
+                    "last_updated": info.last_updated,
+                    "optimization_level": info.optimization_level
                 }
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting system stats: {e}")
-            return {"error": str(e)}
-    
-    def _calculate_agent_performance_grade(self, agent_stats: Dict[str, Any]) -> str:
-        """Calculate performance grade for an agent"""
-        avg_latency = agent_stats["average_latency"]
-        
-        if avg_latency <= self.TARGET_QUERY_LATENCY * 0.5:
-            return "A"
-        elif avg_latency <= self.TARGET_QUERY_LATENCY:
-            return "B"
-        elif avg_latency <= self.TARGET_QUERY_LATENCY * 1.5:
-            return "C"
-        else:
-            return "D"
-    
-    async def health_check(self) -> Dict[str, Any]:
-        """Perform comprehensive health check"""
-        health = {
-            "timestamp": time.time(),
-            "status": "healthy",
-            "issues": [],
-            "performance": {},
-            "recommendations": []
+                for name, info in self.collections.items()
+            },
+            "health": {
+                "status": "healthy" if self.initialized else "down",
+                "connected": self.client is not None,
+                "performance_target_met": self.stats["average_search_time_ms"] <= 20.0  # Allow 20ms for "healthy"
+            }
         }
-        
-        try:
-            # Test basic connectivity
-            collections = await self.client.get_collections()
-            
-            # Check query performance
-            if self.query_stats["average_latency_ms"] > self.TARGET_QUERY_LATENCY:
-                health["issues"].append({
-                    "type": "performance",
-                    "severity": "medium",
-                    "message": f"Average query latency ({self.query_stats['average_latency_ms']:.1f}ms) exceeds target ({self.TARGET_QUERY_LATENCY:.1f}ms)"
-                })
-                health["recommendations"].append("Consider optimizing collection configurations or upgrading hardware")
-            
-            # Check error rate
-            if self.query_stats["total_queries"] > 0:
-                error_rate = (self.query_stats["error_count"] / self.query_stats["total_queries"]) * 100
-                if error_rate > 5:
-                    health["issues"].append({
-                        "type": "reliability",
-                        "severity": "high",
-                        "message": f"High error rate: {error_rate:.1f}%"
-                    })
-                    health["recommendations"].append("Investigate query errors and check system logs")
-            
-            # Performance summary
-            health["performance"] = {
-                "query_latency_ms": round(self.query_stats["average_latency_ms"], 2),
-                "target_latency_ms": self.TARGET_QUERY_LATENCY,
-                "success_rate": ((self.query_stats["successful_queries"] / max(self.query_stats["total_queries"], 1)) * 100),
-                "collections_count": len(collections.collections)
-            }
-            
-            # Determine overall status
-            if any(issue["severity"] == "high" for issue in health["issues"]):
-                health["status"] = "unhealthy"
-            elif health["issues"]:
-                health["status"] = "degraded"
-            
-            return health
-            
-        except Exception as e:
-            logger.error(f"❌ Health check failed: {e}")
-            return {
-                "timestamp": time.time(),
-                "status": "unhealthy",
-                "error": str(e),
-                "issues": [{
-                    "type": "connectivity",
-                    "severity": "critical",
-                    "message": f"Cannot connect to Qdrant: {str(e)}"
-                }]
-            }
     
-    async def cleanup(self):
-        """Cleanup Qdrant manager resources"""
-        logger.info("🧹 Cleaning up Qdrant Manager...")
+    def is_healthy(self) -> bool:
+        """Check if Qdrant manager is healthy."""
+        return (
+            self.initialized and
+            self.client is not None and
+            self.stats["average_search_time_ms"] <= 20.0  # Allow up to 20ms for "healthy"
+        )
+    
+    async def shutdown(self):
+        """Shutdown Qdrant manager."""
+        logger.info("Shutting down Qdrant Manager...")
         
         try:
             if self.client:
@@ -716,79 +754,18 @@ class QdrantManager:
             if self.sync_client:
                 self.sync_client.close()
             
-            logger.info("✅ Qdrant Manager cleanup complete")
+            self.initialized = False
+            logger.info("✅ Qdrant Manager shutdown complete")
             
         except Exception as e:
-            logger.error(f"❌ Cleanup error: {e}")
+            logger.error(f"Error during Qdrant shutdown: {e}")
     
-    # Utility methods for migration and maintenance
+    async def __aenter__(self):
+        """Async context manager entry."""
+        if not self.initialized:
+            await self.initialize()
+        return self
     
-    async def export_collection_data(self, agent_id: str) -> List[Dict[str, Any]]:
-        """Export all data from a collection for migration"""
-        collection_name = f"agent-{agent_id}"
-        
-        try:
-            # Scroll through all points in the collection
-            points = []
-            next_page_offset = None
-            
-            while True:
-                result = await self.client.scroll(
-                    collection_name=collection_name,
-                    limit=1000,
-                    offset=next_page_offset,
-                    with_payload=True,
-                    with_vectors=True
-                )
-                
-                for point in result[0]:
-                    points.append({
-                        "id": str(point.id),
-                        "vector": point.vector,
-                        "payload": point.payload
-                    })
-                
-                next_page_offset = result[1]
-                if next_page_offset is None:
-                    break
-            
-            logger.info(f"📤 Exported {len(points)} points from {collection_name}")
-            return points
-            
-        except Exception as e:
-            logger.error(f"❌ Export error for {collection_name}: {e}")
-            return []
-    
-    async def import_collection_data(
-        self, 
-        agent_id: str, 
-        data: List[Dict[str, Any]]
-    ) -> bool:
-        """Import data into a collection"""
-        collection_name = f"agent-{agent_id}"
-        
-        try:
-            points = []
-            for item in data:
-                point = PointStruct(
-                    id=item["id"],
-                    vector=item["vector"],
-                    payload=item["payload"]
-                )
-                points.append(point)
-            
-            # Batch insert
-            for i in range(0, len(points), self.BATCH_SIZE):
-                batch = points[i:i + self.BATCH_SIZE]
-                await self.client.upsert(
-                    collection_name=collection_name,
-                    points=batch,
-                    wait=True
-                )
-            
-            logger.info(f"📥 Imported {len(points)} points to {collection_name}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Import error for {collection_name}: {e}")
-            return False
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.shutdown()
