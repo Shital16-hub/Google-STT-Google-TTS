@@ -290,6 +290,22 @@ class ProductionSettings:
     def __init__(self, environment: Environment = Environment.PRODUCTION):
         self.environment = environment
         
+        # ✅ Basic Application Configuration
+        self.DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+        self.HOST = os.getenv("HOST", "0.0.0.0")
+        self.PORT = int(os.getenv("PORT", "8000"))
+        self.WORKERS = int(os.getenv("WORKERS", "1"))
+        
+        # ✅ CORS settings
+        allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+        if allowed_origins_env:
+            self.ALLOWED_ORIGINS = [origin.strip() for origin in allowed_origins_env.split(",")]
+        else:
+            self.ALLOWED_ORIGINS = ["*"]  # Default for development
+        
+        # ✅ Base URL for webhook callbacks
+        self.BASE_URL = os.getenv("BASE_URL", f"http://localhost:{self.PORT}")
+        
         # Core configurations
         self.security = SecurityConfig()
         self.monitoring = MonitoringConfig()
@@ -310,6 +326,7 @@ class ProductionSettings:
         """Apply environment-specific configuration overrides"""
         if self.environment == Environment.DEVELOPMENT:
             # Development overrides
+            self.DEBUG = True  # ✅ Override for development
             self.security.api_rate_limiting = False
             self.security.ssl_enabled = False
             self.monitoring.tracing_config["sampling_rate"] = 1.0
@@ -319,6 +336,7 @@ class ProductionSettings:
             
         elif self.environment == Environment.STAGING:
             # Staging overrides
+            self.DEBUG = False  # ✅ Override for staging
             self.security.max_requests_per_minute = 500
             self.monitoring.tracing_config["sampling_rate"] = 0.5
             self.scalability.min_workers = 2
@@ -326,6 +344,7 @@ class ProductionSettings:
             
         else:  # Production
             # Production settings (defaults are already production-ready)
+            self.DEBUG = False  # ✅ Override for production
             pass
 
     def _init_feature_flags(self) -> Dict[str, bool]:
