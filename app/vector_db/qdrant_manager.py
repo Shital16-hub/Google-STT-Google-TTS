@@ -55,7 +55,7 @@ class QdrantManager:
                  host: str = "localhost",
                  port: int = 6333,
                  grpc_port: int = 6334,
-                 prefer_grpc: bool = True,
+                 prefer_grpc: bool = False,
                  timeout: float = 10.0,
                  api_key: Optional[str] = None,
                  vector_dimension: int = 1536,
@@ -69,7 +69,7 @@ class QdrantManager:
         self.host = host
         self.port = port
         self.grpc_port = grpc_port
-        self.prefer_grpc = prefer_grpc
+        self.prefer_grpc = False  # Force HTTP for RunPod
         self.timeout = timeout
         self.api_key = api_key
         self.vector_dimension = vector_dimension
@@ -142,7 +142,7 @@ class QdrantManager:
                     host=self.host,
                     port=self.grpc_port,
                     grpc_port=self.grpc_port,
-                    prefer_grpc=True,
+                    prefer_grpc=False,
                     timeout=self.timeout,
                     api_key=self.api_key
                 )

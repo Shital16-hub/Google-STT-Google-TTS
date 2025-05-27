@@ -150,11 +150,12 @@ async def initialize_revolutionary_system():
                 "promotion_threshold": 100,
                 "index_type": "HNSW"
             },
-            qdrant_config={
+            qdrant_config = {
                 "host": os.getenv("QDRANT_HOST", "localhost"),
                 "port": int(os.getenv("QDRANT_PORT", "6333")),
                 "grpc_port": int(os.getenv("QDRANT_GRPC_PORT", "6334")),
-                "prefer_grpc": True
+                "prefer_grpc": False,  # ← CHANGED: Force HTTP connection
+                "timeout": 5.0
             }
         )
         await hybrid_vector_system.initialize()
