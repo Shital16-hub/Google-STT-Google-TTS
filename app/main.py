@@ -28,7 +28,7 @@ from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Say
 from dotenv import load_dotenv
 
 # Core system imports
-from app.core.orchestrator import MultiAgentOrchestrator
+from app.core.agent_orchestrator import MultiAgentOrchestrator
 from app.core.state_manager import ConversationStateManager
 from app.core.health_monitor import SystemHealthMonitor
 
@@ -43,7 +43,7 @@ from app.voice.dual_streaming_tts import DualStreamingTTSEngine
 from app.telephony.advanced_websocket_handler import AdvancedWebSocketHandler
 
 # Tool orchestration
-from app.tools.orchestrator import ComprehensiveToolOrchestrator
+from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator
 
 # Load environment variables
 load_dotenv()
