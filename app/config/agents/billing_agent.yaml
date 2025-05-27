@@ -1,0 +1,645 @@
+# Billing Support Agent Configuration v2.1.0
+# Empathy-optimized agent for sensitive financial conversations
+# Specialized in payment processing, refunds, and customer financial concerns
+
+agent_id: "billing-support-v2"
+version: "2.1.0"
+status: "active"
+priority: 2
+deployment_strategy: "blue_green"
+
+# ============================================================================
+# SPECIALIZATION CONFIGURATION
+# ============================================================================
+specialization:
+  domain_expertise: "billing_and_payments"
+  personality_profile: "empathetic_solution_oriented"
+  
+  # Empathy-focused system prompt for financial concerns
+  system_prompt: |
+    You are a compassionate billing and payment specialist with expertise in:
+    
+    CORE EXPERTISE:
+    - Payment processing and billing inquiries
+    - Refund policies and procedures
+    - Account management and subscription services
+    - Financial assistance and payment plans
+    - Dispute resolution and charge explanations
+    - Fraud prevention and account security
+    
+    EMPATHETIC APPROACH:
+    - Acknowledge customer financial stress with genuine understanding
+    - Use non-judgmental language when discussing payment issues
+    - Offer multiple solutions and payment options
+    - Explain complex billing clearly and patiently
+    - Prioritize customer financial wellbeing
+    - Show appreciation for customer loyalty and patience
+    
+    COMMUNICATION STYLE:
+    - Warm, understanding, and professional tone
+    - Clear explanations of charges and policies
+    - Proactive in offering solutions and alternatives
+    - Patient with confused or frustrated customers
+    - Reassuring about data security and privacy
+    
+    RESPONSE GUIDELINES:
+    - Keep responses under 180 words for voice clarity
+    - Use simple, jargon-free language
+    - Always offer next steps or alternatives
+    - Confirm understanding before proceeding with actions
+
+  # Context management for financial conversations
+  context_management:
+    max_context_length: 2048
+    context_retention: "full_conversation"
+    context_compression: "empathetic_summarization"
+    financial_concern_detection: true
+    payment_history_integration: true
+    
+  # Response optimization for sensitive financial topics
+  response_optimization:
+    target_response_time_ms: 200
+    max_response_length: 180  # words
+    tone_adaptation: "financial_empathy"
+    patience_level: "high"
+    solution_focused: true
+
+# ============================================================================
+# VOICE CONFIGURATION
+# ============================================================================
+voice_settings:
+  # Warm, empathetic voice for financial discussions
+  tts_voice: "en-US-Neural2-A"  # Warmer female voice
+  speaking_rate: 0.95  # Slightly slower for clarity and empathy
+  pitch_adjustment: -1.0  # Lower pitch for trustworthiness
+  volume_gain: 1.0
+  
+  # Emotional intelligence features
+  emotion_detection: true
+  stress_response_mode: true
+  empathy_enhancement: true
+  frustration_de_escalation: true
+  
+  # Voice adaptation for financial conversations
+  financial_conversation_mode:
+    enabled: true
+    patience_multiplier: 1.5
+    explanation_pace: "slow_and_clear"
+    reassurance_tone: true
+    
+  # Streaming optimization for clear explanations
+  streaming_optimization:
+    enabled: true
+    streaming_chunk_size: 40  # Smaller chunks for clearer delivery
+    first_chunk_target_ms: 180
+    pause_after_numbers: true  # Pause after dollar amounts
+    emphasis_on_important_info: true
+    
+  # Context-specific voice modulation
+  voice_profiles:
+    empathetic:
+      speaking_rate: 0.9
+      pitch_adjustment: -1.5
+      volume_gain: 0.8
+    professional:
+      speaking_rate: 1.0
+      pitch_adjustment: -0.5
+      volume_gain: 1.0
+    reassuring:
+      speaking_rate: 0.85
+      pitch_adjustment: -2.0
+      volume_gain: 0.9
+
+# ============================================================================
+# VECTOR DATABASE CONFIGURATION
+# ============================================================================
+vector_config:
+  # Qdrant collection for billing and payment knowledge
+  qdrant_collection: "agent-billing-v2"
+  vector_size: 1536
+  distance_metric: "cosine"
+  optimization_level: "high_performance"
+  
+  # Billing-specific collection settings
+  collection_config:
+    hnsw_config:
+      m: 16
+      ef_construct: 100
+      full_scan_threshold: 8000
+      max_indexing_threads: 2
+    optimizers_config:
+      default_segment_number: 2
+      max_segment_size: 15000
+      memmap_threshold: 15000
+      flush_interval_sec: 5
+    quantization_config:
+      always_ram: true
+  
+  # Cache configuration for billing policies
+  redis_cache_config:
+    enabled: true
+    ttl_seconds: 7200  # Longer TTL for policy information
+    max_vectors: 8000
+    namespace: "billing_policies"
+    
+  faiss_hot_tier_config:
+    enabled: true
+    promotion_threshold: 50
+    memory_limit_mb: 512
+    index_type: "HNSW"
+    hot_promotion_keywords: ["refund", "payment", "charge", "bill", "subscription"]
+
+# ============================================================================
+# KNOWLEDGE SOURCES
+# ============================================================================
+knowledge_sources:
+  # Billing policies and procedures
+  - type: "documents"
+    path: "kb/billing/policies/"
+    chunk_size: 384
+    chunk_overlap: 40
+    processing_strategy: "policy_chunking"
+    priority: "critical"
+    tags: ["policy", "billing", "payments"]
+    
+  # Refund and dispute procedures
+  - type: "documents"
+    path: "kb/billing/refunds/"
+    chunk_size: 256
+    chunk_overlap: 30
+    processing_strategy: "procedure_chunking"
+    priority: "high"
+    tags: ["refunds", "disputes", "procedures"]
+    
+  # Payment options and plans
+  - type: "documents"
+    path: "kb/billing/payment_options/"
+    chunk_size: 320
+    chunk_overlap: 32
+    processing_strategy: "option_chunking"
+    priority: "high"
+    tags: ["payment_plans", "options", "assistance"]
+    
+  # Subscription and account management
+  - type: "documents"
+    path: "kb/billing/subscriptions/"
+    chunk_size: 300
+    chunk_overlap: 30
+    processing_strategy: "service_chunking"
+    priority: "medium"
+    tags: ["subscriptions", "accounts", "management"]
+    
+  # Real-time billing data
+  - type: "structured_data"
+    path: "data/billing_rates.json"
+    indexing_strategy: "hierarchical"
+    refresh_interval: 3600  # 1 hour
+    change_detection: true
+    priority: "high"
+    
+  # Payment system status
+  - type: "real_time_updates"
+    source: "payment_system_api"
+    refresh_interval: 600  # 10 minutes
+    change_detection: true
+    priority: "medium"
+
+# ============================================================================
+# COMPREHENSIVE TOOL INTEGRATION
+# ============================================================================
+tools:
+  # ==========================================================================
+  # BUSINESS WORKFLOW TOOLS
+  # ==========================================================================
+  
+  # Customer billing workflow
+  - name: "customer_billing_workflow"
+    type: "business_workflow"
+    priority: 1
+    timeout_ms: 10000
+    description: "Complete customer billing and payment processing workflow"
+    
+    workflow_steps:
+      - "validate_customer_account"
+      - "retrieve_billing_history"
+      - "process_payment_request"
+      - "update_account_status"
+      - "send_confirmation_email"
+      - "log_transaction_details"
+    
+    supported_actions:
+      - "create_invoice"
+      - "process_payment"
+      - "issue_refund"
+      - "setup_payment_plan"
+      - "cancel_subscription"
+      - "update_billing_info"
+    
+    integration_config:
+      billing_system_api: "https://api.billing-system.com/v3/"
+      payment_processor_api: "https://api.stripe.com/v1/"
+      customer_db_api: "https://api.customer-db.com/accounts/"
+    
+    dummy_mode: true
+    dummy_response_templates:
+      invoice_created:
+        invoice_id: "INV-{{random_id}}"
+        amount: "{{calculated_amount}}"
+        due_date: "{{due_date}}"
+        status: "pending"
+      payment_processed:
+        payment_id: "PAY-{{random_id}}"
+        amount: "{{payment_amount}}"
+        status: "completed"
+        receipt_url: "https://receipts.example.com/{{payment_id}}"
+        
+  # Refund processing workflow
+  - name: "process_refund_workflow"
+    type: "business_workflow"
+    priority: 1
+    timeout_ms: 8000
+    description: "Automated refund processing with approval workflows"
+    
+    refund_policies:
+      automatic_approval_limit: 100.00
+      manager_approval_required: 500.00
+      ceo_approval_required: 2000.00
+      processing_time_business_days: 3-5
+    
+    workflow_steps:
+      - "validate_refund_eligibility"
+      - "check_approval_requirements"
+      - "process_refund_request"
+      - "notify_customer"
+      - "update_financial_records"
+    
+    dummy_mode: true
+    
+  # Payment plan setup workflow
+  - name: "setup_payment_plan_workflow"
+    type: "business_workflow"
+    priority: 2
+    timeout_ms: 6000
+    description: "Setup customer payment plans and installment options"
+    
+    payment_plan_options:
+      - type: "monthly"
+        min_amount: 50.00
+        max_duration_months: 12
+        interest_rate: 0.0
+      - type: "bi_weekly"
+        min_amount: 25.00
+        max_duration_weeks: 26
+        interest_rate: 0.0
+      - type: "custom"
+        min_payment: 20.00
+        negotiable: true
+    
+    dummy_mode: true
+
+  # ==========================================================================
+  # EXTERNAL API TOOLS
+  # ==========================================================================
+  
+  # Stripe payment processing
+  - name: "stripe_payment_api"
+    type: "external_api"
+    provider: "stripe"
+    priority: 1
+    timeout_ms: 5000
+    description: "Process payments, refunds, and manage customer billing"
+    
+    api_config:
+      endpoint: "https://api.stripe.com/v1/"
+      auth_type: "bearer_token"
+      credentials_env: "STRIPE_SECRET_KEY"
+    
+    supported_operations:
+      - "create_payment_intent"
+      - "capture_payment"
+      - "create_refund"
+      - "retrieve_customer"
+      - "update_subscription"
+      - "create_invoice"
+    
+    error_handling:
+      retry_attempts: 3
+      retry_delay_ms: 1000
+      fallback_enabled: true
+    
+    dummy_mode: true
+    dummy_responses:
+      payment_success:
+        id: "pi_{{random_payment_id}}"
+        status: "succeeded"
+        amount: "{{amount_cents}}"
+        currency: "usd"
+      refund_success:
+        id: "re_{{random_refund_id}}"
+        status: "succeeded"
+        amount: "{{refund_amount_cents}}"
+        
+  # Email notification system
+  - name: "send_billing_email"
+    type: "external_api"
+    provider: "sendgrid"
+    priority: 2
+    timeout_ms: 3000
+    description: "Send billing-related email notifications to customers"
+    
+    api_config:
+      endpoint: "https://api.sendgrid.com/v3/mail/send"
+      auth_type: "bearer_token"
+      credentials_env: "SENDGRID_API_KEY"
+    
+    email_templates:
+      payment_confirmation: "payment_success_template"
+      refund_notification: "refund_processed_template"
+      payment_plan_setup: "payment_plan_confirmation_template"
+      billing_reminder: "payment_reminder_template"
+    
+    dummy_mode: true
+    
+  # Account management system
+  - name: "update_customer_account"
+    type: "external_api"
+    provider: "customer_db"
+    priority: 2
+    timeout_ms: 4000
+    description: "Update customer account information and billing preferences"
+    
+    api_config:
+      endpoint: "https://api.customer-system.com/v2/customers/"
+      auth_type: "api_key"
+      credentials_env: "CUSTOMER_DB_API_KEY"
+    
+    updatable_fields:
+      - "billing_address"
+      - "payment_method"
+      - "billing_preferences"
+      - "subscription_status"
+      - "payment_plan_details"
+    
+    dummy_mode: true
+
+  # ==========================================================================
+  # INTERNAL TOOLS
+  # ==========================================================================
+  
+  # Billing inquiry search
+  - name: "billing_inquiry_search"
+    type: "internal"
+    priority: 2
+    timeout_ms: 2000
+    description: "Search billing policies and procedures for customer inquiries"
+    
+    search_categories:
+      - "payment_policies"
+      - "refund_procedures"
+      - "subscription_terms"
+      - "pricing_information"
+      - "billing_cycles"
+      - "payment_methods"
+    
+    search_optimization:
+      semantic_search: true
+      policy_prioritization: true
+      recent_updates_boost: true
+    
+  # Financial assistance eligibility
+  - name: "check_assistance_eligibility"
+    type: "internal"
+    priority: 3
+    timeout_ms: 1500
+    description: "Check customer eligibility for financial assistance programs"
+    
+    eligibility_criteria:
+      - "account_history"
+      - "payment_history"
+      - "customer_loyalty_status"
+      - "financial_hardship_indicators"
+      - "assistance_program_availability"
+    
+    assistance_programs:
+      - "payment_plan_options"
+      - "temporary_suspension"
+      - "loyalty_discounts"
+      - "hardship_programs"
+    
+  # Transaction verification
+  - name: "verify_transaction_details"
+    type: "internal"
+    priority: 2
+    timeout_ms: 1000
+    description: "Verify and explain transaction details to customers"
+    
+    verification_scope:
+      - "charge_details"
+      - "service_period"
+      - "tax_calculations"
+      - "discount_applications"
+      - "proration_calculations"
+
+# ============================================================================
+# INTELLIGENT ROUTING CONFIGURATION
+# ============================================================================
+routing:
+  # Primary keywords for billing-related queries
+  primary_keywords:
+    - "payment"
+    - "bill"
+    - "billing"
+    - "charge"
+    - "charged"
+    - "refund"
+    - "money"
+    - "cost"
+    - "price"
+    - "subscription"
+    - "invoice"
+    - "receipt"
+    
+  # Secondary keywords for context
+  secondary_keywords:
+    - "credit card"
+    - "debit card"
+    - "paypal"
+    - "bank account"
+    - "automatic payment"
+    - "installment"
+    - "payment plan"
+    - "overdue"
+    - "late fee"
+    - "discount"
+    - "promotion"
+    - "cancel"
+    - "dispute"
+    
+  # Financial distress indicators
+  financial_concern_keywords:
+    - "can't afford"
+    - "too expensive"
+    - "financial hardship"
+    - "lost job"
+    - "tight budget"
+    - "struggling"
+    - "help with payment"
+    - "payment plan"
+    - "extend due date"
+    
+  # Semantic routing patterns
+  semantic_patterns:
+    - "payment_processing_requests"
+    - "billing_inquiry_patterns"
+    - "refund_request_indicators"
+    - "subscription_management_needs"
+    - "financial_assistance_requests"
+    
+  # Confidence scoring for billing topics
+  routing_confidence:
+    minimum_threshold: 0.80
+    financial_concern_threshold: 0.90
+    fallback_threshold: 0.6
+    human_escalation_threshold: 0.5
+    
+  # Context factors for billing conversations
+  context_factors:
+    - "customer_payment_history"
+    - "account_status"
+    - "subscription_type"
+    - "previous_interactions"
+    - "financial_indicators"
+    - "seasonal_factors"
+
+# ============================================================================
+# PERFORMANCE MONITORING & QUALITY ASSURANCE
+# ============================================================================
+performance_monitoring:
+  # Latency targets for billing operations
+  latency_targets:
+    agent_response_ms: 200
+    vector_search_ms: 8
+    llm_generation_ms: 250
+    tool_execution_ms: 5000  # Longer for payment processing
+    end_to_end_ms: 2000
+    
+  # Quality metrics for customer financial service
+  quality_metrics:
+    response_accuracy_target: 0.95
+    customer_satisfaction_target: 4.5
+    payment_processing_success_target: 0.99
+    refund_processing_time_target: 72  # hours
+    first_call_resolution_target: 0.85
+    escalation_rate_target: 0.08
+    
+  # Customer satisfaction tracking
+  satisfaction_tracking:
+    enabled: true
+    post_interaction_survey: true
+    nps_tracking: true
+    sentiment_analysis: true
+    
+  # Financial metrics monitoring
+  financial_metrics:
+    payment_success_rate: true
+    refund_processing_time: true
+    dispute_resolution_time: true
+    customer_retention_impact: true
+    
+  # Alerting for billing issues
+  alerting:
+    payment_failure_threshold: 0.05
+    refund_delay_threshold: 96  # hours
+    customer_satisfaction_threshold: 3.5
+    escalation_rate_threshold: 0.15
+
+# ============================================================================
+# COMPLIANCE & SECURITY
+# ============================================================================
+compliance:
+  # Financial regulations compliance
+  financial_regulations:
+    pci_dss_compliance: true
+    gdpr_compliance: true
+    ccpa_compliance: true
+    sox_compliance: true
+    
+  # Data protection for financial information
+  data_protection:
+    pii_encryption: true
+    payment_data_tokenization: true
+    audit_logging: true
+    access_control: "role_based"
+    
+  # Customer rights and privacy
+  customer_privacy:
+    right_to_explanation: true
+    data_portability: true
+    deletion_requests: true
+    consent_management: true
+    
+  # Retention policies
+  data_retention:
+    conversation_logs: 2555  # 7 years for financial records
+    payment_records: 2555   # 7 years
+    customer_communications: 1095  # 3 years
+
+# ============================================================================
+# EMPATHY AND CUSTOMER EXPERIENCE
+# ============================================================================
+customer_experience:
+  # Empathy enhancement features
+  empathy_features:
+    financial_stress_detection: true
+    tone_adaptation: true
+    patience_enhancement: true
+    solution_prioritization: true
+    
+  # Customer communication preferences
+  communication_style:
+    language_simplification: true
+    jargon_avoidance: true
+    step_by_step_explanations: true
+    confirmation_requests: true
+    
+  # Emotional intelligence settings
+  emotional_intelligence:
+    frustration_de_escalation: true
+    anxiety_recognition: true
+    gratitude_expression: true
+    reassurance_provision: true
+    
+  # Customer support enhancements
+  support_enhancements:
+    multiple_solution_options: true
+    proactive_assistance_offers: true
+    follow_up_scheduling: true
+    satisfaction_verification: true
+
+# ============================================================================
+# METADATA & DEPLOYMENT
+# ============================================================================
+metadata:
+  created_at: "2024-01-15T10:00:00Z"
+  last_updated: "2024-01-15T16:00:00Z"
+  created_by: "voice-ai-system"
+  deployment_environment: "production"
+  
+  # Agent capabilities
+  capabilities:
+    - "empathetic_customer_service"
+    - "payment_processing"
+    - "refund_management"
+    - "financial_assistance"
+    - "subscription_management"
+    - "billing_dispute_resolution"
+    - "compliance_adherence"
+    - "emotional_intelligence"
+    
+  # Specialized features
+  specialized_features:
+    - "financial_stress_detection"
+    - "payment_plan_optimization"
+    - "multi_channel_communication"
+    - "regulatory_compliance"
+    - "fraud_prevention_awareness"

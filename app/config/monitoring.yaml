@@ -1,0 +1,535 @@
+# Revolutionary Multi-Agent Voice AI System - Advanced Monitoring Configuration
+# Comprehensive monitoring, alerting, and performance tracking
+# Target: <377ms latency monitoring with predictive analytics
+
+# ============================================================================
+# GLOBAL MONITORING CONFIGURATION
+# ============================================================================
+global:
+  scrape_interval: 15s          # Scrape targets every 15 seconds
+  evaluation_interval: 15s      # Evaluate rules every 15 seconds
+  external_labels:
+    monitor: 'voice-ai-system'
+    environment: 'production'
+    version: '2.0.0'
+
+# ============================================================================
+# RULE FILES
+# ============================================================================
+rule_files:
+  - "voice_ai_alerts.yml"
+  - "performance_rules.yml"
+  - "agent_health_rules.yml"
+
+# ============================================================================
+# SCRAPE CONFIGURATIONS
+# ============================================================================
+scrape_configs:
+  # ==========================================================================
+  # MAIN APPLICATION METRICS
+  # ==========================================================================
+  - job_name: 'voice-ai-app'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['voice-ai-app:8000']
+    metrics_path: '/metrics'
+    scrape_timeout: 10s
+    
+  # ==========================================================================
+  # QDRANT VECTOR DATABASE METRICS
+  # ==========================================================================
+  - job_name: 'qdrant'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['qdrant:6333']
+    metrics_path: '/metrics'
+    
+  # ==========================================================================
+  # REDIS CACHE METRICS
+  # ==========================================================================
+  - job_name: 'redis'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: '/metrics'
+    
+  # ==========================================================================
+  # NGINX LOAD BALANCER METRICS
+  # ==========================================================================
+  - job_name: 'nginx'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['nginx:80']
+    metrics_path: '/nginx_status'
+
+# ============================================================================
+# ALERTING CONFIGURATION
+# ============================================================================
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+
+# ============================================================================
+# ALERT RULES
+# ============================================================================
+groups:
+  # ==========================================================================
+  # CRITICAL LATENCY ALERTS
+  # ==========================================================================
+  - name: latency_alerts
+    interval: 30s
+    rules:
+      - alert: HighEndToEndLatency
+        expr: avg(voice_ai_end_to_end_latency_seconds) > 0.377
+        for: 1m
+        labels:
+          severity: critical
+          component: voice_ai_system
+        annotations:
+          summary: "Voice AI latency exceeds target"
+          description: "End-to-end latency {{ $value }}s exceeds 377ms target"
+          
+      - alert: VectorSearchLatencyHigh
+        expr: avg(vector_search_seconds) > 0.005
+        for: 30s
+        labels:
+          severity: warning
+          component: vector_db
+        annotations:
+          summary: "Vector search latency high"
+          description: "Vector search taking {{ $value }}s, target <5ms"
+          
+      - alert: LLMGenerationSlow
+        expr: avg(llm_generation_seconds) > 0.250
+        for: 1m
+        labels:
+          severity: warning
+          component: llm
+        annotations:
+          summary: "LLM generation slow"
+          description: "LLM generation taking {{ $value }}s, target <250ms"
+
+  # ==========================================================================
+  # SYSTEM HEALTH ALERTS
+  # ==========================================================================
+  - name: system_health
+    interval: 60s
+    rules:
+      - alert: ApplicationDown
+        expr: up{job="voice-ai-app"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "Voice AI application is down"
+          description: "The voice AI application has been down for more than 30 seconds"
+          
+      - alert: QdrantDown
+        expr: up{job="qdrant"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: vector_db
+        annotations:
+          summary: "Qdrant vector database is down"
+          description: "Qdrant has been unreachable for more than 1 minute"
+          
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis cache is down"
+          description: "Redis cache has been down for more than 30 seconds"
+
+  # ==========================================================================
+  # PERFORMANCE ALERTS
+  # ==========================================================================
+  - name: performance_alerts
+    interval: 30s
+    rules:
+      - alert: HighErrorRate
+        expr: rate(errors_total[5m]) > 0.02
+        for: 2m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate {{ $value }} exceeds 2% threshold"
+          
+      - alert: LowSuccessRate
+        expr: rate(conversation_completions{success_type="completed"}[5m]) / rate(conversation_completions[5m]) < 0.95
+        for: 3m
+        labels:
+          severity: warning
+          component: conversation
+        annotations:
+          summary: "Low conversation success rate"
+          description: "Success rate {{ $value }} below 95% target"
+          
+      - alert: HighConcurrentSessions
+        expr: active_conversations > 1000
+        for: 1m
+        labels:
+          severity: warning
+          component: capacity
+        annotations:
+          summary: "High concurrent session count"
+          description: "{{ $value }} concurrent sessions, approaching capacity limits"
+
+  # ==========================================================================
+  # AGENT-SPECIFIC ALERTS
+  # ==========================================================================
+  - name: agent_alerts
+    interval: 60s
+    rules:
+      - alert: AgentHealthLow
+        expr: agent_health_score < 0.8
+        for: 2m
+        labels:
+          severity: warning
+          component: agent
+        annotations:
+          summary: "Agent health score low"
+          description: "Agent {{ $labels.agent_id }} health score {{ $value }} below 0.8"
+          
+      - alert: AgentResponseTimeSlow
+        expr: avg(agent_response_time_ms) by (agent_id) > 300
+        for: 1m
+        labels:
+          severity: warning
+          component: agent
+        annotations:
+          summary: "Agent response time slow"
+          description: "Agent {{ $labels.agent_id }} averaging {{ $value }}ms response time"
+          
+      - alert: RoadsideEmergencyResponseSlow
+        expr: avg(agent_response_time_ms{agent_id="roadside-assistance-v2",urgency="emergency"}) > 150
+        for: 30s
+        labels:
+          severity: critical
+          component: emergency_agent
+        annotations:
+          summary: "Emergency roadside response too slow"
+          description: "Emergency responses taking {{ $value }}ms, target <150ms"
+
+  # ==========================================================================
+  # RESOURCE ALERTS
+  # ==========================================================================
+  - name: resource_alerts
+    interval: 60s
+    rules:
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage {{ $value | humanizePercentage }} above 85%"
+          
+      - alert: HighCPUUsage
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system  
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage {{ $value }}% above 80%"
+          
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"}) < 0.1
+        for: 5m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "Low disk space"
+          description: "Disk space usage above 90% on {{ $labels.mountpoint }}"
+
+  # ==========================================================================
+  # VECTOR DATABASE SPECIFIC ALERTS
+  # ==========================================================================
+  - name: vector_db_alerts
+    interval: 30s
+    rules:
+      - alert: VectorIndexingBehind
+        expr: qdrant_indexing_queue_size > 1000
+        for: 2m
+        labels:
+          severity: warning
+          component: vector_indexing
+        annotations:
+          summary: "Vector indexing queue building up"
+          description: "{{ $value }} vectors queued for indexing"
+          
+      - alert: VectorSearchCacheHitLow
+        expr: rate(vector_cache_hits[5m]) / (rate(vector_cache_hits[5m]) + rate(vector_cache_misses[5m])) < 0.7
+        for: 3m
+        labels:
+          severity: warning
+          component: vector_cache
+        annotations:
+          summary: "Low vector cache hit rate"
+          description: "Cache hit rate {{ $value | humanizePercentage }} below 70%"
+
+  # ==========================================================================
+  # BUSINESS LOGIC ALERTS
+  # ==========================================================================
+  - name: business_alerts
+    interval: 60s
+    rules:
+      - alert: HighEscalationRate
+        expr: rate(conversation_completions{escalation_required="true"}[10m]) / rate(conversation_completions[10m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: conversation_quality
+        annotations:
+          summary: "High escalation rate"
+          description: "{{ $value | humanizePercentage }} of conversations requiring escalation"
+          
+      - alert: ToolExecutionFailures
+        expr: rate(tool_execution_failures[5m]) > 0.02
+        for: 2m
+        labels:
+          severity: warning
+          component: tool_orchestration
+        annotations:
+          summary: "High tool execution failure rate"
+          description: "Tool failures at {{ $value }} per second"
+
+# ============================================================================
+# PERFORMANCE MONITORING RULES
+# ============================================================================
+performance_rules:
+  # Latency percentiles
+  - record: voice_ai:latency_p50
+    expr: histogram_quantile(0.50, rate(voice_ai_end_to_end_latency_seconds_bucket[5m]))
+    
+  - record: voice_ai:latency_p95
+    expr: histogram_quantile(0.95, rate(voice_ai_end_to_end_latency_seconds_bucket[5m]))
+    
+  - record: voice_ai:latency_p99
+    expr: histogram_quantile(0.99, rate(voice_ai_end_to_end_latency_seconds_bucket[5m]))
+  
+  # Success rates
+  - record: voice_ai:success_rate_5m
+    expr: rate(conversations_total{completion_status="success"}[5m]) / rate(conversations_total[5m])
+    
+  # Agent utilization
+  - record: voice_ai:agent_utilization
+    expr: avg(active_conversations) by (agent_id) / max(agent_capacity) by (agent_id)
+
+# ============================================================================
+# NOTIFICATION CHANNELS
+# ============================================================================
+notification_channels:
+  # Slack integration
+  slack:
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channel: "#voice-ai-alerts"
+    title: "Voice AI System Alert"
+    pretext: "{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}"
+    
+  # Email alerts
+  email:
+    smtp_server: "${SMTP_SERVER}"
+    smtp_port: 587
+    username: "${EMAIL_USERNAME}"
+    password: "${EMAIL_PASSWORD}"
+    from: "voice-ai-system@yourcompany.com"
+    to: ["ops-team@yourcompany.com", "dev-team@yourcompany.com"]
+    
+  # PagerDuty for critical alerts
+  pagerduty:
+    service_key: "${PAGERDUTY_SERVICE_KEY}"
+    client: "Voice AI Monitoring"
+    client_url: "https://your-monitoring-dashboard.com"
+
+# ============================================================================
+# DASHBOARD CONFIGURATION
+# ============================================================================
+dashboards:
+  # Executive Dashboard
+  executive:
+    title: "Voice AI Executive Dashboard"
+    refresh: "30s"
+    panels:
+      - title: "End-to-End Latency"
+        type: "stat"
+        targets:
+          - expr: "avg(voice_ai_end_to_end_latency_seconds) * 1000"
+          - expr: "377"  # Target threshold
+        thresholds:
+          - color: "green"
+            value: 0
+          - color: "yellow" 
+            value: 300
+          - color: "red"
+            value: 377
+            
+      - title: "Conversation Success Rate"
+        type: "stat"
+        targets:
+          - expr: "voice_ai:success_rate_5m * 100"
+        thresholds:
+          - color: "red"
+            value: 0
+          - color: "yellow"
+            value: 90
+          - color: "green"
+            value: 95
+            
+      - title: "Active Conversations"
+        type: "graph"
+        targets:
+          - expr: "active_conversations"
+        legend: true
+        
+  # Technical Dashboard  
+  technical:
+    title: "Voice AI Technical Metrics"
+    refresh: "15s"
+    panels:
+      - title: "Component Latency Breakdown"
+        type: "graph"
+        targets:
+          - expr: "avg(stt_processing_seconds) * 1000"
+            legend: "STT Processing"
+          - expr: "avg(vector_search_seconds) * 1000"
+            legend: "Vector Search"
+          - expr: "avg(llm_generation_seconds) * 1000"
+            legend: "LLM Generation"
+          - expr: "avg(tts_synthesis_seconds) * 1000"
+            legend: "TTS Synthesis"
+            
+      - title: "Agent Performance"
+        type: "table"
+        targets:
+          - expr: "avg(agent_response_time_ms) by (agent_id)"
+          - expr: "avg(agent_health_score) by (agent_id)"
+          - expr: "rate(conversations_total) by (agent_id)"
+          
+      - title: "Vector Database Performance"
+        type: "graph"
+        targets:
+          - expr: "rate(vector_cache_hits[5m])"
+            legend: "Cache Hits"
+          - expr: "rate(vector_cache_misses[5m])"
+            legend: "Cache Misses"
+          - expr: "avg(qdrant_search_time_ms)"
+            legend: "Qdrant Search Time"
+
+# ============================================================================
+# HEALTH CHECK ENDPOINTS
+# ============================================================================
+health_checks:
+  endpoints:
+    - name: "application_health"
+      url: "http://voice-ai-app:8000/health"
+      interval: "30s"
+      timeout: "10s"
+      expected_status: 200
+      
+    - name: "qdrant_health"
+      url: "http://qdrant:6333/health"
+      interval: "30s"
+      timeout: "5s"
+      expected_status: 200
+      
+    - name: "redis_health"
+      command: "redis-cli -h redis ping"
+      interval: "30s"
+      timeout: "5s"
+      expected_response: "PONG"
+
+# ============================================================================
+# PERFORMANCE TARGETS & THRESHOLDS
+# ============================================================================
+targets:
+  latency:
+    end_to_end_ms: 377
+    stt_processing_ms: 80
+    vector_search_ms: 5
+    llm_generation_ms: 250
+    tts_synthesis_ms: 80
+    agent_response_ms: 200
+    
+  quality:
+    success_rate: 0.95
+    confidence_score: 0.8
+    user_satisfaction: 4.5
+    
+  capacity:
+    max_concurrent_sessions: 2000
+    max_cpu_usage: 0.8
+    max_memory_usage: 0.85
+    max_disk_usage: 0.9
+    
+  availability:
+    uptime_target: 0.999
+    recovery_time_minutes: 5
+    error_rate_threshold: 0.02
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+logging:
+  level: INFO
+  format: json
+  
+  # Application logs
+  application:
+    file: "/app/logs/voice-ai.log"
+    max_size: "100MB"
+    max_files: 10
+    retention_days: 7
+    
+  # Performance logs
+  performance:
+    file: "/app/logs/performance.log"
+    max_size: "50MB"
+    max_files: 5
+    retention_days: 30
+    
+  # Error logs
+  error:
+    file: "/app/logs/error.log"
+    max_size: "50MB"
+    max_files: 10
+    retention_days: 30
+    
+  # Audit logs
+  audit:
+    file: "/app/logs/audit.log"
+    max_size: "100MB"
+    max_files: 20
+    retention_days: 90
+
+# ============================================================================
+# ENVIRONMENT-SPECIFIC OVERRIDES
+# ============================================================================
+environments:
+  development:
+    scrape_interval: 30s
+    alert_evaluation_disabled: true
+    log_level: DEBUG
+    
+  staging: 
+    scrape_interval: 15s
+    alert_evaluation_enabled: true
+    notification_channels: ["slack"]
+    
+  production:
+    scrape_interval: 5s
+    alert_evaluation_enabled: true
+    notification_channels: ["slack", "email", "pagerduty"]
+    high_availability: true

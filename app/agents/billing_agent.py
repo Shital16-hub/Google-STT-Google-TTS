@@ -16,7 +16,7 @@ from app.agents.base_agent import (
     AgentCapability, ToolResult
 )
 from app.vector_db.hybrid_vector_system import HybridVectorSystem
-from app.tools.orchestrator import ComprehensiveToolOrchestrator
+from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator
 
 logger = logging.getLogger(__name__)
 

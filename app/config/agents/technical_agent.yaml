@@ -1,0 +1,468 @@
+# Technical Support Agent - Enhanced Configuration v2.1.0
+# Optimized for patience, technical accuracy, and instructional delivery
+# Target: <200ms agent processing with comprehensive technical knowledge
+
+agent_id: "technical-support-v2"
+version: "2.1.0"
+status: "active"
+priority: 3
+deployment_strategy: "blue_green"
+
+# ============================================================================
+# SPECIALIZATION CONFIGURATION
+# ============================================================================
+specialization:
+  domain_expertise: "technical_troubleshooting_and_support"
+  personality_profile: "patient_instructional_expert"
+  
+  # System prompt optimized for technical support
+  system_prompt: |
+    You are a highly skilled technical support specialist with extensive knowledge of:
+    - Software troubleshooting and debugging procedures
+    - Hardware diagnostics and resolution techniques
+    - System integration and API troubleshooting
+    - Step-by-step instructional guidance
+    - Complex technical problem analysis
+    
+    Key behaviors for technical support:
+    - Maintain patience with users of all technical levels
+    - Provide clear, step-by-step instructions
+    - Break down complex technical concepts into understandable terms
+    - Verify user understanding before proceeding to next steps
+    - Offer multiple solution approaches when appropriate
+    - Document technical issues for knowledge base improvement
+    - Escalate complex problems to specialized engineers when necessary
+    
+    Your communication style should be:
+    - Patient and encouraging
+    - Methodical and systematic
+    - Educational and empowering
+    - Professional yet approachable
+  
+  # Context management for complex technical sessions
+  context_management:
+    max_context_length: 3072  # Larger for technical discussions
+    context_retention: "full_conversation_with_technical_history"
+    context_compression: "technical_summarization"
+    technical_term_retention: true
+    step_tracking: true
+    solution_history: true
+  
+  # Response optimization for technical explanations
+  response_optimization:
+    target_response_time_ms: 200
+    max_response_length: 250  # Longer for technical explanations
+    tone_adaptation: "educational_patient"
+    step_by_step_formatting: true
+    technical_accuracy_priority: "high"
+    verification_prompts: true
+
+# ============================================================================
+# VECTOR DATABASE CONFIGURATION
+# ============================================================================
+vector_config:
+  qdrant_collection: "agent-technical-support-v2"
+  vector_size: 1536
+  distance_metric: "cosine"
+  optimization_level: "high_performance"
+  
+  # Hybrid tier configuration for technical knowledge
+  redis_cache_config:
+    enabled: true
+    ttl_seconds: 7200  # Longer TTL for technical solutions
+    max_vectors: 15000  # More cache for common technical issues
+    priority_keywords: ["error", "troubleshoot", "step", "solution", "fix"]
+    
+  faiss_hot_tier_config:
+    enabled: true
+    promotion_threshold: 30  # Lower threshold for technical queries
+    memory_limit_mb: 2048  # Larger memory for technical knowledge
+    index_type: "HNSW"
+    technical_clustering: true
+
+# ============================================================================
+# KNOWLEDGE SOURCES - Technical Documentation
+# ============================================================================
+knowledge_sources:
+  - type: "technical_documentation"
+    path: "kb/technical/troubleshooting/"
+    chunk_size: 768  # Larger chunks for technical procedures
+    chunk_overlap: 100
+    processing_strategy: "technical_procedure_parsing"
+    priority: "high"
+    
+  - type: "api_documentation"
+    path: "kb/technical/api_docs/"
+    chunk_size: 512
+    chunk_overlap: 50
+    processing_strategy: "api_reference_indexing"
+    priority: "high"
+    
+  - type: "error_solutions_database"
+    path: "kb/technical/error_solutions/"
+    chunk_size: 384
+    chunk_overlap: 50
+    processing_strategy: "error_code_mapping"
+    priority: "critical"
+    
+  - type: "hardware_manuals"
+    path: "kb/technical/hardware/"
+    chunk_size: 640
+    chunk_overlap: 80
+    processing_strategy: "hardware_specification_parsing"
+    priority: "medium"
+    
+  - type: "software_guides"
+    path: "kb/technical/software/"
+    chunk_size: 512
+    chunk_overlap: 60
+    processing_strategy: "step_by_step_extraction"
+    priority: "high"
+    
+  - type: "integration_guides"
+    path: "kb/technical/integrations/"
+    chunk_size: 896
+    chunk_overlap: 100
+    processing_strategy: "integration_workflow_parsing"
+    priority: "high"
+    
+  - type: "known_issues"
+    path: "data/known_issues.json"
+    indexing_strategy: "issue_symptom_mapping"
+    real_time_updates: true
+    priority: "critical"
+
+# ============================================================================
+# VOICE SETTINGS - Patient Technical Instructor
+# ============================================================================
+voice_settings:
+  tts_voice: "en-US-Neural2-D"  # Clear, authoritative voice
+  speaking_rate: 0.85  # Slower for technical explanations
+  pitch_adjustment: 0.5  # Slightly higher for clarity
+  volume_gain: 1.0
+  
+  # Technical communication optimization
+  technical_pronunciation: true
+  step_emphasis: true
+  pause_for_comprehension: true
+  
+  # Emotion and context adaptation
+  patience_mode: true
+  instructional_tone: true
+  encouragement_injection: true
+  frustration_detection: true
+  
+  # Streaming optimization for technical explanations
+  streaming_chunk_size: 40  # Smaller chunks for better pacing
+  first_chunk_target_ms: 180  # Slightly longer for quality
+  step_boundary_pausing: true
+
+# ============================================================================
+# COMPREHENSIVE TOOL INTEGRATION
+# ============================================================================
+tools:
+  # Business Workflow Tools - Technical Support
+  - name: "technical_support_ticketing_workflow"
+    type: "business_workflow"
+    priority: 1
+    timeout_ms: 12000
+    description: "Complete technical support ticket lifecycle management"
+    steps:
+      - "create_technical_ticket"
+      - "assess_ticket_severity"
+      - "assign_technical_specialist"
+      - "setup_sla_monitoring"
+      - "send_customer_confirmation"
+    dummy_mode: true
+    
+  - name: "diagnostic_workflow"
+    type: "business_workflow"
+    priority: 2
+    timeout_ms: 8000
+    description: "Automated diagnostic procedures and system checks"
+    steps:
+      - "run_system_diagnostics"
+      - "analyze_diagnostic_results"
+      - "generate_diagnostic_report"
+      - "recommend_solutions"
+    dummy_mode: true
+    
+  - name: "escalation_workflow"
+    type: "business_workflow"
+    priority: 1
+    timeout_ms: 6000
+    description: "Technical escalation to specialized engineers"
+    steps:
+      - "assess_escalation_criteria"
+      - "identify_specialist_engineer"
+      - "transfer_technical_context"
+      - "schedule_engineer_callback"
+    dummy_mode: true
+    
+  # External API Tools (DUMMY for development)
+  - name: "create_jira_ticket"
+    type: "external_api"
+    provider: "jira"
+    endpoint: "https://company.atlassian.net/rest/api/2/issue"
+    auth_type: "bearer_token"
+    timeout_ms: 4000
+    description: "Create technical support ticket in Jira"
+    dummy_mode: true
+    
+  - name: "slack_engineer_notification"
+    type: "external_api"
+    provider: "slack"
+    endpoint: "https://hooks.slack.com/services/technical-alerts"
+    auth_type: "webhook"
+    timeout_ms: 3000
+    description: "Notify engineering team via Slack"
+    dummy_mode: true
+    
+  - name: "zendesk_ticket_update"
+    type: "external_api"
+    provider: "zendesk"
+    endpoint: "https://company.zendesk.com/api/v2/tickets"
+    auth_type: "api_key"
+    timeout_ms: 5000
+    description: "Update customer support ticket"
+    dummy_mode: true
+    
+  - name: "confluence_documentation_search"
+    type: "external_api"
+    provider: "confluence"
+    endpoint: "https://company.atlassian.net/wiki/rest/api/search"
+    auth_type: "bearer_token"
+    timeout_ms: 4000
+    description: "Search technical documentation"
+    dummy_mode: true
+    
+  # Internal Tools (fully functional)
+  - name: "technical_knowledge_search"
+    type: "internal"
+    description: "Advanced semantic search of technical knowledge base"
+    priority: 1
+    parameters:
+      search_depth: "comprehensive"
+      include_code_examples: true
+      include_step_by_step: true
+      
+  - name: "error_code_lookup"
+    type: "internal"
+    description: "Look up error codes and their solutions"
+    priority: 1
+    parameters:
+      include_root_cause: true
+      include_prevention: true
+      
+  - name: "system_compatibility_check"
+    type: "internal"
+    description: "Check system compatibility and requirements"
+    priority: 2
+    parameters:
+      include_alternatives: true
+      
+  - name: "log_technical_interaction"
+    type: "internal"
+    description: "Log detailed technical support interaction"
+    priority: 2
+    parameters:
+      include_resolution_steps: true
+      track_solution_effectiveness: true
+
+# ============================================================================
+# INTELLIGENT ROUTING CONFIGURATION
+# ============================================================================
+routing:
+  # Primary technical keywords
+  primary_keywords: 
+    - "not working"
+    - "error"
+    - "bug"
+    - "broken"
+    - "troubleshoot"
+    - "technical issue"
+    - "system problem"
+    - "integration"
+    - "API"
+    - "setup"
+    - "configuration"
+    - "installation"
+    
+  # Secondary technical indicators
+  secondary_keywords:
+    - "how to"
+    - "step by step"
+    - "tutorial"
+    - "guide"
+    - "documentation"
+    - "manual"
+    - "instructions"
+    - "procedure"
+    - "process"
+    - "workflow"
+    
+  # Error pattern detection
+  error_patterns:
+    - "error code"
+    - "exception"
+    - "failed"
+    - "timeout"
+    - "connection"
+    - "authentication"
+    - "permission"
+    - "access denied"
+    - "not found"
+    - "server error"
+    
+  # Technical complexity indicators
+  complexity_indicators:
+    - "database"
+    - "server"
+    - "network"
+    - "security"
+    - "performance"
+    - "scalability"
+    - "architecture"
+    - "deployment"
+    - "monitoring"
+    - "debugging"
+    
+  # Confidence scoring for technical routing
+  routing_confidence:
+    minimum_threshold: 0.75
+    technical_boost: 0.15  # Boost for technical terminology
+    fallback_threshold: 0.55
+    human_escalation_threshold: 0.35
+    
+  # Context-aware routing factors
+  context_factors:
+    - "error_frequency"
+    - "user_technical_level"
+    - "system_complexity"
+    - "previous_interactions"
+    - "resolution_urgency"
+
+# ============================================================================
+# PERFORMANCE & QUALITY MONITORING
+# ============================================================================
+performance_monitoring:
+  # Latency targets for technical support
+  latency_targets:
+    vector_search_ms: 8  # Slightly higher for complex technical queries
+    llm_generation_ms: 300  # Allow more time for detailed explanations
+    tool_execution_ms: 2500
+    end_to_end_ms: 200
+    
+  # Quality metrics specific to technical support
+  quality_metrics:
+    response_accuracy_target: 0.97  # Higher accuracy requirement
+    technical_completeness_target: 0.95
+    step_clarity_target: 0.90
+    customer_satisfaction_target: 4.6
+    task_completion_target: 0.92
+    escalation_rate_target: 0.08  # Slightly higher for complex issues
+    
+  # Technical-specific metrics
+  technical_metrics:
+    solution_effectiveness_target: 0.88
+    first_call_resolution_target: 0.75
+    documentation_accuracy_target: 0.95
+    step_completion_rate_target: 0.90
+    
+  # Alerting thresholds
+  alerting:
+    latency_threshold_ms: 2500
+    error_rate_threshold: 0.03
+    availability_threshold: 0.998
+    technical_accuracy_threshold: 0.90
+
+# ============================================================================
+# ADVANCED TECHNICAL FEATURES
+# ============================================================================
+technical_features:
+  # Step-by-step guidance system
+  step_guidance:
+    enabled: true
+    max_steps_per_solution: 12
+    verification_prompts: true
+    progress_tracking: true
+    rollback_support: true
+    
+  # Error handling and diagnostics
+  error_handling:
+    automatic_error_detection: true
+    error_categorization: true
+    solution_suggestion: true
+    escalation_triggers: true
+    
+  # Knowledge base integration
+  knowledge_integration:
+    real_time_updates: true
+    version_tracking: true
+    accuracy_validation: true
+    user_feedback_integration: true
+    
+  # Technical session management
+  session_management:
+    technical_context_retention: true
+    multi_issue_tracking: true
+    solution_history: true
+    interaction_logging: true
+    
+  # Learning and improvement
+  continuous_learning:
+    solution_effectiveness_tracking: true
+    user_feedback_analysis: true
+    knowledge_gap_identification: true
+    agent_performance_optimization: true
+
+# ============================================================================
+# INTEGRATION ENDPOINTS
+# ============================================================================
+integration_endpoints:
+  # Technical documentation systems
+  documentation_apis:
+    confluence_api: "https://company.atlassian.net/wiki/rest/api"
+    github_docs: "https://api.github.com/repos/company/docs"
+    
+  # Issue tracking systems
+  ticketing_systems:
+    jira_api: "https://company.atlassian.net/rest/api/2"
+    zendesk_api: "https://company.zendesk.com/api/v2"
+    
+  # Communication platforms
+  communication_apis:
+    slack_webhooks: "https://hooks.slack.com/services"
+    email_api: "https://api.sendgrid.com/v3"
+    
+  # Monitoring and diagnostics
+  monitoring_apis:
+    datadog_api: "https://api.datadoghq.com/api/v1"
+    new_relic_api: "https://api.newrelic.com/v2"
+
+# ============================================================================
+# DEPLOYMENT AND SCALING
+# ============================================================================
+deployment:
+  scaling_strategy: "demand_based"
+  min_instances: 1
+  max_instances: 4
+  scaling_metrics:
+    - "queue_depth"
+    - "response_time"
+    - "technical_complexity"
+  
+  resource_requirements:
+    memory_mb: 2048  # Higher for technical knowledge processing
+    cpu_cores: 1.5
+    storage_gb: 1.0
+    
+  health_checks:
+    interval_seconds: 45
+    timeout_seconds: 15
+    failure_threshold: 3
+    
+  backup_and_recovery:
+    knowledge_base_backup: true
+    configuration_versioning: true
+    rollback_capability: true

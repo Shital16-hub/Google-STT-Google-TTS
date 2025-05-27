@@ -1,0 +1,600 @@
+# Revolutionary Roadside Assistance Agent Configuration v2.1.0
+# Emergency-specialized agent with advanced safety protocols and tool integration
+# Optimized for <150ms response time with comprehensive workflow automation
+
+agent_id: "roadside-assistance-v2"
+version: "2.1.0"
+status: "active"
+priority: 1
+deployment_strategy: "blue_green"
+
+# ============================================================================
+# SPECIALIZATION CONFIGURATION
+# ============================================================================
+specialization:
+  domain_expertise: "emergency_roadside_assistance"
+  personality_profile: "professional_urgent_empathetic"
+  
+  # Advanced system prompt with safety protocols
+  system_prompt: |
+    You are an expert emergency roadside assistance coordinator with deep specialization in:
+    
+    CORE EXPERTISE:
+    - Emergency vehicle recovery and towing procedures
+    - Safety-first protocols for roadside emergencies
+    - Geographic service area coverage and logistics optimization
+    - Customer service excellence under high-pressure situations
+    - Risk assessment and emergency escalation procedures
+    
+    CRITICAL BEHAVIORS:
+    - ALWAYS prioritize safety above all other considerations
+    - Provide clear, actionable guidance with urgency appropriate to situation
+    - Show genuine empathy for stressed and stranded customers
+    - Communicate time-sensitive information clearly and concisely
+    - Confirm critical details (location, vehicle info) twice for accuracy
+    - Escalate to emergency services when safety risks are detected
+    
+    RESPONSE OPTIMIZATION:
+    - Keep responses under 200 words for voice delivery
+    - Use natural, conversational language
+    - Provide specific next steps and timeframes
+    - Include safety instructions when relevant
+    - Acknowledge customer stress and provide reassurance
+
+  # Context management for conversation flow
+  context_management:
+    max_context_length: 2048
+    context_retention: "full_conversation"
+    context_compression: "intelligent_summarization"
+    urgency_detection: true
+    safety_protocol_enforcement: true
+    
+  # Response optimization for emergency scenarios
+  response_optimization:
+    target_response_time_ms: 150
+    max_response_length: 200  # words, optimized for voice
+    tone_adaptation: "situation_appropriate"
+    emergency_mode_enabled: true
+    safety_instructions_priority: "highest"
+
+# ============================================================================
+# VOICE CONFIGURATION
+# ============================================================================
+voice_settings:
+  # Primary voice optimized for emergency communication
+  tts_voice: "en-US-Neural2-C"
+  speaking_rate: 1.1  # Slightly faster for urgency
+  pitch_adjustment: 0.0
+  volume_gain: 2.0    # Increased volume for clarity
+  
+  # Emotion and context adaptation
+  emotion_detection: true
+  stress_response_mode: true
+  emergency_tone_activation: true
+  patience_level: "moderate"  # Balanced for emergency situations
+  
+  # Advanced streaming optimization
+  streaming_optimization:
+    enabled: true
+    streaming_chunk_size: 50  # words
+    first_chunk_target_ms: 150
+    word_boundary_optimization: true
+    silence_detection: true
+    
+  # Context-aware voice modulation
+  voice_profiles:
+    emergency: 
+      speaking_rate: 1.15
+      pitch_adjustment: 1.0
+      volume_gain: 3.0
+    critical:
+      speaking_rate: 1.1
+      pitch_adjustment: 0.5
+      volume_gain: 2.5
+    standard:
+      speaking_rate: 1.0
+      pitch_adjustment: 0.0
+      volume_gain: 2.0
+
+# ============================================================================
+# VECTOR DATABASE CONFIGURATION
+# ============================================================================
+vector_config:
+  # Qdrant collection optimization for emergency response
+  qdrant_collection: "agent-roadside-v2"
+  vector_size: 1536
+  distance_metric: "cosine"
+  optimization_level: "ultra_high_performance"
+  
+  # Collection-specific settings
+  collection_config:
+    hnsw_config:
+      m: 16
+      ef_construct: 128
+      full_scan_threshold: 10000
+      max_indexing_threads: 4
+    optimizers_config:
+      default_segment_number: 2
+      max_segment_size: 20000
+      memmap_threshold: 20000
+      indexing_threshold: 10000
+      flush_interval_sec: 1  # Faster updates for emergency content
+    quantization_config:
+      always_ram: true
+      rescore: true
+  
+  # Hybrid tier configuration for ultra-fast retrieval
+  redis_cache_config:
+    enabled: true
+    ttl_seconds: 3600
+    max_vectors: 15000  # Higher cache for emergency scenarios
+    namespace: "roadside_emergency"
+    
+  faiss_hot_tier_config:
+    enabled: true
+    promotion_threshold: 25  # Lower threshold for emergency content
+    memory_limit_mb: 1024
+    index_type: "HNSW"
+    hot_promotion_keywords: ["emergency", "accident", "stuck", "stranded", "tow"]
+
+# ============================================================================
+# KNOWLEDGE SOURCES
+# ============================================================================
+knowledge_sources:
+  # Emergency procedures and safety protocols
+  - type: "documents"
+    path: "kb/roadside/emergency_procedures/"
+    chunk_size: 512
+    chunk_overlap: 50
+    processing_strategy: "semantic_chunking"
+    priority: "critical"
+    tags: ["emergency", "safety", "procedures"]
+    
+  # Service area coverage and logistics
+  - type: "documents"
+    path: "kb/roadside/service_areas/"
+    chunk_size: 256
+    chunk_overlap: 30
+    processing_strategy: "geographic_chunking"
+    priority: "high"
+    tags: ["coverage", "logistics", "geography"]
+    
+  # Vehicle compatibility and towing specifications
+  - type: "documents"
+    path: "kb/roadside/vehicle_specs/"
+    chunk_size: 384
+    chunk_overlap: 40
+    processing_strategy: "technical_chunking"
+    priority: "high"
+    tags: ["vehicles", "towing", "specifications"]
+    
+  # Pricing and service information
+  - type: "documents"
+    path: "kb/roadside/pricing/"
+    chunk_size: 256
+    chunk_overlap: 25
+    processing_strategy: "structured_chunking"
+    priority: "medium"
+    tags: ["pricing", "services", "policies"]
+    
+  # Real-time service provider data
+  - type: "structured_data"
+    path: "data/service_providers.json"
+    indexing_strategy: "hierarchical"
+    refresh_interval: 900  # 15 minutes
+    change_detection: true
+    priority: "critical"
+    
+  # Weather and traffic integration
+  - type: "real_time_updates"
+    source: "weather_traffic_api"
+    refresh_interval: 300  # 5 minutes
+    change_detection: true
+    priority: "high"
+
+# ============================================================================
+# COMPREHENSIVE TOOL INTEGRATION
+# ============================================================================
+tools:
+  # ==========================================================================
+  # BUSINESS WORKFLOW TOOLS (Production-ready with DUMMY fallbacks)
+  # ==========================================================================
+  
+  # Emergency dispatch workflow - highest priority
+  - name: "dispatch_tow_truck_workflow"
+    type: "business_workflow"
+    priority: 1
+    timeout_ms: 15000  # Extended for comprehensive workflow
+    description: "Complete tow truck dispatch business process with driver assignment"
+    
+    # Workflow steps configuration
+    workflow_steps:
+      - "validate_location_coverage"
+      - "assess_emergency_level"
+      - "check_driver_availability"
+      - "optimize_truck_assignment"
+      - "notify_driver_mobile_app"
+      - "send_customer_sms_update"
+      - "create_dispatch_log"
+      - "setup_tracking_system"
+    
+    # Integration configuration
+    integration_config:
+      dispatch_system_api: "https://api.dispatch-system.com/v2/"
+      driver_mobile_api: "https://api.driver-app.com/notifications/"
+      customer_sms_api: "twilio"
+      tracking_system_api: "https://api.tracking-system.com/jobs/"
+    
+    # Fallback to DUMMY mode for development
+    dummy_mode: true
+    dummy_response_template:
+      truck_assigned: "TRUCK_{{random_truck_id}}"
+      driver_name: "{{random_driver_name}}"
+      eta_minutes: "{{calculated_eta}}"
+      tracking_url: "https://tracking.example.com/{{job_id}}"
+      confirmation_sms_sent: true
+    
+  # Emergency escalation workflow
+  - name: "emergency_escalation_workflow"
+    type: "business_workflow"
+    priority: 1
+    timeout_ms: 8000
+    description: "Emergency escalation to emergency services and supervisors"
+    
+    escalation_triggers:
+      - "injury_reported"
+      - "vehicle_fire"
+      - "hazmat_spill"
+      - "traffic_blocking"
+      - "safety_risk_high"
+    
+    escalation_contacts:
+      emergency_services: "911"
+      supervisor: "+1-555-SUPERVISOR"
+      safety_manager: "+1-555-SAFETY"
+      dispatch_manager: "+1-555-DISPATCH"
+    
+    dummy_mode: true
+    
+  # Safety assessment workflow
+  - name: "safety_assessment_workflow"
+    type: "business_workflow"
+    priority: 2
+    timeout_ms: 5000
+    description: "Assess safety risks and provide safety instructions"
+    
+    assessment_factors:
+      - "location_type"
+      - "weather_conditions"
+      - "traffic_volume"
+      - "time_of_day"
+      - "vehicle_position"
+      - "customer_safety_status"
+    
+    safety_protocols:
+      highway: "exit_vehicle_away_from_traffic"
+      busy_street: "turn_on_hazards_stay_in_vehicle"
+      parking_lot: "safe_to_exit_vehicle"
+      rural_road: "be_visible_to_traffic"
+    
+    dummy_mode: true
+
+  # ==========================================================================
+  # EXTERNAL API TOOLS (DUMMY implementations ready for production)
+  # ==========================================================================
+  
+  # Twilio SMS integration
+  - name: "send_location_sms"
+    type: "external_api"
+    provider: "twilio"
+    priority: 2
+    timeout_ms: 3000
+    description: "Send SMS with location and ETA information to customer"
+    
+    api_config:
+      endpoint: "https://api.twilio.com/2010-04-01/Accounts/{AccountSid}/Messages"
+      auth_type: "basic_auth"
+      credentials_env: "TWILIO_CREDENTIALS"
+    
+    message_templates:
+      dispatch_confirmation: "🚛 Help is on the way! Driver: {driver_name}, ETA: {eta} min. Track: {tracking_url}"
+      eta_update: "📍 Update: Your driver is {eta} minutes away. Current location: {driver_location}"
+      arrival_notification: "✅ Your driver has arrived! Look for {truck_description}. Call {driver_phone} if needed."
+    
+    dummy_mode: true
+    dummy_responses:
+      message_sid: "SM{{random_hex_12}}"
+      status: "sent"
+      price: "-0.0075"
+      
+  # Service ticket system integration
+  - name: "update_service_ticket"
+    type: "external_api"
+    provider: "zendesk"
+    priority: 3
+    timeout_ms: 5000
+    description: "Update customer service ticket with roadside assistance details"
+    
+    api_config:
+      endpoint: "https://company.zendesk.com/api/v2/tickets/{id}"
+      auth_type: "bearer_token"
+      credentials_env: "ZENDESK_API_TOKEN"
+    
+    update_fields:
+      - "status"
+      - "assignee_id"
+      - "custom_fields"
+      - "tags"
+      - "priority"
+    
+    dummy_mode: true
+    
+  # Google Maps integration for routing
+  - name: "optimize_routing"
+    type: "external_api"
+    provider: "google_maps"
+    priority: 2
+    timeout_ms: 3000
+    description: "Optimize routing for fastest response time"
+    
+    api_config:
+      endpoint: "https://maps.googleapis.com/maps/api/directions/json"
+      auth_type: "api_key"
+      credentials_env: "GOOGLE_MAPS_API_KEY"
+    
+    optimization_params:
+      avoid: ["tolls"]
+      traffic_model: "best_guess"
+      departure_time: "now"
+      units: "imperial"
+    
+    dummy_mode: true
+
+  # ==========================================================================
+  # INTERNAL TOOLS (Fully functional)
+  # ==========================================================================
+  
+  # Service coverage search
+  - name: "search_service_coverage"
+    type: "internal"
+    priority: 2
+    timeout_ms: 2000
+    description: "Search service area coverage with GPS coordinates and availability"
+    
+    coverage_parameters:
+      max_radius_miles: 50
+      service_types: ["towing", "jump_start", "tire_change", "lockout", "fuel_delivery"]
+      availability_check: true
+      weather_factor: true
+      traffic_factor: true
+    
+  # Emergency interaction logging
+  - name: "log_emergency_interaction"
+    type: "internal"
+    priority: 2
+    timeout_ms: 1000
+    description: "Log detailed emergency call information for compliance and analysis"
+    
+    logging_fields:
+      - "customer_info"
+      - "location_details"
+      - "emergency_level"
+      - "safety_assessment"
+      - "actions_taken"
+      - "response_time"
+      - "resolution_status"
+    
+    compliance_requirements:
+      - "emergency_response_audit"
+      - "safety_incident_reporting"
+      - "customer_interaction_quality"
+    
+  # Real-time location tracking
+  - name: "track_service_provider"
+    type: "internal"
+    priority: 3
+    timeout_ms: 2000
+    description: "Track service provider location and ETA updates"
+    
+    tracking_features:
+      real_time_gps: true
+      eta_calculation: true
+      traffic_integration: true
+      customer_notifications: true
+
+# ============================================================================
+# INTELLIGENT ROUTING CONFIGURATION
+# ============================================================================
+routing:
+  # Primary keywords for immediate routing (fastest)
+  primary_keywords:
+    - "tow"
+    - "towing"
+    - "stuck"
+    - "stranded"
+    - "breakdown"
+    - "accident"
+    - "emergency"
+    - "help"
+    - "roadside"
+    - "assistance"
+    
+  # Secondary keywords for context
+  secondary_keywords:
+    - "jump start"
+    - "battery"
+    - "dead battery"
+    - "flat tire"
+    - "tire change"
+    - "lockout"
+    - "locked out"
+    - "fuel"
+    - "gas"
+    - "won't start"
+    - "overheating"
+    
+  # Emergency escalation keywords
+  emergency_keywords:
+    - "accident"
+    - "crash"
+    - "collision"
+    - "injured"
+    - "hurt"
+    - "bleeding"
+    - "fire"
+    - "smoke"
+    - "dangerous"
+    - "highway"
+    - "freeway"
+    - "interstate"
+    
+  # Semantic routing patterns (ML-based)
+  semantic_patterns:
+    - "vehicle_breakdown_scenarios"
+    - "emergency_assistance_requests"
+    - "location_based_service_needs"
+    - "safety_concern_indicators"
+    - "urgency_level_detection"
+    
+  # Advanced confidence scoring
+  routing_confidence:
+    minimum_threshold: 0.85
+    emergency_threshold: 0.95
+    fallback_threshold: 0.6
+    human_escalation_threshold: 0.4
+    
+  # Context-aware routing factors
+  context_factors:
+    - "time_of_day"
+    - "weather_conditions"
+    - "location_type"
+    - "customer_history"
+    - "urgency_level"
+    - "safety_indicators"
+    - "service_availability"
+
+# ============================================================================
+# PERFORMANCE MONITORING & QUALITY ASSURANCE
+# ============================================================================
+performance_monitoring:
+  # Latency targets optimized for emergency response
+  latency_targets:
+    agent_response_ms: 150
+    vector_search_ms: 5
+    llm_generation_ms: 200
+    tool_execution_ms: 2000
+    end_to_end_ms: 1500
+    first_chunk_tts_ms: 150
+    
+  # Quality metrics for emergency service
+  quality_metrics:
+    response_accuracy_target: 0.97
+    customer_satisfaction_target: 4.6
+    emergency_response_time_target: 900  # 15 minutes
+    safety_protocol_compliance_target: 1.0
+    task_completion_target: 0.95
+    escalation_rate_target: 0.03
+    
+  # Real-time monitoring configuration
+  monitoring:
+    enabled: true
+    metrics_collection_interval: 30  # seconds
+    performance_alerts: true
+    quality_scoring: true
+    conversation_analysis: true
+    
+  # Alerting thresholds
+  alerting:
+    latency_threshold_ms: 2000
+    error_rate_threshold: 0.01
+    availability_threshold: 0.999
+    customer_satisfaction_threshold: 4.0
+    emergency_response_threshold: 1200  # 20 minutes
+    
+  # A/B testing configuration
+  ab_testing:
+    enabled: true
+    test_traffic_percentage: 5
+    metrics_to_track: ["latency", "satisfaction", "completion_rate"]
+    min_sample_size: 100
+
+# ============================================================================
+# SECURITY & COMPLIANCE
+# ============================================================================
+security:
+  # Data protection
+  data_encryption: true
+  pii_detection: true
+  conversation_retention_days: 90
+  compliance_logging: true
+  
+  # Emergency compliance requirements
+  emergency_compliance:
+    call_recording_required: true
+    incident_reporting_required: true
+    safety_audit_trail: true
+    supervisor_notification: true
+  
+  # Access controls
+  access_control:
+    role_based_permissions: true
+    audit_logging: true
+    session_timeout_minutes: 30
+
+# ============================================================================
+# METADATA & DEPLOYMENT
+# ============================================================================
+metadata:
+  created_at: "2024-01-15T10:00:00Z"
+  last_updated: "2024-01-15T15:30:00Z"
+  created_by: "voice-ai-system"
+  deployment_environment: "production"
+  
+  # Agent capabilities summary
+  capabilities:
+    - "emergency_response"
+    - "safety_protocol_enforcement"
+    - "multi_tool_orchestration"
+    - "real_time_dispatch"
+    - "location_intelligence"
+    - "weather_traffic_integration"
+    - "customer_communication"
+    - "compliance_reporting"
+    
+  # Version history
+  version_history:
+    - version: "2.0.0"
+      changes: ["Initial LangGraph integration", "Multi-tool orchestration"]
+      date: "2024-01-10T09:00:00Z"
+    - version: "2.1.0"
+      changes: ["Enhanced emergency detection", "Safety protocol automation", "Real-time tracking"]
+      date: "2024-01-15T15:30:00Z"
+
+# ============================================================================
+# TESTING & VALIDATION
+# ============================================================================
+testing:
+  # Unit tests for agent components
+  unit_tests:
+    emergency_detection: true
+    tool_orchestration: true
+    safety_protocols: true
+    response_generation: true
+    
+  # Integration tests
+  integration_tests:
+    workflow_execution: true
+    api_integrations: true
+    database_operations: true
+    
+  # Performance tests
+  performance_tests:
+    latency_benchmarking: true
+    load_testing: true
+    stress_testing: true
+    
+  # User acceptance tests
+  acceptance_tests:
+    emergency_scenarios: true
+    customer_satisfaction: true
+    safety_compliance: true

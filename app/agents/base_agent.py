@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from app.vector_db.hybrid_vector_system import HybridVectorSystem, SearchResult
-from app.tools.orchestrator import ComprehensiveToolOrchestrator, ToolResult
+from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator, ToolResult
 
 logger = logging.getLogger(__name__)
 

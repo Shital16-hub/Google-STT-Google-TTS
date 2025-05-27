@@ -1,0 +1,349 @@
+# Agent Configuration Template v2.1.0
+# Universal template for creating new specialized agents
+# Copy this template and customize for your specific agent requirements
+
+agent_id: "your-agent-id-here"  # REQUIRED: Unique identifier
+version: "1.0.0"                # REQUIRED: Semantic version
+status: "active"                # REQUIRED: active|inactive|maintenance
+priority: 2                     # REQUIRED: 1=highest, 5=lowest
+deployment_strategy: "blue_green"  # REQUIRED: blue_green|rolling|canary
+
+# ============================================================================
+# SPECIALIZATION CONFIGURATION - CUSTOMIZE THIS SECTION
+# ============================================================================
+specialization:
+  domain_expertise: "your_domain_here"  # REQUIRED: e.g., "customer_service", "sales_support"
+  personality_profile: "professional"   # REQUIRED: professional|empathetic|technical|patient|urgent
+  
+  # REQUIRED: System prompt - Define your agent's behavior and expertise
+  system_prompt: |
+    You are a specialized [DOMAIN] assistant with expert knowledge in:
+    - [Key expertise area 1]
+    - [Key expertise area 2]
+    - [Key expertise area 3]
+    
+    Key behaviors:
+    - [Behavior 1 - e.g., "Always prioritize customer satisfaction"]
+    - [Behavior 2 - e.g., "Provide clear, actionable solutions"]
+    - [Behavior 3 - e.g., "Escalate complex issues appropriately"]
+    
+    Your communication style should be:
+    - [Style trait 1 - e.g., "Professional and courteous"]
+    - [Style trait 2 - e.g., "Clear and concise"]
+    - [Style trait 3 - e.g., "Solution-oriented"]
+  
+  # Context management settings
+  context_management:
+    max_context_length: 2048        # Adjust based on conversation complexity
+    context_retention: "full_conversation"  # full_conversation|summarized|key_points
+    context_compression: "intelligent_summarization"  # intelligent_summarization|basic|none
+    domain_context_boost: true      # Boost domain-specific context
+    
+  # Response optimization
+  response_optimization:
+    target_response_time_ms: 200    # Target agent processing time
+    max_response_length: 200        # Max words for voice optimization
+    tone_adaptation: "context_aware"  # context_aware|fixed|dynamic
+    urgency_detection: true         # Enable urgency level detection
+
+# ============================================================================
+# VECTOR DATABASE CONFIGURATION
+# ============================================================================
+vector_config:
+  qdrant_collection: "agent-your-agent-id"  # Auto-generated: agent-{agent_id}
+  vector_size: 1536                 # Standard OpenAI embedding size
+  distance_metric: "cosine"         # cosine|euclidean|dot_product
+  optimization_level: "high_performance"  # ultra_high_performance|high_performance|balanced
+  
+  # Redis cache configuration (Tier 1)
+  redis_cache_config:
+    enabled: true
+    ttl_seconds: 3600              # Cache expiration time
+    max_vectors: 10000             # Maximum cached vectors
+    priority_keywords: []          # Keywords that boost cache priority
+    
+  # FAISS hot tier configuration (Tier 2)
+  faiss_hot_tier_config:
+    enabled: true
+    promotion_threshold: 50        # Queries/hour for promotion
+    memory_limit_mb: 1024         # Memory limit for hot tier
+    index_type: "HNSW"            # HNSW|IVF|FLAT
+
+# ============================================================================
+# KNOWLEDGE SOURCES - CUSTOMIZE FOR YOUR DOMAIN
+# ============================================================================
+knowledge_sources:
+  # Document-based knowledge
+  - type: "documents"
+    path: "kb/your_domain/"        # Path to your knowledge documents
+    chunk_size: 512               # Chunk size for processing
+    chunk_overlap: 50             # Overlap between chunks
+    processing_strategy: "semantic_chunking"  # semantic_chunking|fixed_size|paragraph
+    priority: "high"              # high|medium|low
+    
+  # Structured data
+  - type: "structured_data"
+    path: "data/your_domain_data.json"
+    indexing_strategy: "hierarchical"  # hierarchical|flat|custom
+    priority: "medium"
+    
+  # FAQ and common queries
+  - type: "faq_database"
+    path: "data/faq.json"
+    indexing_strategy: "question_answer_pairs"
+    priority: "high"
+    
+  # Real-time updates (optional)
+  - type: "real_time_updates"
+    source: "internal_api"        # internal_api|external_api|webhook
+    refresh_interval: 1800        # Seconds between updates
+    change_detection: true
+    priority: "medium"
+
+# ============================================================================
+# VOICE SETTINGS - CUSTOMIZE FOR YOUR AGENT'S PERSONALITY
+# ============================================================================
+voice_settings:
+  # Primary voice configuration
+  tts_voice: "en-US-Neural2-C"     # Choose appropriate voice
+  speaking_rate: 1.0               # 0.25-4.0, adjust for domain
+  pitch_adjustment: 0.0            # -20 to +20 semitones
+  volume_gain: 0.0                 # -96 to +16 dB
+  
+  # Domain-specific voice adaptations
+  domain_adaptation:
+    professional_mode: true        # Enhanced professional delivery
+    empathy_mode: false           # Empathetic tone adjustments
+    urgency_mode: false           # Urgent situation handling
+    technical_mode: false         # Technical explanation optimization
+    
+  # Emotion and context adaptation
+  emotion_detection: true          # Detect user emotional state
+  context_adaptation: true         # Adapt voice to conversation context
+  stress_response_mode: false      # Special handling for stressed users
+  
+  # Streaming optimization
+  streaming_chunk_size: 50         # Words per chunk
+  first_chunk_target_ms: 150      # Target time to first audio
+  natural_pausing: true           # Insert natural pauses
+
+# ============================================================================
+# TOOL INTEGRATION - CUSTOMIZE YOUR TOOLS
+# ============================================================================
+tools:
+  # Business Workflow Tools (Replace with your workflows)
+  - name: "your_primary_workflow"
+    type: "business_workflow"
+    priority: 1
+    timeout_ms: 10000
+    description: "Primary business workflow for your domain"
+    steps:
+      - "step_1_description"
+      - "step_2_description"
+      - "step_3_description"
+    dummy_mode: true              # Set to false for production
+    
+  - name: "your_secondary_workflow"
+    type: "business_workflow"
+    priority: 2
+    timeout_ms: 8000
+    description: "Secondary workflow for your domain"
+    dummy_mode: true
+    
+  # External API Tools (Replace with your APIs)
+  - name: "your_external_api"
+    type: "external_api"
+    provider: "your_provider"      # e.g., "stripe", "salesforce", "hubspot"
+    endpoint: "https://api.yourprovider.com/v1/endpoint"
+    auth_type: "api_key"          # api_key|bearer_token|oauth
+    timeout_ms: 5000
+    description: "Description of your external API"
+    dummy_mode: true              # Set to false for production
+    
+  # Internal Tools (Customize for your needs)
+  - name: "domain_knowledge_search"
+    type: "internal"
+    description: "Search domain-specific knowledge base"
+    priority: 1
+    parameters:
+      search_depth: "standard"    # comprehensive|standard|quick
+      include_metadata: true
+      
+  - name: "interaction_logger"
+    type: "internal"
+    description: "Log domain-specific interactions"
+    priority: 2
+    parameters:
+      log_level: "detailed"       # detailed|standard|minimal
+
+# ============================================================================
+# INTELLIGENT ROUTING CONFIGURATION
+# ============================================================================
+routing:
+  # Primary keywords for your domain
+  primary_keywords: 
+    - "keyword1"                  # Replace with your domain keywords
+    - "keyword2"
+    - "keyword3"
+    
+  # Secondary keywords (broader matches)
+  secondary_keywords:
+    - "related_term1"
+    - "related_term2"
+    - "related_term3"
+    
+  # Intent patterns (customize for your domain)
+  intent_patterns:
+    - "intent_pattern_1"          # e.g., "request_information"
+    - "intent_pattern_2"          # e.g., "report_issue"
+    - "intent_pattern_3"          # e.g., "schedule_service"
+    
+  # Confidence scoring
+  routing_confidence:
+    minimum_threshold: 0.80       # Minimum confidence to route to this agent
+    fallback_threshold: 0.60      # Fallback threshold
+    human_escalation_threshold: 0.40  # When to escalate to human
+    
+  # Context-aware routing factors
+  context_factors:
+    - "user_intent"
+    - "conversation_history"
+    - "time_of_day"              # Optional: time-based routing
+    - "user_profile"             # Optional: user-specific routing
+
+# ============================================================================
+# PERFORMANCE & QUALITY MONITORING
+# ============================================================================
+performance_monitoring:
+  # Latency targets (adjust for your domain complexity)
+  latency_targets:
+    vector_search_ms: 5
+    llm_generation_ms: 250
+    tool_execution_ms: 2000
+    end_to_end_ms: 200
+    
+  # Quality metrics (customize thresholds)
+  quality_metrics:
+    response_accuracy_target: 0.92
+    customer_satisfaction_target: 4.2
+    task_completion_target: 0.85
+    escalation_rate_target: 0.10
+    
+  # Domain-specific metrics (add your own)
+  domain_metrics:
+    domain_accuracy_target: 0.90
+    specialized_task_success_rate: 0.85
+    
+  # Alerting configuration
+  alerting:
+    latency_threshold_ms: 2000
+    error_rate_threshold: 0.05
+    availability_threshold: 0.995
+
+# ============================================================================
+# ADVANCED FEATURES (OPTIONAL)
+# ============================================================================
+advanced_features:
+  # Multi-language support
+  multi_language:
+    enabled: false               # Enable if needed
+    primary_language: "en"
+    supported_languages: ["en", "es", "fr"]
+    
+  # Learning and adaptation
+  learning_system:
+    enabled: true
+    feedback_integration: true
+    performance_optimization: true
+    
+  # A/B testing
+  ab_testing:
+    enabled: false
+    variants: []
+    
+  # Custom integrations
+  custom_integrations:
+    webhook_endpoints: []
+    api_callbacks: []
+
+# ============================================================================
+# SECURITY AND COMPLIANCE
+# ============================================================================
+security:
+  # Data handling
+  data_retention_days: 90
+  pii_detection: true
+  data_encryption: true
+  
+  # Access control
+  role_based_access: true
+  audit_logging: true
+  
+  # Compliance
+  compliance_standards: ["GDPR", "CCPA"]  # Add relevant standards
+  compliance_monitoring: true
+
+# ============================================================================
+# DEPLOYMENT CONFIGURATION
+# ============================================================================
+deployment:
+  # Scaling settings
+  auto_scaling:
+    enabled: true
+    min_instances: 1
+    max_instances: 3
+    target_cpu_utilization: 70
+    
+  # Resource requirements
+  resources:
+    memory_mb: 1024
+    cpu_cores: 1.0
+    storage_gb: 0.5
+    
+  # Health monitoring
+  health_checks:
+    interval_seconds: 30
+    timeout_seconds: 10
+    failure_threshold: 3
+    
+  # Backup and recovery  
+  backup_strategy:
+    configuration_backup: true
+    knowledge_backup: true
+    automated_recovery: true
+
+# ============================================================================
+# CUSTOMIZATION NOTES
+# ============================================================================
+
+# REQUIRED CUSTOMIZATIONS:
+# 1. Replace agent_id with your unique identifier
+# 2. Update specialization.domain_expertise
+# 3. Customize specialization.system_prompt
+# 4. Configure knowledge_sources for your domain
+# 5. Update routing.primary_keywords
+# 6. Configure tools for your workflows
+
+# OPTIONAL CUSTOMIZATIONS:
+# 1. Adjust voice_settings for your agent's personality
+# 2. Fine-tune performance_monitoring thresholds
+# 3. Configure advanced_features as needed
+# 4. Set up security and compliance requirements
+# 5. Adjust deployment parameters
+
+# TESTING CHECKLIST:
+# [ ] Validate configuration syntax
+# [ ] Test agent routing with sample queries
+# [ ] Verify knowledge base integration
+# [ ] Test tool integrations (dummy mode first)
+# [ ] Monitor performance metrics
+# [ ] Validate voice settings
+# [ ] Test deployment and scaling
+
+# PRODUCTION DEPLOYMENT:
+# 1. Set dummy_mode: false for all tools
+# 2. Configure real API endpoints and credentials
+# 3. Set up monitoring and alerting
+# 4. Perform load testing
+# 5. Enable security features
+# 6. Document agent capabilities

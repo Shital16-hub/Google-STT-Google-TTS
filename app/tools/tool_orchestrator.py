@@ -562,17 +562,24 @@ class ComprehensiveToolOrchestrator:
         )
     
     async def execute_workflow(self, 
-                             workflow_definition: Dict[str, Any],
-                             context: ExecutionContext) -> WorkflowResult:
+                         workflow_definition: Dict[str, Any],
+                         context: ExecutionContext) -> Union[WorkflowResult, AsyncIterator[Dict[str, Any]]]:
         """Execute a complex workflow with multiple tools and execution patterns"""
         
         workflow_start = time.time()
         workflow_id = workflow_definition.get("workflow_id", f"workflow_{uuid.uuid4().hex[:8]}")
+        execution_mode = ExecutionMode(workflow_definition.get("execution_mode", "sequential"))
         
+        # Handle streaming mode separately since it returns an async generator
+        if execution_mode == ExecutionMode.STREAMING:
+            return self._execute_streaming_workflow(
+                workflow_definition.get("steps", []), 
+                context
+            )
+        
+        # Handle non-streaming modes
         try:
             steps = workflow_definition.get("steps", [])
-            execution_mode = ExecutionMode(workflow_definition.get("execution_mode", "sequential"))
-            
             results = {}
             completed_steps = 0
             
@@ -582,10 +589,6 @@ class ComprehensiveToolOrchestrator:
                 results = await self._execute_parallel_workflow(steps, context)
             elif execution_mode == ExecutionMode.CONDITIONAL:
                 results = await self._execute_conditional_workflow(steps, context)
-            elif execution_mode == ExecutionMode.STREAMING:
-                async for partial_result in self._execute_streaming_workflow(steps, context):
-                    yield partial_result
-                return  # Streaming workflows handle their own results
             
             completed_steps = sum(1 for r in results.values() if r.success)
             execution_time = (time.time() - workflow_start) * 1000
@@ -607,12 +610,21 @@ class ComprehensiveToolOrchestrator:
                 success=False,
                 workflow_id=workflow_id,
                 execution_id=context.execution_id,
-                steps_completed=completed_steps,
+                steps_completed=0,
                 total_steps=len(workflow_definition.get("steps", [])),
-                results=results,
+                results={},
                 execution_time_ms=execution_time,
                 error_message=str(e)
             )
+    
+    # Also need to add this helper method for streaming workflows
+    async def execute_streaming_workflow(self,
+                                       workflow_definition: Dict[str, Any],
+                                       context: ExecutionContext) -> AsyncIterator[Dict[str, Any]]:
+        """Execute streaming workflow and return async generator"""
+        steps = workflow_definition.get("steps", [])
+        async for partial_result in self._execute_streaming_workflow(steps, context):
+            yield partial_result
     
     async def _execute_sequential_workflow(self, 
                                          steps: List[Dict[str, Any]], 
