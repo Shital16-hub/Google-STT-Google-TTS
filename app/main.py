@@ -173,13 +173,8 @@ async def initialize_revolutionary_system():
         
         # 3. Initialize Dual Streaming TTS Engine
         logger.info("🔊 Initializing dual streaming TTS engine...")
-        tts_engine = DualStreamingTTSEngine(
-            primary_voice="en-US-Neural2-C",
-            container_format="mulaw",
-            sample_rate=8000,
-            optimize_streaming_latency=4,
-            target_first_chunk_ms=150
-        )
+        tts_engine = DualStreamingTTSEngine()
+
         await tts_engine.initialize()
         
         # 4. Initialize Comprehensive Tool Orchestrator

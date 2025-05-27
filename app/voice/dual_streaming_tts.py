@@ -15,7 +15,8 @@ Features:
 - Telephony optimization for Twilio integration
 - Multi-voice support with voice cloning capabilities
 """
-
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import logging
 import time
