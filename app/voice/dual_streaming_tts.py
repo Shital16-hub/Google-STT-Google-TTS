@@ -383,10 +383,59 @@ class DualStreamingTTSEngine:
         self.audio_cache: Dict[str, bytes] = {}
         self.cache_lock = threading.RLock()
         
-        # Start background processing
-        self._start_background_processing()
+        # Initialization flag
+        self.initialized = False
         
         logger.info("Dual Streaming TTS Engine initialized")
+    
+    async def initialize(self):
+        """Initialize the TTS engine and start background processing"""
+        if self.initialized:
+            return
+        
+        try:
+            logger.info("🔊 Initializing Dual Streaming TTS Engine...")
+            
+            # Test Google Cloud TTS connection
+            test_input = texttospeech.SynthesisInput(text="Test")
+            test_voice = texttospeech.VoiceSelectionParams(
+                language_code="en-US",
+                name="en-US-Neural2-C"
+            )
+            test_audio_config = texttospeech.AudioConfig(
+                audio_encoding=texttospeech.AudioEncoding.MULAW,
+                sample_rate_hertz=8000
+            )
+            
+            # Test synthesis to verify credentials and connection
+            try:
+                test_response = self.tts_client.synthesize_speech(
+                    input=test_input,
+                    voice=test_voice,
+                    audio_config=test_audio_config
+                )
+                logger.info("✅ Google Cloud TTS connection verified")
+            except Exception as e:
+                logger.error(f"❌ Google Cloud TTS connection failed: {e}")
+                raise
+            
+            # Start background processing
+            self._start_background_processing()
+            
+            self.initialized = True
+            logger.info("✅ Dual Streaming TTS Engine initialization complete")
+            
+        except Exception as e:
+            logger.error(f"❌ TTS Engine initialization failed: {e}")
+            raise
+    
+    def _start_background_processing(self):
+        """Start background processing tasks"""
+        
+        # Start synthesis queue processor
+        asyncio.create_task(self._process_synthesis_queue())
+        
+        logger.info("Background processing started")
     
     async def synthesize_streaming(self, 
                                  text: str,
