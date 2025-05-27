@@ -1,65 +1,122 @@
-# Core framework
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
-pydantic>=2.0.0
-python-dotenv>=1.0.0
+# CORE FRAMEWORK & SERVER
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
 
-# WebSockets
-websockets>=11.0.0
+# LANGGRAPH & LANGCHAIN ECOSYSTEM
+langgraph
+langchain
+langchain-core
+langchain-community
+langchain-openai
 
-# Async HTTP client
-httpx>=0.24.0
+# AI & LLM PROVIDERS
+openai
+tiktoken
+anthropic
+elevenlabs
 
-# Audio processing
-audioread>=3.0.0
-librosa>=0.10.0
-soundfile>=0.12.0
-numpy>=1.24.0
-scipy>=1.10.0
+# VECTOR DATABASES & SEARCH
+qdrant-client
+faiss-cpu
+# faiss-gpu  # Uncomment for GPU acceleration
+redis[hiredis]
 
-# Twilio integration
-twilio>=8.8.0
+# AUDIO PROCESSING & VOICE AI
+google-cloud-speech
+google-cloud-texttospeech
+google-auth
+google-auth-oauthlib
+librosa
+soundfile
+scipy
+numpy
+pyaudio
+webrtcvad
+noisereduce
+praat-parselmouth
 
-# Google Cloud APIs - Updated for v2 API with proper protobuf support
-google-cloud-speech>=2.27.0
-google-cloud-texttospeech>=2.16.0
-google-auth>=2.23.0
-google-api-core>=2.11.0
-google-cloud-core>=2.3.2
-grpcio>=1.56.0
-protobuf>=4.25.0,<5.0.0
+# TELEPHONY & COMMUNICATION
+twilio
+websockets
 
-# AI/ML components - Updated for latest LlamaIndex
-llama-index>=0.10.11
-llama-index-core>=0.10.11
-llama-index-embeddings-openai>=0.1.5
-llama-index-llms-openai>=0.1.5
-llama-index-vector-stores-pinecone>=0.1.3
-openai>=1.5.0
-pinecone-client>=3.0.0
-transformers>=4.30.0
-torch>=2.0.0
+# DATA PROCESSING & ML
+pandas
+scikit-learn
+nltk
+spacy
+python-multipart
+python-jose[cryptography]
+joblib
+sentence-transformers
 
-# Language processing
-spacy>=3.6.0
-nltk>=3.8.0
-langdetect>=1.0.9
+# DATABASE & PERSISTENCE
+asyncpg
+sqlalchemy[asyncio]
+alembic
 
-# Document processing
-beautifulsoup4>=4.12.0
-pdfplumber>=0.7.0
-PyMuPDF>=1.23.0
-pypdf>=3.12.0
-python-docx>=0.8.11
-openpyxl>=3.1.0
-lxml>=4.9.0
+# MONITORING & OBSERVABILITY
+prometheus-client
+prometheus-fastapi-instrumentator
+structlog
+loguru
+httpx
+psutil
+py-cpuinfo
 
-# Utilities
-python-multipart>=0.0.6  # For FastAPI form data handling
-aiofiles>=0.8.0  # For async file operations
-pydantic-settings>=2.0.0
-requests>=2.31.0
-pandas>=2.0.0
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
-typing-extensions>=4.7.0
+# SECURITY & AUTHENTICATION
+PyJWT
+passlib[bcrypt]
+secure
+
+# CONFIGURATION & ENVIRONMENT
+python-dotenv
+pyyaml
+toml
+cerberus
+
+# ASYNC & CONCURRENCY
+aiohttp
+aiofiles
+aioredis
+celery
+flower
+
+# DEVELOPMENT & TESTING
+pytest
+pytest-asyncio
+pytest-cov
+black
+isort
+flake8
+mypy
+
+# PERFORMANCE & OPTIMIZATION
+memory-profiler
+cachetools
+orjson
+ujson
+
+# NETWORKING & WEB
+requests
+urllib3
+python-socketio
+
+# DEPLOYMENT & CONTAINERIZATION
+gunicorn
+
+# SYSTEM & UTILITIES
+click
+rich
+typer
+python-dateutil
+pytz
+
+# PRODUCTION AUDIO OPTIMIZATION
+mutagen
+pydub
+
+# OPTIONAL: GPU ACCELERATION
+# torch
+# torchaudio

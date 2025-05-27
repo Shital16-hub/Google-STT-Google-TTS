@@ -1,0 +1,490 @@
+# Revolutionary Multi-Agent Voice AI System - Production Docker Compose
+# Optimized for RunPod deployment with ultra-low latency performance
+# Target: <377ms end-to-end latency with enterprise-grade reliability
+
+version: '3.8'
+
+# ============================================================================
+# NETWORKS CONFIGURATION
+# ============================================================================
+networks:
+  voice-ai-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+
+# ============================================================================
+# VOLUMES CONFIGURATION
+# ============================================================================
+volumes:
+  # Vector Database Storage
+  qdrant_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/qdrant
+  
+  # Redis Cache Storage
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/redis
+  
+  # Application Logs
+  app_logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./logs
+  
+  # Agent Configurations
+  agent_configs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./config/agents
+  
+  # SSL Certificates
+  ssl_certs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ssl
+  
+  # Monitoring Data
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+# ============================================================================
+# SERVICES CONFIGURATION
+# ============================================================================
+services:
+  
+  # ==========================================================================
+  # QDRANT VECTOR DATABASE - Primary Vector Storage Tier
+  # ==========================================================================
+  qdrant:
+    image: qdrant/qdrant:v1.7.0
+    container_name: qdrant-vector-db
+    restart: unless-stopped
+    
+    ports:
+      - "6333:6333"  # HTTP API
+      - "6334:6334"  # gRPC API
+    
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - ./config/qdrant.yaml:/qdrant/config/production.yaml:ro
+    
+    environment:
+      # Performance Optimization for Voice AI
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__LOG_LEVEL=INFO
+      
+      # Storage Optimization
+      - QDRANT__STORAGE__STORAGE_PATH=/qdrant/storage
+      - QDRANT__STORAGE__SNAPSHOTS_PATH=/qdrant/storage/snapshots
+      - QDRANT__STORAGE__TEMP_PATH=/qdrant/storage/temp
+      
+      # Performance Tuning for Low Latency
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=8
+      - QDRANT__STORAGE__PERFORMANCE__MAX_OPTIMIZATION_THREADS=4
+      - QDRANT__STORAGE__QUANTIZATION__BINARY__ALWAYS_RAM=true
+      - QDRANT__STORAGE__HNSW__M=16
+      - QDRANT__STORAGE__HNSW__EF_CONSTRUCT=128
+      - QDRANT__STORAGE__HNSW__FULL_SCAN_THRESHOLD=10000
+      
+      # Memory Management for RunPod
+      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=2
+      - QDRANT__STORAGE__OPTIMIZERS__MAX_SEGMENT_SIZE=20000
+      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=20000
+      - QDRANT__STORAGE__OPTIMIZERS__INDEXING_THRESHOLD=10000
+      - QDRANT__STORAGE__OPTIMIZERS__FLUSH_INTERVAL_SEC=2
+    
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4.0'
+        reservations:
+          memory: 4G
+          cpus: '2.0'
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    networks:
+      - voice-ai-network
+
+  # ==========================================================================
+  # REDIS CACHE - Tier 1 Hot Cache & Session Storage
+  # ==========================================================================
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis-cache
+    restart: unless-stopped
+    
+    ports:
+      - "6379:6379"
+    
+    volumes:
+      - redis_data:/data
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    
+    command: redis-server /usr/local/etc/redis/redis.conf
+    
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-VoiceAI_Redis_2024!}
+      - REDIS_APPENDONLY=yes
+      - REDIS_MAXMEMORY=2gb
+      - REDIS_MAXMEMORY_POLICY=allkeys-lru
+    
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    networks:
+      - voice-ai-network
+
+  # ==========================================================================
+  # VOICE AI APPLICATION - Multi-Agent Orchestrator
+  # ==========================================================================
+  voice-ai-app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      args:
+        - ENVIRONMENT=production
+        - PYTHON_VERSION=3.11
+    
+    container_name: voice-ai-orchestrator
+    restart: unless-stopped
+    
+    ports:
+      - "8000:8000"
+    
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    environment:
+      # Application Configuration
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - BASE_URL=${BASE_URL:-https://your-domain.com}
+      
+      # API Keys (Set via RunPod environment or .env file)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      
+      # Google Cloud Configuration
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/gcp-credentials.json
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      
+      # Vector Database Configuration
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_GRPC_URL=http://qdrant:6334
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      
+      # Redis Configuration
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-VoiceAI_Redis_2024!}
+      - REDIS_DB=0
+      
+      # Performance Optimization
+      - MAX_WORKERS=4
+      - WORKER_CONNECTIONS=1000
+      - KEEPALIVE_TIMEOUT=65
+      - WORKER_CLASS=uvicorn.workers.UvicornWorker
+      
+      # Voice AI Specific Settings
+      - TARGET_LATENCY_MS=377
+      - ENABLE_MONITORING=true
+      - ENABLE_COMPRESSION=true
+      - VECTOR_CACHE_SIZE=50000
+      
+      # Agent Configuration
+      - AGENT_CONFIG_PATH=/app/config/agents
+      - ENABLE_HOT_DEPLOYMENT=true
+      
+      # Security
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-this}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+    
+    volumes:
+      # Configuration Files
+      - agent_configs:/app/config/agents:ro
+      - ./config:/app/config:ro
+      
+      # Credentials
+      - ./credentials:/app/credentials:ro
+      
+      # Logs
+      - app_logs:/app/logs
+      
+      # Temporary Storage
+      - ./tmp:/app/tmp
+    
+    deploy:
+      replicas: 2  # Load balanced instances
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
+        reservations:
+          memory: 4G
+          cpus: '2.0'
+      
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    networks:
+      - voice-ai-network
+
+  # ==========================================================================
+  # NGINX LOAD BALANCER & REVERSE PROXY
+  # ==========================================================================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-proxy
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"    # HTTP
+      - "443:443"  # HTTPS
+    
+    volumes:
+      - ./deployment/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deployment/nginx-default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ssl_certs:/etc/nginx/ssl:ro
+      - app_logs:/var/log/nginx
+    
+    depends_on:
+      - voice-ai-app
+    
+    environment:
+      - NGINX_WORKER_PROCESSES=auto
+      - NGINX_WORKER_CONNECTIONS=1024
+      - NGINX_KEEPALIVE_TIMEOUT=65
+    
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    networks:
+      - voice-ai-network
+
+  # ==========================================================================
+  # PROMETHEUS MONITORING
+  # ==========================================================================
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus-monitoring
+    restart: unless-stopped
+    
+    ports:
+      - "9090:9090"
+    
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus-rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus_data:/prometheus
+    
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=7d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    
+    networks:
+      - voice-ai-network
+
+  # ==========================================================================
+  # GRAFANA DASHBOARD
+  # ==========================================================================
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grafana-dashboard
+    restart: unless-stopped
+    
+    ports:
+      - "3000:3000"
+    
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-VoiceAI_Grafana_2024!}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    
+    depends_on:
+      - prometheus
+    
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    networks:
+      - voice-ai-network
+
+  # ==========================================================================
+  # LOG AGGREGATION (Optional for production debugging)
+  # ==========================================================================
+  fluentd:
+    image: fluent/fluentd:v1.16-1
+    container_name: log-aggregator
+    restart: unless-stopped
+    
+    volumes:
+      - ./config/fluentd.conf:/fluentd/etc/fluent.conf:ro
+      - app_logs:/var/log/app:ro
+    
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    
+    environment:
+      - FLUENTD_CONF=fluent.conf
+    
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+          cpus: '0.125'
+    
+    networks:
+      - voice-ai-network
+
+# ============================================================================
+# RUNPOD SPECIFIC CONFIGURATIONS
+# ============================================================================
+
+# Environment Variables for RunPod
+# Set these in your RunPod environment or .env file:
+#
+# OPENAI_API_KEY=your_openai_api_key
+# ANTHROPIC_API_KEY=your_anthropic_api_key
+# TWILIO_ACCOUNT_SID=your_twilio_account_sid
+# TWILIO_AUTH_TOKEN=your_twilio_auth_token
+# ELEVENLABS_API_KEY=your_elevenlabs_api_key
+# GOOGLE_CLOUD_PROJECT=your_gcp_project_id
+# BASE_URL=https://your-runpod-domain.com
+# REDIS_PASSWORD=your_secure_redis_password
+# SECRET_KEY=your_super_secure_secret_key
+# GRAFANA_PASSWORD=your_grafana_password
+
+# ============================================================================
+# DEPLOYMENT COMMANDS FOR RUNPOD
+# ============================================================================
+
+# 1. Clone your repository
+# 2. Create necessary directories:
+#    mkdir -p data/qdrant data/redis logs config/agents credentials ssl
+# 3. Set up your environment variables
+# 4. Deploy with: docker-compose up -d
+# 5. Monitor with: docker-compose logs -f
+# 6. Scale app: docker-compose up -d --scale voice-ai-app=3
+
+# ============================================================================
+# HEALTH CHECK ENDPOINTS
+# ============================================================================
+
+# Application Health: http://your-domain/health
+# Qdrant Health: http://your-domain:6333/health  
+# Redis Health: redis-cli ping
+# Prometheus: http://your-domain:9090/-/healthy
+# Grafana: http://your-domain:3000/api/health
+# Full System: docker-compose ps
