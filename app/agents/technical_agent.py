@@ -23,9 +23,10 @@ from typing import Dict, List, Any, Optional, Tuple, AsyncIterator
 from dataclasses import dataclass
 from enum import Enum
 
-from app.agents.base_agent import BaseAgent, AgentResponse, ConversationContext
-from app.tools.orchestrator import ComprehensiveToolOrchestrator, WorkflowResult, APIResult
-from app.vector_db.hybrid_vector_system import HybridVectorArchitecture, SearchResult
+from app.agents.base_agent import BaseAgent, AgentResponse
+from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator, ToolResult
+from app.vector_db.hybrid_vector_system import HybridVectorSystem, SearchResult
+from app.core.state_manager import ConversationContext
 from app.core.state_manager import ConversationStateManager
 from app.voice.dual_streaming_tts import DualStreamingTTSEngine
 
@@ -98,15 +99,24 @@ class AdvancedTechnicalSupportAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             agent_id="technical-support-v2",
-            qdrant_collection="agent-technical-v2",
-            specialization_config={
-                "domain": "technical_support_troubleshooting",
-                "patience_optimization": True,
-                "step_by_step_guidance": True,
-                "complexity_adaptation": True,
-                "diagnostic_workflows": True,
-                "time_sensitivity": "flexible_patient"
-            }
+            config=AgentConfiguration(
+                agent_id="technical-support-v2",
+                version="2.1.0",
+                specialization={
+                    "domain_expertise": "technical_support_troubleshooting",
+                    "patience_optimization": True,
+                    "step_by_step_guidance": True,
+                    "complexity_adaptation": True,
+                    "diagnostic_workflows": True,
+                    "time_sensitivity": "flexible_patient"
+                },
+                voice_settings={},
+                tools=[],
+                routing={},
+                performance_monitoring={}
+            ),
+            hybrid_vector_system=hybrid_vector_system,
+            tool_orchestrator=tool_orchestrator
         )
         
         # Technical Support Specialized Tools
@@ -608,12 +618,12 @@ class AdvancedTechnicalSupportAgent(BaseAgent):
         return frustration_indicators
 
     # Additional helper methods for technical operations
-    async def _run_system_diagnostic(self, system_info: Dict[str, Any]) -> APIResult:
+    async def _run_system_diagnostic(self, system_info: Dict[str, Any]) -> ToolResult:
         """DUMMY: Run comprehensive system diagnostic"""
         logger.info(f"DUMMY: Running system diagnostic for {system_info.get('system_type', 'unknown')}")
         await asyncio.sleep(0.3)  # Simulate diagnostic time
         
-        return APIResult(
+        return ToolResult(
             success=True,
             api_name="system_diagnostic",
             response_data={
@@ -630,12 +640,12 @@ class AdvancedTechnicalSupportAgent(BaseAgent):
             latency_ms=300
         )
 
-    async def _create_technical_ticket(self, issue_data: Dict[str, Any]) -> APIResult:
+    async def _create_technical_ticket(self, issue_data: Dict[str, Any]) -> ToolResult:
         """DUMMY: Create technical support ticket"""
         logger.info(f"DUMMY: Creating technical support ticket for {issue_data.get('category', 'general')}")
         await asyncio.sleep(0.2)
         
-        return APIResult(
+        return ToolResult(
             success=True,
             api_name="technical_ticketing",
             response_data={
@@ -648,12 +658,12 @@ class AdvancedTechnicalSupportAgent(BaseAgent):
             latency_ms=200
         )
 
-    async def _schedule_technical_follow_up(self, follow_up_data: Dict[str, Any]) -> APIResult:
+    async def _schedule_technical_follow_up(self, follow_up_data: Dict[str, Any]) -> ToolResult:
         """DUMMY: Schedule technical follow-up appointment"""
         logger.info(f"DUMMY: Scheduling follow-up in {follow_up_data.get('hours', 24)} hours")
         await asyncio.sleep(0.1)
         
-        return APIResult(
+        return ToolResult(
             success=True,
             api_name="follow_up_scheduling",
             response_data={

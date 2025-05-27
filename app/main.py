@@ -48,14 +48,23 @@ from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator
 # Load environment variables
 load_dotenv()
 
+# Ensure logs directory exists
+try:
+    os.makedirs('./logs', exist_ok=True)
+    log_handlers = [
+        logging.StreamHandler(),
+        logging.FileHandler('./logs/voice_ai_system.log')
+    ]
+except (OSError, PermissionError) as e:
+    print(f"Warning: Could not create log file: {e}")
+    # Fall back to console logging only
+    log_handlers = [logging.StreamHandler()]
+
 # Configure enhanced logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('./logs/voice_ai_system.log')
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
 

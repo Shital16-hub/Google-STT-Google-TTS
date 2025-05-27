@@ -21,7 +21,7 @@ from app.core.state_manager import ConversationState, ConversationStateManager
 from app.agents.registry import AgentRegistry
 from app.agents.router import IntelligentAgentRouter, RoutingResult
 from app.vector_db.hybrid_vector_system import HybridVectorSystem
-from app.tools.orchestrator import ComprehensiveToolOrchestrator, ToolResult
+from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator, ToolResult
 from app.voice.enhanced_stt import EnhancedSTTSystem
 from app.voice.dual_streaming_tts import DualStreamingTTSEngine
 

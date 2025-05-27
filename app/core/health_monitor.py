@@ -159,8 +159,10 @@ class SystemHealthMonitor:
             "cpu_usage": 0.80,
             "disk_usage": 0.90,
             "response_time_ms": 1000,
-            **alert_thresholds or {}
         }
+
+        self.alert_thresholds = {**default_thresholds, **(alert_thresholds or {})}
+
         
         # Component health tracking
         self.component_health: Dict[ComponentType, ComponentHealth] = {}
