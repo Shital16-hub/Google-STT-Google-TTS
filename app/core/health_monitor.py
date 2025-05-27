@@ -128,66 +128,67 @@ class ExecutiveDashboard:
     recommendations: List[str]
 
 class SystemHealthMonitor:
+    
     """
     Comprehensive system health monitor with predictive analytics and intelligent alerting.
     Monitors all system components and provides executive-level insights.
     """
     
     def __init__(
-        self,
-        orchestrator=None,
-        hybrid_vector_system=None,
-        target_latency_ms: int = 377,
-        enable_predictive_analytics: bool = True,
-        alert_thresholds: Optional[Dict[str, float]] = None,
-        monitoring_interval_seconds: int = 30,
-        alert_callbacks: Optional[List[Callable[[SystemAlert], Awaitable[None]]]] = None
-    ):
-        """Initialize the comprehensive health monitor."""
-        self.orchestrator = orchestrator
-        self.hybrid_vector_system = hybrid_vector_system
-        self.target_latency_ms = target_latency_ms
-        self.enable_predictive_analytics = enable_predictive_analytics
-        self.monitoring_interval = monitoring_interval_seconds
-        self.alert_callbacks = alert_callbacks or []
-        
-        # Alert thresholds
-        self.alert_thresholds = {
-            "latency_ms": 500,
-            "error_rate": 0.02,
-            "memory_usage": 0.85,
-            "cpu_usage": 0.80,
-            "disk_usage": 0.90,
-            "response_time_ms": 1000,
-        }
-
-        self.alert_thresholds = {**default_thresholds, **(alert_thresholds or {})}
-
-        
-        # Component health tracking
-        self.component_health: Dict[ComponentType, ComponentHealth] = {}
-        
-        # Performance metrics
-        self.performance_metrics: Dict[str, PerformanceMetric] = {}
-        
-        # Alert management
-        self.active_alerts: Dict[str, SystemAlert] = {}
-        self.alert_history: List[SystemAlert] = []
-        
-        # System stats
-        self.system_stats = {
-            "startup_time": time.time(),
-            "total_alerts": 0,
-            "resolved_alerts": 0,
-            "avg_resolution_time": 0.0,
-            "uptime_seconds": 0.0
-        }
-        
-        # Background monitoring task
-        self.monitoring_task: Optional[asyncio.Task] = None
-        self.initialized = False
-        
-        logger.info("System Health Monitor initialized")
+            self,
+            orchestrator=None,
+            hybrid_vector_system=None,
+            target_latency_ms: int = 377,
+            enable_predictive_analytics: bool = True,
+            alert_thresholds: Optional[Dict[str, float]] = None,
+            monitoring_interval_seconds: int = 30,
+            alert_callbacks: Optional[List[Callable[[SystemAlert], Awaitable[None]]]] = None
+        ):
+            """Initialize the comprehensive health monitor."""
+            self.orchestrator = orchestrator
+            self.hybrid_vector_system = hybrid_vector_system
+            self.target_latency_ms = target_latency_ms
+            self.enable_predictive_analytics = enable_predictive_analytics
+            self.monitoring_interval = monitoring_interval_seconds
+            self.alert_callbacks = alert_callbacks or []
+            
+            # Default alert thresholds
+            default_thresholds = {
+                "latency_ms": 500,
+                "error_rate": 0.02,
+                "memory_usage": 0.85,
+                "cpu_usage": 0.80,
+                "disk_usage": 0.90,
+                "response_time_ms": 1000,
+            }
+            
+            # Merge with provided thresholds
+            self.alert_thresholds = {**default_thresholds, **(alert_thresholds or {})}
+            
+            # Component health tracking
+            self.component_health: Dict[ComponentType, ComponentHealth] = {}
+            
+            # Performance metrics
+            self.performance_metrics: Dict[str, PerformanceMetric] = {}
+            
+            # Alert management
+            self.active_alerts: Dict[str, SystemAlert] = {}
+            self.alert_history: List[SystemAlert] = []
+            
+            # System stats
+            self.system_stats = {
+                "startup_time": time.time(),
+                "total_alerts": 0,
+                "resolved_alerts": 0,
+                "avg_resolution_time": 0.0,
+                "uptime_seconds": 0.0
+            }
+            
+            # Background monitoring task
+            self.monitoring_task: Optional[asyncio.Task] = None
+            self.initialized = False
+            
+            logger.info("System Health Monitor initialized")
     
     async def initialize(self):
         """Initialize health monitoring with performance metrics setup."""

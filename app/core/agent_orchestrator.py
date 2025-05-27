@@ -130,6 +130,11 @@ class MultiAgentOrchestrator:
             "quality_scores": []
         }
         
+        # Error and retry tracking
+        self.error_metrics = {}
+        self.timeout_metrics = {}
+        self.response_cache = {}
+        
         # Quality gates
         self.quality_thresholds = {
             "min_confidence": 0.7,
@@ -575,8 +580,8 @@ class MultiAgentOrchestrator:
             
             # Add tool results
             for tool_result in state.tool_results:
-                if tool_result.success and tool_result.output:
-                    response_components.append(f"Tool result: {tool_result.output}")
+                if tool_result.success and tool_result.result_data:
+                    response_components.append(f"Tool result: {tool_result.result_data}")
             
             # Synthesize final response (could use LLM for better integration)
             if response_components:
@@ -688,14 +693,110 @@ class MultiAgentOrchestrator:
     
     async def handle_error(self, state: ConversationWorkflowState) -> ConversationWorkflowState:
         """Handle errors in the workflow."""
-        logger.error(f"Handling workflow error: {state.error_info}")
-        
-        # Provide fallback response
-        state.final_response = "I apologize, but I encountered an error processing your request. Please try again."
-        state.response_quality_score = 0.5  # Low quality due to error
-        state.current_state = WorkflowState.COMPLETED
-        
-        return state
+        try:
+            error = state.error_info.get("message", "Unknown error") if state.error_info else "Unknown error"
+            error_context = state.error_info or {}
+            
+            logger.error(f"Handling workflow error: {error}")
+            logger.error(f"Error context: {error_context}")
+            
+            # Categorize error type
+            error_type = "unknown"
+            if isinstance(error, str):
+                if "timeout" in error.lower():
+                    error_type = "timeout"
+                elif "connection" in error.lower():
+                    error_type = "connection"
+                elif "validation" in error.lower():
+                    error_type = "validation"
+                elif "rate limit" in error.lower():
+                    error_type = "rate_limit"
+                elif "authentication" in error.lower():
+                    error_type = "auth"
+            
+            # Store error information in context
+            if "error_type" not in state.context:
+                state.context["error_type"] = error_type
+            if "error_timestamp" not in state.context:
+                state.context["error_timestamp"] = time.time()
+            
+            # Determine if error is retryable
+            retryable_errors = ["timeout", "connection", "rate_limit"]
+            state.context["is_retryable"] = error_type in retryable_errors
+            
+            # Store error for potential retry
+            state.context["last_error"] = str(error)
+            
+            # Update error metrics
+            self.error_metrics["total_errors"] = self.error_metrics.get("total_errors", 0) + 1
+            self.error_metrics[f"{error_type}_errors"] = self.error_metrics.get(f"{error_type}_errors", 0) + 1
+            
+            # Provide fallback response
+            state.final_response = "I apologize, but I encountered an error processing your request. Please try again."
+            state.response_quality_score = 0.5  # Low quality due to error
+            state.current_state = WorkflowState.COMPLETED
+            
+            logger.info(f"Error classified as: {error_type} (retryable: {state.context.get('is_retryable', False)})")
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error in error handler: {str(e)}")
+            state.context["error_handler_error"] = str(e)
+            state.final_response = "I apologize, but I encountered a system error. Please try again."
+            state.current_state = WorkflowState.COMPLETED
+            return state
+    
+    async def handle_retry(self, state: ConversationWorkflowState) -> ConversationWorkflowState:
+        """Handle retry logic for failed operations."""
+        try:
+            # Get retry information from context
+            retry_count = state.context.get("retry_count", 0)
+            max_retries = state.context.get("max_retries", 3)
+            last_error = state.context.get("last_error")
+            
+            logger.info(f"Handling retry attempt {retry_count + 1}/{max_retries}")
+            
+            if retry_count >= max_retries:
+                logger.error(f"Maximum retries ({max_retries}) exceeded. Final error: {last_error}")
+                state.context["retry_exhausted"] = True
+                state.context["final_error"] = last_error
+                state.final_response = "I apologize, but I'm unable to process your request after multiple attempts. Please try again later or contact support."
+                state.current_state = WorkflowState.COMPLETED
+                return state
+            
+            # Increment retry count
+            state.context["retry_count"] = retry_count + 1
+            
+            # Calculate exponential backoff delay
+            import random
+            base_delay = 1.0  # 1 second base delay
+            max_delay = 60.0  # Maximum 60 seconds
+            delay = min(base_delay * (2 ** retry_count), max_delay)
+            
+            # Add jitter to prevent thundering herd
+            jitter = random.uniform(0.1, 0.3)
+            delay = delay * (1 + jitter)
+            
+            logger.info(f"Waiting {delay:.2f} seconds before retry...")
+            await asyncio.sleep(delay)
+            
+            # Clear error state for retry
+            state.context["last_error"] = None
+            state.context["retry_ready"] = True
+            state.error_info = None
+            
+            # Reset to agent execution for retry
+            state.current_state = WorkflowState.AGENT_EXECUTION
+            
+            return state
+            
+        except Exception as e:
+            logger.error(f"Error in retry handler: {str(e)}")
+            state.context["retry_handler_error"] = str(e)
+            state.final_response = "I apologize, but I encountered an error during retry. Please try again."
+            state.current_state = WorkflowState.COMPLETED
+            return state
     
     # Conditional edge functions
     def determine_flow(self, state: ConversationWorkflowState) -> str:

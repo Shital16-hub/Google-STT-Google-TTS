@@ -436,7 +436,29 @@ class ComprehensiveToolOrchestrator:
     - Hot tool deployment and management
     """
     
-    def __init__(self):
+    def __init__(self, 
+                 enable_business_workflows: bool = True,
+                 enable_external_apis: bool = True,
+                 dummy_mode: bool = False,
+                 max_concurrent_tools: int = 10):
+        """
+        Initialize the comprehensive tool orchestrator
+        
+        Args:
+            enable_business_workflows: Enable business workflow tools
+            enable_external_apis: Enable external API tools  
+            dummy_mode: Run tools in dummy/simulation mode
+            max_concurrent_tools: Maximum number of concurrent tool executions
+        """
+        self.enable_business_workflows = enable_business_workflows
+        self.enable_external_apis = enable_external_apis
+        self.dummy_mode = dummy_mode
+        self.max_concurrent_tools = max_concurrent_tools
+        
+        # Initialization state tracking
+        self.initialized = False
+        
+        # Initialize core components
         self.registry = AdvancedToolRegistry()
         self.retry_engine = IntelligentRetryEngine()
         self.performance_tracker = ToolPerformanceTracker()
@@ -444,9 +466,223 @@ class ComprehensiveToolOrchestrator:
         self.active_executions: Dict[str, ExecutionContext] = {}
         
         # Thread pool for CPU-intensive operations
-        self.thread_pool = ThreadPoolExecutor(max_workers=4)
+        self.thread_pool = ThreadPoolExecutor(max_workers=max_concurrent_tools)
         
-        logger.info("Comprehensive Tool Orchestrator initialized")
+        logger.info(f"Comprehensive Tool Orchestrator initialized with settings: "
+                   f"business_workflows={enable_business_workflows}, "
+                   f"external_apis={enable_external_apis}, "
+                   f"dummy_mode={dummy_mode}, "
+                   f"max_concurrent={max_concurrent_tools}")
+    
+    async def initialize(self):
+        """Initialize the orchestrator and register default tools"""
+        if self.initialized:
+            logger.warning("Tool orchestrator already initialized")
+            return
+            
+        try:
+            logger.info("Starting tool orchestrator initialization...")
+            
+            # Import and register business workflow tools if enabled
+            if self.enable_business_workflows:
+                await self._register_business_workflow_tools()
+            else:
+                logger.info("Business workflow tools disabled")
+            
+            # Import and register external API tools if enabled  
+            if self.enable_external_apis:
+                await self._register_external_api_tools()
+            else:
+                logger.info("External API tools disabled")
+            
+            # Register internal tools (always enabled)
+            await self._register_internal_tools()
+            
+            # Register monitoring tools (always enabled)
+            await self._register_monitoring_tools()
+            
+            # Mark as initialized
+            self.initialized = True
+            
+            logger.info(f"✅ Tool orchestrator initialized successfully with {len(self.registry.tools)} tools")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize tool orchestrator: {str(e)}")
+            self.initialized = False
+            raise
+    
+    async def _register_business_workflow_tools(self):
+        """Register business workflow tools"""
+        try:
+            from app.tools.business_workflows import (
+                TowTruckDispatchWorkflow,
+                EmergencyEscalationWorkflow,
+                CustomerBillingWorkflow,
+                TechnicalSupportTicketingWorkflow,
+                SchedulingAppointmentWorkflow
+            )
+            
+            # Create and register workflow tools
+            workflow_tools = [
+                TowTruckDispatchWorkflow(),
+                EmergencyEscalationWorkflow(),
+                CustomerBillingWorkflow(),
+                TechnicalSupportTicketingWorkflow(),
+                SchedulingAppointmentWorkflow()
+            ]
+            
+            for tool in workflow_tools:
+                # Set dummy mode if enabled
+                if self.dummy_mode:
+                    tool.metadata.dummy_mode = True
+                
+                await self.registry.register_tool(tool)
+            
+            logger.info(f"Registered {len(workflow_tools)} business workflow tools")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import business workflow tools: {str(e)}")
+        except Exception as e:
+            logger.error(f"Failed to register business workflow tools: {str(e)}")
+    
+    async def _register_external_api_tools(self):
+        """Register external API tools"""
+        try:
+            from app.tools.external_apis import (
+                StripePaymentAPI,
+                TwilioSMSAPI,
+                ZendeskTicketingAPI,
+                GoogleMapsAPI,
+                SendGridEmailAPI
+            )
+            
+            # Create and register API tools
+            api_tools = [
+                StripePaymentAPI(),
+                TwilioSMSAPI(),
+                ZendeskTicketingAPI(),
+                GoogleMapsAPI(),
+                SendGridEmailAPI()
+            ]
+            
+            for tool in api_tools:
+                # Set dummy mode if enabled
+                if self.dummy_mode:
+                    tool.metadata.dummy_mode = True
+                
+                await self.registry.register_tool(tool)
+            
+            logger.info(f"Registered {len(api_tools)} external API tools")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import external API tools: {str(e)}")
+        except Exception as e:
+            logger.error(f"Failed to register external API tools: {str(e)}")
+    
+    async def _register_internal_tools(self):
+        """Register internal tools"""
+        try:
+            from app.tools.internal_tools import (
+                AdvancedKnowledgeSearchTool,
+                RealTimeAnalyticsTool,
+                SessionManagementTool,
+                SystemDiagnosticsTool
+            )
+            
+            # Create and register internal tools
+            internal_tools = [
+                AdvancedKnowledgeSearchTool(),
+                RealTimeAnalyticsTool(),
+                SessionManagementTool(),
+                SystemDiagnosticsTool()
+            ]
+            
+            for tool in internal_tools:
+                await self.registry.register_tool(tool)
+            
+            logger.info(f"Registered {len(internal_tools)} internal tools")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import internal tools: {str(e)}")
+        except Exception as e:
+            logger.error(f"Failed to register internal tools: {str(e)}")
+    
+    async def _register_monitoring_tools(self):
+        """Register monitoring tools"""
+        try:
+            from app.tools.monitoring_tools import (
+                RealTimeMetricsCollector,
+                IntelligentAlertingSystem,
+                PerformanceTrendAnalyzer
+            )
+            
+            # Create and register monitoring tools
+            monitoring_tools = [
+                RealTimeMetricsCollector(),
+                IntelligentAlertingSystem(),
+                PerformanceTrendAnalyzer()
+            ]
+            
+            for tool in monitoring_tools:
+                await self.registry.register_tool(tool)
+            
+            logger.info(f"Registered {len(monitoring_tools)} monitoring tools")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import monitoring tools: {str(e)}")
+        except Exception as e:
+            logger.error(f"Failed to register monitoring tools: {str(e)}")
+    
+    async def get_usage_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive usage statistics"""
+        return {
+            "tool_registry": {
+                "total_tools": len(self.registry.tools),
+                "business_workflows_enabled": self.enable_business_workflows,
+                "external_apis_enabled": self.enable_external_apis,
+                "dummy_mode": self.dummy_mode
+            },
+            "performance_metrics": await self.get_tool_performance_metrics(),
+            "active_executions": len(self.active_executions),
+            "configuration": {
+                "max_concurrent_tools": self.max_concurrent_tools,
+                "thread_pool_workers": self.thread_pool._max_workers
+            }
+        }
+    
+    async def shutdown(self):
+        """Shutdown the tool orchestrator and cleanup resources"""
+        try:
+            logger.info("Shutting down tool orchestrator...")
+            
+            # Cancel all active executions
+            if self.active_executions:
+                logger.info(f"Cancelling {len(self.active_executions)} active executions...")
+                for execution_id in list(self.active_executions.keys()):
+                    await self.cancel_execution(execution_id)
+            
+            # Shutdown thread pool
+            if hasattr(self, 'thread_pool') and self.thread_pool:
+                self.thread_pool.shutdown(wait=True)
+                logger.info("Thread pool shutdown completed")
+            
+            # Clear registries and caches
+            self.registry.tools.clear()
+            self.registry.tool_metadata.clear()
+            self.registry.dependencies.clear()
+            self.registry.circuit_breakers.clear()
+            self.workflow_cache.clear()
+            
+            # Mark as not initialized
+            self.initialized = False
+            
+            logger.info("✅ Tool orchestrator shutdown completed")
+            
+        except Exception as e:
+            logger.error(f"❌ Error during tool orchestrator shutdown: {str(e)}")
+
+    # Keep all the existing methods unchanged...
+    # (The rest of the class methods remain exactly the same)
     
     async def register_tool(self, tool: BaseTool) -> bool:
         """Register a tool in the orchestrator"""
