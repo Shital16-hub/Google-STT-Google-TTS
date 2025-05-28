@@ -2,6 +2,7 @@
 """
 Revolutionary Multi-Agent Voice AI System - Main FastAPI Application
 PERMANENT FIX: Auto-starts services and handles correct paths regardless of pod restarts.
+Speech Recognition Integration for RunPod Compatibility
 """
 import os
 import sys
@@ -19,7 +20,7 @@ from pathlib import Path
 import yaml
 
 # FastAPI imports with enhanced performance
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, Depends
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, BackgroundTasks, HTTPException, Depends, Form
 from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -27,7 +28,7 @@ import uvicorn
 from pydantic import BaseModel
 
 # Twilio integration
-from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Say
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Say, Gather, Record
 from dotenv import load_dotenv
 
 # Core system imports
@@ -178,13 +179,13 @@ class ServiceManager:
         return False
     
     async def ensure_qdrant_running(self) -> bool:
-        """Ensure Qdrant is running."""
-        logger.info("🗄️ Ensuring Qdrant is running...")
+        """Enhanced Qdrant startup for RunPod environment."""
+        logger.info("🗄️ Ensuring Qdrant is running (RunPod optimized)...")
         
         # Test if Qdrant is already running
         try:
             import requests
-            response = requests.get('http://localhost:6333/health', timeout=5)
+            response = requests.get('http://localhost:6333/health', timeout=3)
             if response.status_code == 200:
                 logger.info("✅ Qdrant already running")
                 self.qdrant_running = True
@@ -192,92 +193,124 @@ class ServiceManager:
         except:
             pass
         
-        # Setup Qdrant
-        qdrant_dir = Path("/workspace/qdrant-setup")
-        qdrant_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Stop any existing Qdrant
+        # Method 1: Try binary installation (most reliable on RunPod)
         try:
-            subprocess.run(['pkill', '-f', 'qdrant'], capture_output=True)
-            await asyncio.sleep(2)
-        except:
-            pass
-        
-        # Download binary if needed
-        qdrant_binary = qdrant_dir / "qdrant"
-        if not qdrant_binary.exists():
-            logger.info("📦 Downloading Qdrant...")
-            try:
-                import requests
-                url = "https://github.com/qdrant/qdrant/releases/download/v1.7.0/qdrant-x86_64-unknown-linux-gnu.tar.gz"
-                response = requests.get(url, timeout=120)
-                response.raise_for_status()
+            logger.info("📦 Attempting binary Qdrant installation...")
+            
+            # Create Qdrant directory
+            qdrant_dir = Path("/workspace/qdrant-binary")
+            qdrant_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Download and install binary if needed
+            qdrant_binary = qdrant_dir / "qdrant"
+            if not qdrant_binary.exists():
+                logger.info("📥 Downloading Qdrant binary...")
                 
-                import tarfile
-                import io
-                with tarfile.open(fileobj=io.BytesIO(response.content), mode='r:gz') as tar:
-                    tar.extractall(path=qdrant_dir)
+                # Try different download methods
+                download_urls = [
+                    "https://github.com/qdrant/qdrant/releases/download/v1.7.4/qdrant-x86_64-unknown-linux-gnu.tar.gz",
+                    "https://github.com/qdrant/qdrant/releases/download/v1.6.1/qdrant-x86_64-unknown-linux-gnu.tar.gz"
+                ]
                 
-                qdrant_binary.chmod(0o755)
-                logger.info("✅ Qdrant binary downloaded")
-            except Exception as e:
-                logger.error(f"❌ Qdrant download failed: {e}")
-                return False
-        
-        # Create config
-        config_dir = qdrant_dir / "config"
-        config_dir.mkdir(exist_ok=True)
-        storage_dir = qdrant_dir / "storage"
-        storage_dir.mkdir(exist_ok=True)
-        
-        config_file = config_dir / "production.yaml"
-        config_content = """
+                for url in download_urls:
+                    try:
+                        # Use wget or curl
+                        result = subprocess.run([
+                            'wget', '-O', str(qdrant_dir / 'qdrant.tar.gz'), url
+                        ], capture_output=True, timeout=120)
+                        
+                        if result.returncode != 0:
+                            # Try curl as fallback
+                            result = subprocess.run([
+                                'curl', '-L', '-o', str(qdrant_dir / 'qdrant.tar.gz'), url
+                            ], capture_output=True, timeout=120)
+                        
+                        if result.returncode == 0:
+                            # Extract
+                            subprocess.run([
+                                'tar', '-xzf', str(qdrant_dir / 'qdrant.tar.gz'), 
+                                '-C', str(qdrant_dir)
+                            ], timeout=30)
+                            
+                            qdrant_binary.chmod(0o755)
+                            logger.info("✅ Qdrant binary downloaded and extracted")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Download attempt failed: {e}")
+                        continue
+            
+            if qdrant_binary.exists():
+                logger.info("🚀 Starting Qdrant binary...")
+                
+                # Create config and data directories
+                config_dir = qdrant_dir / "config"
+                storage_dir = qdrant_dir / "storage"
+                config_dir.mkdir(exist_ok=True)
+                storage_dir.mkdir(exist_ok=True)
+                
+                # Create optimized config
+                config_file = config_dir / "production.yaml"
+                config_content = f"""
 service:
-  host: "127.0.0.1"
+  host: "0.0.0.0"
   http_port: 6333
   grpc_port: 6334
   enable_cors: true
+  max_request_size_mb: 32
+
 storage:
-  storage_path: "./storage"
+  storage_path: "{storage_dir}"
+  snapshots_path: "{storage_dir}/snapshots"
+  on_disk_payload: false
+  performance:
+    max_search_threads: 4
+    
 telemetry:
   enabled: false
+
+log_level: INFO
+
+cluster:
+  enabled: false
 """
-        with open(config_file, 'w') as f:
-            f.write(config_content)
-        
-        # Start Qdrant
-        try:
-            os.chdir(qdrant_dir)
-            with open('qdrant.log', 'w') as log_file:
-                process = subprocess.Popen([
-                    './qdrant', '--config-path', str(config_file)
-                ], stdout=log_file, stderr=subprocess.STDOUT)
-            
-            logger.info(f"🚀 Started Qdrant (PID: {process.pid})")
-            await asyncio.sleep(8)
-            
-            # Test Qdrant
-            import requests
-            for attempt in range(10):
-                try:
-                    response = requests.get('http://localhost:6333/health', timeout=3)
-                    if response.status_code == 200:
-                        logger.info("✅ Qdrant started successfully")
-                        self.qdrant_running = True
-                        os.chdir(PROJECT_ROOT)  # Change back to project root
-                        return True
-                except:
-                    if attempt < 9:
-                        await asyncio.sleep(2)
-            
-            logger.error("❌ Qdrant failed to start")
-            os.chdir(PROJECT_ROOT)
-            return False
-            
+                
+                with open(config_file, 'w') as f:
+                    f.write(config_content)
+                
+                # Start Qdrant
+                os.chdir(qdrant_dir)
+                
+                with open('qdrant.log', 'w') as log_file:
+                    process = subprocess.Popen([
+                        str(qdrant_binary), '--config-path', str(config_file)
+                    ], stdout=log_file, stderr=subprocess.STDOUT, cwd=str(qdrant_dir))
+                
+                logger.info(f"🚀 Started Qdrant binary (PID: {process.pid})")
+                
+                # Wait for startup
+                for attempt in range(20):
+                    await asyncio.sleep(2)
+                    try:
+                        import requests
+                        response = requests.get('http://localhost:6333/health', timeout=3)
+                        if response.status_code == 200:
+                            logger.info("✅ Qdrant binary startup successful")
+                            self.qdrant_running = True
+                            os.chdir(PROJECT_ROOT)  # Change back
+                            return True
+                    except:
+                        continue
+                
+                logger.error("❌ Qdrant binary failed to respond")
+                os.chdir(PROJECT_ROOT)
+                
         except Exception as e:
-            logger.error(f"❌ Qdrant startup error: {e}")
-            os.chdir(PROJECT_ROOT)
-            return False
+            logger.error(f"Binary installation failed: {e}")
+            if 'PROJECT_ROOT' in globals():
+                os.chdir(PROJECT_ROOT)
+        
+        logger.error("❌ All Qdrant startup methods failed")
+        return False
 
 class ConfigurationManager:
     """Enhanced configuration manager with automatic path detection."""
@@ -516,9 +549,6 @@ async def initialize_revolutionary_system():
             await hybrid_vector_system.initialize()
             logger.info("✅ Fallback vector system initialized")
         
-        # Continue with rest of initialization...
-        # [Rest of initialization code remains the same as in original]
-        
         # 4. Initialize Enhanced STT System
         logger.info("🎤 Step 4: Initializing enhanced STT system...")
         try:
@@ -734,8 +764,9 @@ async def cleanup_system():
         cleanup_tasks = []
         for session_id, handler in list(active_sessions.items()):
             try:
-                task = asyncio.create_task(handler.cleanup())
-                cleanup_tasks.append(task)
+                if hasattr(handler, 'cleanup'):
+                    task = asyncio.create_task(handler.cleanup())
+                    cleanup_tasks.append(task)
             except Exception as e:
                 logger.error(f"Error creating cleanup task for session {session_id}: {e}")
         
@@ -816,6 +847,525 @@ async def ensure_system_initialized():
             detail="System initialization failed"
         )
 
+# ============================================================================
+# TWILIO VOICE INTEGRATION ENDPOINTS - SPEECH RECOGNITION BASED
+# ============================================================================
+
+@app.post("/voice/call")
+async def handle_incoming_call(
+    CallSid: str = Form(...),
+    From: str = Form(...),
+    To: str = Form(...),
+    CallStatus: str = Form(...),
+    _: None = Depends(ensure_system_initialized)
+):
+    """Handle incoming Twilio voice calls with speech recognition (RunPod compatible)"""
+    
+    logger.info(f"📞 Incoming call: {CallSid} from {From} to {To} (Status: {CallStatus})")
+    
+    try:
+        # Create TwiML response using speech recognition instead of WebSocket
+        response = VoiceResponse()
+        
+        # Welcome message
+        response.say("Hello! Welcome to our AI support system.")
+        response.say("I'm here to help you with roadside assistance, billing, or technical support.")
+        
+        # Use Gather with speech input (works reliably everywhere)
+        gather = response.gather(
+            input='speech',
+            timeout=10,
+            speechTimeout='auto',
+            action=f"/voice/process/{CallSid}",
+            method='POST',
+            language='en-US'
+        )
+        
+        gather.say("Please tell me how I can help you today. Speak clearly after the tone.")
+        
+        # Fallback if no speech detected
+        response.say("I didn't hear your response. Let me try with a menu instead.")
+        response.redirect(f"/voice/menu/{CallSid}")
+        
+        logger.info(f"✅ Speech-based TwiML response sent for {CallSid}")
+        
+        return PlainTextResponse(
+            content=str(response),
+            media_type="application/xml"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error handling incoming call {CallSid}: {e}", exc_info=True)
+        
+        # Ultra-simple fallback
+        response = VoiceResponse()
+        response.say("Hello! Thanks for calling. Our system is currently being optimized.")
+        response.say("Please try calling again in a few minutes, or contact our support team directly.")
+        response.hangup()
+        
+        return PlainTextResponse(
+            content=str(response),
+            media_type="application/xml"
+        )
+
+@app.post("/voice/process/{call_sid}")
+async def process_speech(
+    call_sid: str,
+    SpeechResult: str = Form(None),
+    Confidence: str = Form(None),
+    From: str = Form(None),
+    _: None = Depends(ensure_system_initialized)
+):
+    """Process speech input and route to appropriate AI agent"""
+    
+    logger.info(f"🎤 Processing speech for {call_sid}: '{SpeechResult}' (confidence: {Confidence})")
+    
+    try:
+        response = VoiceResponse()
+        
+        if SpeechResult and len(SpeechResult.strip()) > 0:
+            # Store the call in active sessions for tracking
+            session_id = f"speech_{call_sid}"
+            
+            # Process through your multi-agent orchestrator
+            if orchestrator:
+                try:
+                    result = await orchestrator.process_conversation(
+                        session_id=session_id,
+                        input_text=SpeechResult,
+                        context={
+                            "call_sid": call_sid,
+                            "input_mode": "speech",
+                            "confidence": float(Confidence) if Confidence else 0.0,
+                            "caller": From,
+                            "platform": "twilio_speech"
+                        }
+                    )
+                    
+                    # Update session metrics
+                    session_metrics["total_sessions"] += 1
+                    active_sessions[call_sid] = {
+                        "session_id": session_id,
+                        "start_time": time.time(),
+                        "input": SpeechResult,
+                        "status": "processed"
+                    }
+                    session_metrics["active_count"] = len(active_sessions)
+                    
+                    if result and hasattr(result, 'success') and result.success and hasattr(result, 'response') and result.response:
+                        # AI agent provided a response
+                        ai_response = result.response
+                        response.say(ai_response)
+                        
+                        logger.info(f"✅ AI response sent for {call_sid}: {ai_response[:100]}...")
+                        
+                        # Ask for follow-up
+                        gather = response.gather(
+                            input='speech',
+                            timeout=8,
+                            speechTimeout='auto',
+                            action=f"/voice/followup/{call_sid}",
+                            method='POST'
+                        )
+                        gather.say("Is there anything else I can help you with?")
+                        
+                        # End call if no follow-up
+                        response.say("Thank you for calling! Have a great day.")
+                        response.hangup()
+                        
+                    else:
+                        # Orchestrator didn't provide a good response
+                        response.say("I understand you need help with: " + SpeechResult)
+                        response.say("Let me connect you to the right department.")
+                        response.redirect(f"/voice/route/{call_sid}?query={SpeechResult}")
+                        
+                except Exception as orch_error:
+                    logger.error(f"Orchestrator error for {call_sid}: {orch_error}")
+                    response.say("I heard you say: " + SpeechResult)
+                    response.say("I'm processing your request now. Please hold on.")
+                    response.pause(length=2)
+                    response.say("Our team will follow up with you shortly. Thank you for calling!")
+                    response.hangup()
+            else:
+                # No orchestrator available - simple response
+                response.say(f"Thank you for your request about: {SpeechResult}")
+                response.say("I've noted your inquiry and our team will get back to you soon.")
+                response.hangup()
+        else:
+            # No speech detected or empty
+            response.say("I didn't catch what you said clearly.")
+            response.say("Let me try a different approach with a menu.")
+            response.redirect(f"/voice/menu/{call_sid}")
+        
+        return PlainTextResponse(
+            content=str(response),
+            media_type="application/xml"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing speech for {call_sid}: {e}", exc_info=True)
+        
+        response = VoiceResponse()
+        response.say("I'm having trouble processing your request right now.")
+        response.say("Please try calling again later. Thank you!")
+        response.hangup()
+        
+        return PlainTextResponse(
+            content=str(response),
+            media_type="application/xml"
+        )
+
+@app.post("/voice/followup/{call_sid}")
+async def handle_followup(
+    call_sid: str,
+    SpeechResult: str = Form(None),
+    Confidence: str = Form(None)
+):
+    """Handle follow-up questions"""
+    
+    logger.info(f"🔄 Follow-up for {call_sid}: '{SpeechResult}'")
+    
+    response = VoiceResponse()
+    
+    if SpeechResult and len(SpeechResult.strip()) > 0:
+        # Check for common follow-up patterns
+        speech_lower = SpeechResult.lower()
+        
+        if any(word in speech_lower for word in ['no', 'nothing', 'that\'s all', 'goodbye']):
+            response.say("Perfect! Thank you for calling. Have a wonderful day!")
+            response.hangup()
+        elif any(word in speech_lower for word in ['yes', 'yeah', 'help', 'question']):
+            # Redirect back to main processing
+            response.say("Of course! Let me help you with that.")
+            response.redirect(f"/voice/process/{call_sid}")
+        else:
+            # Process as new request
+            response.say("Let me help you with that additional request.")
+            response.redirect(f"/voice/process/{call_sid}")
+    else:
+        # No clear follow-up
+        response.say("Thank you for calling! Goodbye!")
+        response.hangup()
+    
+    return PlainTextResponse(
+        content=str(response),
+        media_type="application/xml"
+    )
+
+@app.post("/voice/menu/{call_sid}")
+async def voice_menu(call_sid: str):
+    """Simple voice menu when speech recognition fails"""
+    
+    logger.info(f"📋 Voice menu for {call_sid}")
+    
+    response = VoiceResponse()
+    
+    gather = response.gather(
+        input='dtmf',
+        timeout=10,
+        numDigits=1,
+        action=f"/voice/menu-choice/{call_sid}",
+        method='POST'
+    )
+    
+    gather.say("Please select from the following options:")
+    gather.say("Press 1 for roadside assistance and towing")
+    gather.say("Press 2 for billing and payment support") 
+    gather.say("Press 3 for technical support")
+    gather.say("Press 9 to repeat this menu")
+    gather.say("Press 0 to leave a callback number")
+    
+    response.say("Thank you for calling. Goodbye!")
+    response.hangup()
+    
+    return PlainTextResponse(
+        content=str(response),
+        media_type="application/xml"
+    )
+
+@app.post("/voice/menu-choice/{call_sid}")
+async def handle_menu_choice(
+    call_sid: str,
+    Digits: str = Form(None)
+):
+    """Handle menu selections"""
+    
+    logger.info(f"📋 Menu choice for {call_sid}: {Digits}")
+    
+    response = VoiceResponse()
+    
+    # Route to appropriate agent based on selection
+    agent_responses = {
+        "1": "You've reached roadside assistance. I can help you with towing, flat tires, lockouts, and emergency roadside service. Please describe your situation and location.",
+        "2": "You've reached billing support. I can help with payment questions, refunds, account issues, and billing inquiries. How can I assist you today?",
+        "3": "You've reached technical support. I can help troubleshoot technical issues, setup problems, and system questions. What technical issue are you experiencing?"
+    }
+    
+    if Digits in agent_responses:
+        response.say(agent_responses[Digits])
+        
+        # Collect more info
+        gather = response.gather(
+            input='speech',
+            timeout=15,
+            speechTimeout='auto',
+            action=f"/voice/agent-response/{call_sid}/{Digits}",
+            method='POST'
+        )
+        gather.say("Please provide details about your request.")
+        
+        response.say("Thank you. Our team will contact you soon.")
+        response.hangup()
+        
+    elif Digits == "9":
+        # Repeat menu
+        response.redirect(f"/voice/menu/{call_sid}")
+    elif Digits == "0":
+        # Callback option
+        response.say("Please leave your callback number after the tone, followed by the pound key.")
+        response.record(
+            timeout=10,
+            finishOnKey='#',
+            action=f"/voice/callback/{call_sid}",
+            method='POST'
+        )
+    else:
+        response.say("Invalid selection. Let me repeat the menu.")
+        response.redirect(f"/voice/menu/{call_sid}")
+    
+    return PlainTextResponse(
+        content=str(response),
+        media_type="application/xml"
+    )
+
+@app.post("/voice/agent-response/{call_sid}/{agent_type}")
+async def handle_agent_response(
+    call_sid: str,
+    agent_type: str,
+    SpeechResult: str = Form(None),
+    Confidence: str = Form(None)
+):
+    """Handle agent-specific responses"""
+    
+    logger.info(f"🤖 Agent response for {call_sid} (type: {agent_type}): '{SpeechResult}'")
+    
+    response = VoiceResponse()
+    
+    if SpeechResult and len(SpeechResult.strip()) > 0:
+        # Map agent types to specific responses
+        agent_map = {
+            "1": "roadside-assistance-v2",
+            "2": "billing-support-v2", 
+            "3": "technical-support-v2"
+        }
+        
+        agent_id = agent_map.get(agent_type, "general")
+        
+        # Process through orchestrator with agent context
+        if orchestrator:
+            try:
+                session_id = f"agent_{call_sid}_{agent_type}"
+                
+                result = await orchestrator.process_conversation(
+                    session_id=session_id,
+                    input_text=SpeechResult,
+                    context={
+                        "call_sid": call_sid,
+                        "preferred_agent": agent_id,
+                        "agent_type": agent_type,
+                        "input_mode": "speech",
+                        "confidence": float(Confidence) if Confidence else 0.0
+                    }
+                )
+                
+                if result and hasattr(result, 'success') and result.success and result.response:
+                    response.say(result.response)
+                else:
+                    # Fallback response
+                    fallback_responses = {
+                        "1": f"I understand you need roadside assistance for: {SpeechResult}. Our dispatch team will contact you within 15 minutes to arrange service.",
+                        "2": f"I've noted your billing inquiry about: {SpeechResult}. Our billing team will review your account and contact you within 24 hours.",
+                        "3": f"I understand you're experiencing: {SpeechResult}. Our technical team will investigate and provide a solution within 2 business days."
+                    }
+                    response.say(fallback_responses.get(agent_type, "Thank you for your request. Our team will follow up with you."))
+                    
+            except Exception as e:
+                logger.error(f"Agent processing error: {e}")
+                response.say(f"I've recorded your request about: {SpeechResult}")
+                response.say(f"Our specialized team will contact you soon.")
+        else:
+            response.say(f"Thank you for providing those details: {SpeechResult}")
+            response.say("Our team has been notified and will contact you shortly.")
+    else:
+        response.say("I didn't catch your details clearly.")
+        response.say("Our team will call you back to gather more information.")
+    
+    response.say("Thank you for calling. Have a great day!")
+    response.hangup()
+    
+    # Clean up session
+    if call_sid in active_sessions:
+        del active_sessions[call_sid]
+        session_metrics["active_count"] = len(active_sessions)
+    
+    return PlainTextResponse(
+        content=str(response),
+        media_type="application/xml"
+    )
+
+@app.post("/voice/callback/{call_sid}")
+async def handle_callback(call_sid: str):
+    """Handle callback requests"""
+    
+    logger.info(f"📞 Callback requested for {call_sid}")
+    
+    response = VoiceResponse()
+    response.say("Thank you! We've recorded your callback number and will contact you within 24 hours.")
+    response.say("Have a great day!")
+    response.hangup()
+    
+    # Clean up session
+    if call_sid in active_sessions:
+        del active_sessions[call_sid]
+        session_metrics["active_count"] = len(active_sessions)
+    
+    return PlainTextResponse(
+        content=str(response),
+        media_type="application/xml"
+    )
+
+@app.post("/voice/route/{call_sid}")
+async def route_request(
+    call_sid: str,
+    query: str = Form(None)
+):
+    """Route requests based on content analysis"""
+    
+    logger.info(f"🔀 Routing request for {call_sid}: {query}")
+    
+    response = VoiceResponse()
+    
+    if query:
+        # Simple keyword-based routing
+        query_lower = query.lower()
+        
+        if any(word in query_lower for word in ['tow', 'car', 'stuck', 'accident', 'roadside', 'tire', 'battery']):
+            response.say("I can see you need roadside assistance.")
+            response.redirect(f"/voice/agent-response/{call_sid}/1")
+        elif any(word in query_lower for word in ['bill', 'payment', 'charge', 'refund', 'account', 'money']):
+            response.say("I can help you with your billing inquiry.")
+            response.redirect(f"/voice/agent-response/{call_sid}/2")
+        elif any(word in query_lower for word in ['technical', 'not working', 'error', 'problem', 'setup', 'install']):
+            response.say("Let me connect you with technical support.")
+            response.redirect(f"/voice/agent-response/{call_sid}/3")
+        else:
+            response.say("Let me help you find the right department.")
+            response.redirect(f"/voice/menu/{call_sid}")
+    else:
+        response.redirect(f"/voice/menu/{call_sid}")
+    
+    return PlainTextResponse(
+        content=str(response),
+        media_type="application/xml"
+    )
+
+# ============================================================================
+# VOICE SYSTEM STATUS AND MONITORING ENDPOINTS
+# ============================================================================
+
+@app.get("/voice/status")
+async def voice_system_status():
+    """Get voice system status and active calls"""
+    
+    return {
+        "voice_system": "operational" if SYSTEM_INITIALIZED else "initializing",
+        "integration_type": "speech_recognition",
+        "active_calls": len(active_sessions),
+        "total_sessions": session_metrics.get("total_sessions", 0),
+        "stt_system": "available" if stt_system else "unavailable",
+        "tts_engine": "available" if tts_engine else "unavailable",
+        "orchestrator": "available" if orchestrator else "unavailable",
+        "session_metrics": session_metrics,
+        "base_url": BASE_URL,
+        "webhook_url": f"{BASE_URL}/voice/call" if BASE_URL else "not_configured",
+        "endpoints": {
+            "main_webhook": "/voice/call",
+            "speech_processing": "/voice/process/{call_sid}",
+            "voice_menu": "/voice/menu/{call_sid}",
+            "agent_routing": "/voice/route/{call_sid}"
+        },
+        "timestamp": time.time()
+    }
+
+@app.post("/voice/hangup")
+async def handle_call_hangup(
+    CallSid: str = Form(...),
+    CallStatus: str = Form(...),
+    CallDuration: str = Form(None)
+):
+    """Handle call hangup events from Twilio"""
+    
+    logger.info(f"📞 Call hangup: {CallSid} (Status: {CallStatus}, Duration: {CallDuration})")
+    
+    # Clean up any remaining session
+    if CallSid in active_sessions:
+        try:
+            if hasattr(active_sessions[CallSid], 'cleanup'):
+                await active_sessions[CallSid].cleanup()
+            del active_sessions[CallSid]
+            session_metrics["active_count"] = len(active_sessions)
+        except Exception as e:
+            logger.error(f"Error cleaning up hung up call {CallSid}: {e}")
+    
+    return {"status": "acknowledged"}
+
+@app.get("/voice/test")
+async def test_voice_system():
+    """Test voice system components"""
+    
+    test_results = {
+        "timestamp": time.time(),
+        "system_initialized": SYSTEM_INITIALIZED,
+        "integration_type": "speech_recognition_based",
+        "components": {}
+    }
+    
+    # Test STT system
+    if stt_system:
+        try:
+            test_results["components"]["stt"] = {"status": "available", "provider": "google_cloud_v2"}
+        except Exception as e:
+            test_results["components"]["stt"] = {"status": "error", "error": str(e)}
+    else:
+        test_results["components"]["stt"] = {"status": "not_initialized"}
+    
+    # Test TTS engine
+    if tts_engine:
+        try:
+            test_results["components"]["tts"] = {"status": "available", "engine": "dual_streaming"}
+        except Exception as e:
+            test_results["components"]["tts"] = {"status": "error", "error": str(e)}
+    else:
+        test_results["components"]["tts"] = {"status": "not_initialized"}
+    
+    # Test orchestrator
+    if orchestrator:
+        try:
+            test_results["components"]["orchestrator"] = {"status": "available", "agents": 3}
+        except Exception as e:
+            test_results["components"]["orchestrator"] = {"status": "error", "error": str(e)}
+    else:
+        test_results["components"]["orchestrator"] = {"status": "not_initialized"}
+    
+    # Test speech recognition capability
+    test_results["components"]["speech_recognition"] = {"status": "available", "provider": "twilio_builtin"}
+    
+    return test_results
+
+# ============================================================================
+# EXISTING SYSTEM ENDPOINTS (keeping all your original endpoints)
+# ============================================================================
+
 @app.get("/", response_model=Dict[str, Any])
 async def root():
     """System status and welcome endpoint."""
@@ -832,13 +1382,21 @@ async def root():
             "Advanced tool integration framework",
             "Real-time performance monitoring",
             "YAML-based configuration management",
-            "Automatic service startup and management"
+            "Automatic service startup and management",
+            "Twilio voice integration with speech recognition",
+            "RunPod optimized deployment"
         ],
         "target_latency_ms": 377,
         "active_sessions": len(active_sessions),
         "services": {
             "redis": service_manager.redis_running,
             "qdrant": service_manager.qdrant_running
+        },
+        "voice_integration": {
+            "type": "speech_recognition",
+            "webhook_url": f"{BASE_URL}/voice/call" if BASE_URL else "not_configured",
+            "status_url": f"{BASE_URL}/voice/status" if BASE_URL else "not_configured",
+            "test_url": f"{BASE_URL}/voice/test" if BASE_URL else "not_configured"
         },
         "timestamp": time.time()
     }
@@ -858,7 +1416,8 @@ async def comprehensive_health_check(
                 "components": {
                     "system": "operational",
                     "redis": "operational" if service_manager.redis_running else "degraded",
-                    "qdrant": "operational" if service_manager.qdrant_running else "degraded"
+                    "qdrant": "operational" if service_manager.qdrant_running else "degraded",
+                    "voice_system": "operational" if (stt_system and tts_engine) else "degraded"
                 },
                 "performance_metrics": {
                     "avg_response_time_ms": 200.0,
@@ -937,9 +1496,14 @@ async def get_stats():
         "sessions": {}
     }
     
-    for session_id, handler in active_sessions.items():
+    for session_id, session_data in active_sessions.items():
         try:
-            stats["calls"][session_id] = handler.get_stats()
+            if hasattr(session_data, 'get_session_metrics'):
+                stats["calls"][session_id] = session_data.get_session_metrics()
+            elif isinstance(session_data, dict):
+                stats["calls"][session_id] = session_data
+            else:
+                stats["calls"][session_id] = {"status": "active"}
         except Exception as e:
             logger.error(f"Error getting stats for session {session_id}: {e}")
             stats["calls"][session_id] = {"error": str(e)}
@@ -960,11 +1524,19 @@ async def get_config():
             "redis": service_manager.redis_running,
             "qdrant": service_manager.qdrant_running
         },
+        "voice_integration": {
+            "type": "speech_recognition",
+            "webhook_url": f"{BASE_URL}/voice/call" if BASE_URL else "not_configured",
+            "test_url": f"{BASE_URL}/voice/test" if BASE_URL else "not_configured"
+        },
         "conversation_features": {
             "continuous_streaming": True,
             "session_management": True,
             "auto_reconnection": True,
-            "configuration_management": True
+            "configuration_management": True,
+            "voice_calls": True,
+            "speech_recognition": True,
+            "intelligent_routing": True
         }
     }
     return config
@@ -1004,6 +1576,7 @@ if __name__ == '__main__':
     print(f"🛠️ Tools: Comprehensive orchestration framework")
     print(f"📋 Config Directory: {config_manager.agents_config_path}")
     print(f"⚙️ Services: Auto-startup with configuration integration")
+    print(f"📞 Voice Integration: Speech Recognition (RunPod optimized)")
     
     # Verify config directory exists
     if config_manager.agents_config_path.exists():

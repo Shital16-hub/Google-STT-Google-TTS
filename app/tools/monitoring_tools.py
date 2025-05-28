@@ -17,6 +17,7 @@ Features:
 import asyncio
 import logging
 import uuid
+from typing import Tuple
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Union, Callable
@@ -1416,7 +1417,7 @@ class PerformanceTrendAnalyzer(BaseTool):
         
         return sorted(data_points, key=lambda x: x["timestamp"])
     
-    def _calculate_trend(self, data: List[Dict[str, Any]]) -> Tuple[str, float]:
+    def _calculate_trend(self, data: List[Dict[str, Any]]) -> tuple[str, float]:
         """Calculate trend direction and strength"""
         
         if len(data) < 2:
