@@ -66,6 +66,224 @@ class SearchResult:
     cache_hit: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+# Add this to app/vector_db/redis_cache.py
+
+class InMemoryRedisCache:
+    """In-memory fallback when Redis is not available."""
+    
+    def __init__(self, max_size: int = 1000, ttl_seconds: int = 3600):
+        self.cache = {}
+        self.timestamps = {}
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self.hits = 0
+        self.misses = 0
+        logger.info(f"🧠 Initialized in-memory Redis cache fallback (max_size: {max_size})")
+    
+    async def initialize(self):
+        """Initialize the in-memory cache."""
+        logger.info("✅ In-memory Redis cache initialized")
+        return True
+    
+    async def get(self, key: str):
+        """Get value from in-memory cache."""
+        current_time = time.time()
+        
+        # Check if key exists and is not expired
+        if key in self.cache:
+            if current_time - self.timestamps[key] < self.ttl_seconds:
+                self.hits += 1
+                return self.cache[key]
+            else:
+                # Expired, remove it
+                del self.cache[key]
+                del self.timestamps[key]
+        
+        self.misses += 1
+        return None
+    
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None):
+        """Set value in in-memory cache."""
+        # Cleanup expired entries if cache is getting full
+        if len(self.cache) >= self.max_size:
+            await self._cleanup_expired()
+        
+        # If still full, remove oldest entry
+        if len(self.cache) >= self.max_size:
+            oldest_key = min(self.timestamps.keys(), key=lambda k: self.timestamps[k])
+            del self.cache[oldest_key]
+            del self.timestamps[oldest_key]
+        
+        self.cache[key] = value
+        self.timestamps[key] = time.time()
+        return True
+    
+    async def delete(self, key: str):
+        """Delete key from in-memory cache."""
+        if key in self.cache:
+            del self.cache[key]
+            del self.timestamps[key]
+            return True
+        return False
+    
+    async def exists(self, key: str):
+        """Check if key exists in cache."""
+        if key in self.cache:
+            # Check if expired
+            if time.time() - self.timestamps[key] < self.ttl_seconds:
+                return True
+            else:
+                # Expired, remove it
+                del self.cache[key]
+                del self.timestamps[key]
+        return False
+    
+    async def _cleanup_expired(self):
+        """Remove expired entries."""
+        current_time = time.time()
+        expired_keys = [
+            key for key, timestamp in self.timestamps.items()
+            if current_time - timestamp >= self.ttl_seconds
+        ]
+        
+        for key in expired_keys:
+            del self.cache[key]
+            del self.timestamps[key]
+    
+    def get_stats(self):
+        """Get cache statistics."""
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": self.hits / (self.hits + self.misses) if (self.hits + self.misses) > 0 else 0,
+            "size": len(self.cache),
+            "max_size": self.max_size
+        }
+
+# Update the RedisCache class to use fallback
+class RedisCache:
+    """Enhanced Redis cache with in-memory fallback."""
+    
+    def __init__(self, host='localhost', port=6379, **kwargs):
+        self.host = host
+        self.port = port
+        self.kwargs = kwargs
+        self.client = None
+        self.fallback_cache = None
+        self.using_fallback = False
+        
+        # Check if we should use in-memory mode
+        if host == ":memory:":
+            self.using_fallback = True
+            self.fallback_cache = InMemoryRedisCache(
+                max_size=kwargs.get('cache_size', 1000),
+                ttl_seconds=kwargs.get('ttl_seconds', 3600)
+            )
+    
+    async def initialize(self):
+        """Initialize Redis with fallback support."""
+        if self.using_fallback:
+            await self.fallback_cache.initialize()
+            return True
+            
+        try:
+            import redis.asyncio as redis
+            
+            self.client = redis.Redis(
+                host=self.host,
+                port=self.port,
+                decode_responses=True,
+                socket_timeout=self.kwargs.get('timeout', 5),
+                socket_connect_timeout=self.kwargs.get('timeout', 5),
+                retry_on_timeout=True,
+                **self.kwargs
+            )
+            
+            # Test connection
+            await self.client.ping()
+            logger.info(f"✅ Redis cache initialized at {self.host}:{self.port}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Redis connection failed: {e}")
+            
+            # Fallback to in-memory cache
+            if self.kwargs.get('fallback_to_memory', False):
+                logger.info("🔄 Falling back to in-memory cache")
+                self.using_fallback = True
+                self.fallback_cache = InMemoryRedisCache(
+                    max_size=self.kwargs.get('cache_size', 1000),
+                    ttl_seconds=self.kwargs.get('ttl_seconds', 3600)
+                )
+                await self.fallback_cache.initialize()
+                return True
+            else:
+                raise
+    
+    async def get(self, key: str):
+        """Get value from cache."""
+        if self.using_fallback:
+            return await self.fallback_cache.get(key)
+        
+        try:
+            return await self.client.get(key)
+        except Exception as e:
+            logger.warning(f"Redis get failed: {e}")
+            return None
+    
+    async def set(self, key: str, value: Any, ttl: Optional[int] = None):
+        """Set value in cache."""
+        if self.using_fallback:
+            return await self.fallback_cache.set(key, value, ttl)
+        
+        try:
+            if ttl:
+                return await self.client.setex(key, ttl, value)
+            else:
+                return await self.client.set(key, value)
+        except Exception as e:
+            logger.warning(f"Redis set failed: {e}")
+            return False
+    
+    async def delete(self, key: str):
+        """Delete key from cache."""
+        if self.using_fallback:
+            return await self.fallback_cache.delete(key)
+        
+        try:
+            return await self.client.delete(key)
+        except Exception as e:
+            logger.warning(f"Redis delete failed: {e}")
+            return False
+    
+    async def exists(self, key: str):
+        """Check if key exists."""
+        if self.using_fallback:
+            return await self.fallback_cache.exists(key)
+        
+        try:
+            return await self.client.exists(key)
+        except Exception as e:
+            logger.warning(f"Redis exists failed: {e}")
+            return False
+    
+    def get_stats(self):
+        """Get cache statistics."""
+        if self.using_fallback:
+            return self.fallback_cache.get_stats()
+        
+        try:
+            info = self.client.info()
+            return {
+                "hits": info.get("keyspace_hits", 0),
+                "misses": info.get("keyspace_misses", 0),
+                "hit_rate": info.get("keyspace_hits", 0) / (info.get("keyspace_hits", 0) + info.get("keyspace_misses", 1)),
+                "connected_clients": info.get("connected_clients", 0),
+                "used_memory": info.get("used_memory_human", "unknown")
+            }
+        except:
+            return {"error": "Cannot get Redis stats"}
+
 class RedisVectorCache:
     """
     Ultra-fast Redis vector cache for sub-millisecond retrieval.
