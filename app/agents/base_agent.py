@@ -36,6 +36,15 @@ class AgentCapability(str, Enum):
     MULTILINGUAL_SUPPORT = "multilingual_support"
     EMOTION_DETECTION = "emotion_detection"
     ESCALATION_MANAGEMENT = "escalation_management"
+    
+    # Additional capabilities for specialized agents
+    EMPATHY_RESPONSE = "empathy_response"
+    EMERGENCY_RESPONSE = "emergency_response"
+    FINANCIAL_PROCESSING = "financial_processing"
+    LOCATION_SERVICES = "location_services"
+    SAFETY_PROTOCOLS = "safety_protocols"
+    TECHNICAL_DIAGNOSTICS = "technical_diagnostics"
+    STEP_BY_STEP_GUIDANCE = "step_by_step_guidance"
 
 class UrgencyLevel(str, Enum):
     """Urgency levels for agent processing."""

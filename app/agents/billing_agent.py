@@ -373,7 +373,7 @@ class BillingSupportAgent(BaseAgent):
         # Domain-specific capabilities
         self.capabilities.extend([
             AgentCapability.EMOTION_DETECTION,
-            AgentCapability.EMPATHY_RESPONSE,
+            AgentCapability.EMPATHY_RESPONSE,  # Now properly defined
             AgentCapability.FINANCIAL_PROCESSING
         ])
         

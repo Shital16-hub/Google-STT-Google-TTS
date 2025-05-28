@@ -18,7 +18,7 @@ import aiofiles
 from app.agents.base_agent import BaseAgent, AgentConfiguration, AgentStatus, AgentStats
 from app.agents.roadside_agent import RoadsideAssistanceAgent
 from app.agents.billing_agent import BillingSupportAgent
-from app.agents.technical_agent import AdvancedTechnicalSupportAgent as TechnicalSupportAgent
+from app.agents.technical_agent import AdvancedTechnicalSupportAgent
 from app.vector_db.hybrid_vector_system import HybridVectorSystem
 from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator
 
@@ -546,7 +546,7 @@ class AgentRegistry:
         self.agent_classes: Dict[str, Type[BaseAgent]] = {
             "roadside-assistance": RoadsideAssistanceAgent,
             "billing-support": BillingSupportAgent,
-            "technical-support": TechnicalSupportAgent
+            "technical-support": AdvancedTechnicalSupportAgent  
         }
         
         # Deployment management

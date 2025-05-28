@@ -295,6 +295,166 @@ class HybridVectorSystem:
         self.system_start_time = time.time()
         
         logger.info("Hybrid Vector System initialized with 3-tier architecture")
+
+    async def _init_qdrant(self):
+        """Initialize Qdrant with robust error handling and connection retry."""
+        logger.info("🔗 Initializing Qdrant connection...")
+        
+        try:
+            # Handle in-memory mode
+            if self.qdrant_config.get("host") == ":memory:":
+                logger.info("🧠 Using in-memory Qdrant")
+                self.qdrant_client = QdrantClient(":memory:")
+                self.qdrant_initialized = True
+                self.qdrant_fallback_mode = True
+                return
+            
+            # Force HTTP connection for RunPod compatibility
+            self.qdrant_client = QdrantClient(
+                host=self.qdrant_config["host"],
+                port=self.qdrant_config["port"],
+                prefer_grpc=False,  # Force HTTP
+                timeout=self.qdrant_config.get("timeout", 10.0),
+                api_key=None,  # No API key for local instance
+                https=False    # Use HTTP not HTTPS
+            )
+            
+            # Test connection with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # Simple health check
+                    collections = self.qdrant_client.get_collections()
+                    logger.info(f"✅ Qdrant connected successfully ({len(collections.collections)} collections)")
+                    self.qdrant_initialized = True
+                    return
+                    
+                except Exception as e:
+                    logger.warning(f"Qdrant connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    else:
+                        raise
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Qdrant: {e}")
+            logger.info("🔄 Falling back to in-memory vector storage...")
+            
+            # Fallback to in-memory storage
+            self.qdrant_client = QdrantClient(":memory:")
+            self.qdrant_initialized = True
+            self.qdrant_fallback_mode = True
+
+    async def _check_qdrant_health(self) -> Dict[str, Any]:
+        """Check Qdrant database health."""
+        health_info = {
+            "status": "unknown",
+            "collections_count": 0,
+            "total_points": 0,
+            "connection_type": "unknown",
+            "error": None
+        }
+        
+        try:
+            if not self.qdrant_client:
+                health_info["status"] = "not_initialized"
+                health_info["error"] = "Qdrant client not initialized"
+                return health_info
+            
+            # Check collections
+            collections = self.qdrant_client.get_collections()
+            health_info["collections_count"] = len(collections.collections)
+            
+            # Count total points across all collections
+            total_points = 0
+            for collection in collections.collections:
+                try:
+                    collection_info = self.qdrant_client.get_collection(collection.name)
+                    if collection_info.points_count:
+                        total_points += collection_info.points_count
+                except Exception as e:
+                    logger.debug(f"Could not get info for collection {collection.name}: {e}")
+            
+            health_info["total_points"] = total_points
+            health_info["connection_type"] = "memory" if getattr(self, 'qdrant_fallback_mode', False) else "http"
+            health_info["status"] = "healthy"
+            
+        except Exception as e:
+            health_info["status"] = "error"
+            health_info["error"] = str(e)
+            logger.error(f"Qdrant health check failed: {e}")
+        
+        return health_info
+
+    async def _check_redis_health(self) -> Dict[str, Any]:
+        """Check Redis health."""
+        health_info = {
+            "status": "unknown",
+            "cached_vectors": 0,
+            "hit_rate": 0.0,
+            "error": None
+        }
+        
+        try:
+            if not self.redis_cache or not self.redis_cache.client:
+                health_info["status"] = "not_initialized"
+                health_info["error"] = "Redis client not initialized"
+                return health_info
+            
+            # Test Redis connection
+            response = self.redis_cache.client.ping()
+            if response:
+                health_info["status"] = "healthy"
+                
+                # Get cache stats
+                info = self.redis_cache.client.info()
+                health_info["cached_vectors"] = info.get("keyspace_hits", 0)
+                
+                hits = info.get("keyspace_hits", 0)
+                misses = info.get("keyspace_misses", 0)
+                if hits + misses > 0:
+                    health_info["hit_rate"] = hits / (hits + misses)
+            else:
+                health_info["status"] = "error"
+                health_info["error"] = "Redis ping failed"
+                
+        except Exception as e:
+            health_info["status"] = "error"
+            health_info["error"] = str(e)
+            logger.error(f"Redis health check failed: {e}")
+        
+        return health_info
+
+    async def _check_faiss_health(self) -> Dict[str, Any]:
+        """Check FAISS health."""
+        health_info = {
+            "status": "unknown",
+            "indexed_vectors": 0,
+            "error": None
+        }
+        
+        try:
+            if not hasattr(self, 'faiss_hot_tier') or not self.faiss_hot_tier:
+                health_info["status"] = "not_initialized"
+                health_info["error"] = "FAISS not initialized"
+                return health_info
+            
+            # Check FAISS index
+            if hasattr(self.faiss_hot_tier, 'index') and self.faiss_hot_tier.index:
+                health_info["indexed_vectors"] = self.faiss_hot_tier.index.ntotal
+                health_info["status"] = "healthy"
+            else:
+                health_info["status"] = "warning"
+                health_info["error"] = "FAISS index not ready"
+                
+        except Exception as e:
+            health_info["status"] = "error"
+            health_info["error"] = str(e)
+            logger.error(f"FAISS health check failed: {e}")
+        
+        return health_info
+
+    
     
     async def initialize(self):
         """Initialize all three tiers of the vector system."""
@@ -788,6 +948,224 @@ class HybridVectorSystem:
                 "qdrant_healthy": self.qdrant_primary is not None and self.qdrant_primary.is_healthy()
             }
         }
+
+    async def _init_qdrant(self):
+        """Initialize Qdrant with robust error handling and connection retry."""
+        logger.info("🔗 Initializing Qdrant connection...")
+        
+        try:
+            # Handle in-memory mode
+            if self.qdrant_config.get("host") == ":memory:":
+                logger.info("🧠 Using in-memory Qdrant")
+                from qdrant_client import QdrantClient
+                self.qdrant_client = QdrantClient(":memory:")
+                self.qdrant_initialized = True
+                self.qdrant_fallback_mode = True
+                return
+            
+            # Force HTTP connection for RunPod compatibility
+            from qdrant_client import QdrantClient
+            self.qdrant_client = QdrantClient(
+                host=self.qdrant_config["host"],
+                port=self.qdrant_config["port"],
+                prefer_grpc=False,  # Force HTTP
+                timeout=self.qdrant_config.get("timeout", 10.0),
+                api_key=None,  # No API key for local instance
+                https=False    # Use HTTP not HTTPS
+            )
+            
+            # Test connection with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # Simple health check
+                    collections = self.qdrant_client.get_collections()
+                    logger.info(f"✅ Qdrant connected successfully ({len(collections.collections)} collections)")
+                    self.qdrant_initialized = True
+                    return
+                    
+                except Exception as e:
+                    logger.warning(f"Qdrant connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    else:
+                        raise
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Qdrant: {e}")
+            logger.info("🔄 Falling back to in-memory vector storage...")
+            
+            # Fallback to in-memory storage
+            from qdrant_client import QdrantClient
+            self.qdrant_client = QdrantClient(":memory:")
+            self.qdrant_initialized = True
+            self.qdrant_fallback_mode = True
+
+    async def _check_qdrant_health(self) -> Dict[str, Any]:
+        """Check Qdrant database health."""
+        health_info = {
+            "status": "unknown",
+            "collections_count": 0,
+            "total_points": 0,
+            "connection_type": "unknown",
+            "error": None
+        }
+        
+        try:
+            if not hasattr(self, 'qdrant_client') or not self.qdrant_client:
+                health_info["status"] = "not_initialized"
+                health_info["error"] = "Qdrant client not initialized"
+                return health_info
+            
+            # Check collections
+            collections = self.qdrant_client.get_collections()
+            health_info["collections_count"] = len(collections.collections)
+            
+            # Count total points across all collections
+            total_points = 0
+            for collection in collections.collections:
+                try:
+                    collection_info = self.qdrant_client.get_collection(collection.name)
+                    if collection_info.points_count:
+                        total_points += collection_info.points_count
+                except Exception as e:
+                    logger.debug(f"Could not get info for collection {collection.name}: {e}")
+            
+            health_info["total_points"] = total_points
+            health_info["connection_type"] = "memory" if getattr(self, 'qdrant_fallback_mode', False) else "http"
+            health_info["status"] = "healthy"
+            
+        except Exception as e:
+            health_info["status"] = "error"
+            health_info["error"] = str(e)
+            logger.error(f"Qdrant health check failed: {e}")
+        
+        return health_info
+
+    async def _check_redis_health(self) -> Dict[str, Any]:
+        """Check Redis health."""
+        health_info = {
+            "status": "unknown",
+            "cached_vectors": 0,
+            "hit_rate": 0.0,
+            "error": None
+        }
+        
+        try:
+            if not hasattr(self, 'redis_cache') or not self.redis_cache or not hasattr(self.redis_cache, 'client'):
+                health_info["status"] = "not_initialized"
+                health_info["error"] = "Redis client not initialized"
+                return health_info
+            
+            # Test Redis connection
+            response = self.redis_cache.client.ping()
+            if response:
+                health_info["status"] = "healthy"
+                
+                # Get cache stats
+                info = self.redis_cache.client.info()
+                health_info["cached_vectors"] = info.get("keyspace_hits", 0)
+                
+                hits = info.get("keyspace_hits", 0)
+                misses = info.get("keyspace_misses", 0)
+                if hits + misses > 0:
+                    health_info["hit_rate"] = hits / (hits + misses)
+            else:
+                health_info["status"] = "error"
+                health_info["error"] = "Redis ping failed"
+                
+        except Exception as e:
+            health_info["status"] = "error"
+            health_info["error"] = str(e)
+            logger.error(f"Redis health check failed: {e}")
+        
+        return health_info
+
+    async def _check_faiss_health(self) -> Dict[str, Any]:
+        """Check FAISS health."""
+        health_info = {
+            "status": "unknown",
+            "indexed_vectors": 0,
+            "error": None
+        }
+        
+        try:
+            if not hasattr(self, 'faiss_hot_tier') or not self.faiss_hot_tier:
+                health_info["status"] = "not_initialized"
+                health_info["error"] = "FAISS not initialized"
+                return health_info
+            
+            # Check FAISS index
+            if hasattr(self.faiss_hot_tier, 'index') and self.faiss_hot_tier.index:
+                health_info["indexed_vectors"] = self.faiss_hot_tier.index.ntotal
+                health_info["status"] = "healthy"
+            else:
+                health_info["status"] = "warning"
+                health_info["error"] = "FAISS index not ready"
+                
+        except Exception as e:
+            health_info["status"] = "error"
+            health_info["error"] = str(e)
+            logger.error(f"FAISS health check failed: {e}")
+        
+        return health_info
+
+    async def get_health_status(self) -> Dict[str, Any]:
+        """Get comprehensive health status of the hybrid vector system."""
+        health_status = {
+            "overall_status": "healthy",
+            "components": {},
+            "timestamp": time.time(),
+            "performance_metrics": {}
+        }
+        
+        try:
+            # Check Redis
+            redis_health = await self._check_redis_health()
+            health_status["components"]["redis"] = redis_health
+            
+            # Check FAISS
+            faiss_health = await self._check_faiss_health()
+            health_status["components"]["faiss"] = faiss_health
+            
+            # Check Qdrant
+            qdrant_health = await self._check_qdrant_health()
+            health_status["components"]["qdrant"] = qdrant_health
+            
+            # Determine overall status
+            component_statuses = [
+                redis_health.get("status", "unknown"),
+                faiss_health.get("status", "unknown"),
+                qdrant_health.get("status", "unknown")
+            ]
+            
+            if "error" in component_statuses:
+                health_status["overall_status"] = "degraded"
+            elif "warning" in component_statuses:
+                health_status["overall_status"] = "warning"
+            elif all(status == "healthy" for status in component_statuses):
+                health_status["overall_status"] = "healthy"
+            else:
+                health_status["overall_status"] = "unknown"
+            
+            # Add performance metrics
+            health_status["performance_metrics"] = {
+                "total_vectors": (
+                    redis_health.get("cached_vectors", 0) +
+                    faiss_health.get("indexed_vectors", 0) +
+                    qdrant_health.get("total_points", 0)
+                ),
+                "cache_hit_rate": getattr(self.redis_cache, 'hit_rate', 0.0) if hasattr(self, 'redis_cache') else 0.0,
+                "average_search_time_ms": getattr(self, 'avg_search_time_ms', 0.0),
+                "system_initialized": getattr(self, 'initialized', False)
+            }
+            
+        except Exception as e:
+            logger.error(f"Health status check failed: {e}")
+            health_status["overall_status"] = "error"
+            health_status["error"] = str(e)
+        
+        return health_status
     
     async def shutdown(self):
         """Shutdown the hybrid vector system."""
