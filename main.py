@@ -1104,7 +1104,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 def handle_shutdown_signal(signum, frame):
     """Handle shutdown signals gracefully."""
     logger.info(f"Received signal {signum}, shutting down gracefully...")
-    # Cleanup will be handled by lifespan context manager
+    
 
 # Register signal handlers
 signal.signal(signal.SIGTERM, handle_shutdown_signal)
