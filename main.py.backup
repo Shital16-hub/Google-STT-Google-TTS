@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Revolutionary Multi-Agent Voice AI System - Main FastAPI Application
-PERMANENT FIX: Auto-starts services and handles correct paths regardless of pod restarts.
+Fixed version for RunPod deployment with proper error handling and graceful shutdown.
 """
 import os
 import sys
@@ -51,37 +51,7 @@ from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator
 # Load environment variables
 load_dotenv()
 
-# PERMANENT FIX: Detect correct working directory and config paths
-def get_project_root():
-    """Automatically detect the project root directory."""
-    current_dir = Path.cwd()
-    
-    # Check if we're already in the right directory (has main.py and app/)
-    if (current_dir / "main.py").exists() and (current_dir / "app").exists():
-        return current_dir
-    
-    # Check common locations
-    possible_roots = [
-        Path("/workspace/Google-STT-Google-TTS"),
-        Path("/workspace"),
-        current_dir,
-        current_dir.parent,
-    ]
-    
-    for root in possible_roots:
-        if (root / "main.py").exists() and (root / "app").exists():
-            return root
-    
-    # Fallback to current directory
-    return current_dir
-
-# Set project root and change working directory
-PROJECT_ROOT = get_project_root()
-os.chdir(PROJECT_ROOT)
-print(f"🔧 Project root detected: {PROJECT_ROOT}")
-print(f"🔄 Working directory set to: {os.getcwd()}")
-
-# Ensure logs directory exists and configure logging
+# Ensure logs directory exists and configure logging FIRST
 try:
     os.makedirs('./logs', exist_ok=True)
     log_handlers = [
@@ -90,6 +60,7 @@ try:
     ]
 except (OSError, PermissionError) as e:
     print(f"Warning: Could not create log file: {e}")
+    # Fall back to console logging only
     log_handlers = [logging.StreamHandler()]
 
 # Configure enhanced logging
@@ -100,209 +71,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Suppress noisy logs
+# Suppress noisy logs for production performance
 logging.getLogger('google.cloud').setLevel(logging.WARNING)
 logging.getLogger('grpc').setLevel(logging.WARNING)
 logging.getLogger('asyncio').setLevel(logging.WARNING)
 
-class ServiceManager:
-    """Manages Redis and Qdrant services automatically."""
-    
-    def __init__(self):
-        self.redis_running = False
-        self.qdrant_running = False
-        
-    async def ensure_redis_running(self) -> bool:
-        """Ensure Redis is running."""
-        logger.info("🔧 Ensuring Redis is running...")
-        
-        # Test if Redis is already running
-        try:
-            import redis
-            client = redis.Redis(host='127.0.0.1', port=6379, socket_timeout=2)
-            client.ping()
-            logger.info("✅ Redis already running")
-            self.redis_running = True
-            return True
-        except Exception:
-            pass
-        
-        # Try to start Redis
-        logger.info("🚀 Starting Redis...")
-        startup_commands = [
-            ['redis-server', '--daemonize', 'yes', '--port', '6379'],
-            ['redis-server', '--daemonize', 'yes'],
-            ['service', 'redis-server', 'start'],
-            ['systemctl', 'start', 'redis-server'],
-        ]
-        
-        for cmd in startup_commands:
-            try:
-                logger.info(f"Trying: {' '.join(cmd)}")
-                subprocess.run(cmd, capture_output=True, timeout=10)
-                await asyncio.sleep(3)
-                
-                # Test Redis
-                try:
-                    import redis
-                    client = redis.Redis(host='127.0.0.1', port=6379, socket_timeout=2)
-                    client.ping()
-                    logger.info("✅ Redis started successfully")
-                    self.redis_running = True
-                    return True
-                except Exception:
-                    continue
-                    
-            except Exception as e:
-                logger.debug(f"Redis startup failed: {e}")
-                continue
-        
-        # Install Redis if not found
-        try:
-            logger.info("📦 Installing Redis...")
-            subprocess.run(['apt-get', 'update'], capture_output=True, timeout=30)
-            subprocess.run(['apt-get', 'install', '-y', 'redis-server'], capture_output=True, timeout=60)
-            subprocess.run(['redis-server', '--daemonize', 'yes'], capture_output=True)
-            await asyncio.sleep(5)
-            
-            import redis
-            client = redis.Redis(host='127.0.0.1', port=6379, socket_timeout=2)
-            client.ping()
-            logger.info("✅ Redis installed and started")
-            self.redis_running = True
-            return True
-        except Exception as e:
-            logger.error(f"❌ Redis installation failed: {e}")
-        
-        logger.warning("⚠️ Redis not available, using fallback")
-        return False
-    
-    async def ensure_qdrant_running(self) -> bool:
-        """Ensure Qdrant is running."""
-        logger.info("🗄️ Ensuring Qdrant is running...")
-        
-        # Test if Qdrant is already running
-        try:
-            import requests
-            response = requests.get('http://localhost:6333/health', timeout=5)
-            if response.status_code == 200:
-                logger.info("✅ Qdrant already running")
-                self.qdrant_running = True
-                return True
-        except:
-            pass
-        
-        # Setup Qdrant
-        qdrant_dir = Path("/workspace/qdrant-setup")
-        qdrant_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Stop any existing Qdrant
-        try:
-            subprocess.run(['pkill', '-f', 'qdrant'], capture_output=True)
-            await asyncio.sleep(2)
-        except:
-            pass
-        
-        # Download binary if needed
-        qdrant_binary = qdrant_dir / "qdrant"
-        if not qdrant_binary.exists():
-            logger.info("📦 Downloading Qdrant...")
-            try:
-                import requests
-                url = "https://github.com/qdrant/qdrant/releases/download/v1.7.0/qdrant-x86_64-unknown-linux-gnu.tar.gz"
-                response = requests.get(url, timeout=120)
-                response.raise_for_status()
-                
-                import tarfile
-                import io
-                with tarfile.open(fileobj=io.BytesIO(response.content), mode='r:gz') as tar:
-                    tar.extractall(path=qdrant_dir)
-                
-                qdrant_binary.chmod(0o755)
-                logger.info("✅ Qdrant binary downloaded")
-            except Exception as e:
-                logger.error(f"❌ Qdrant download failed: {e}")
-                return False
-        
-        # Create config
-        config_dir = qdrant_dir / "config"
-        config_dir.mkdir(exist_ok=True)
-        storage_dir = qdrant_dir / "storage"
-        storage_dir.mkdir(exist_ok=True)
-        
-        config_file = config_dir / "production.yaml"
-        config_content = """
-service:
-  host: "127.0.0.1"
-  http_port: 6333
-  grpc_port: 6334
-  enable_cors: true
-storage:
-  storage_path: "./storage"
-telemetry:
-  enabled: false
-"""
-        with open(config_file, 'w') as f:
-            f.write(config_content)
-        
-        # Start Qdrant
-        try:
-            os.chdir(qdrant_dir)
-            with open('qdrant.log', 'w') as log_file:
-                process = subprocess.Popen([
-                    './qdrant', '--config-path', str(config_file)
-                ], stdout=log_file, stderr=subprocess.STDOUT)
-            
-            logger.info(f"🚀 Started Qdrant (PID: {process.pid})")
-            await asyncio.sleep(8)
-            
-            # Test Qdrant
-            import requests
-            for attempt in range(10):
-                try:
-                    response = requests.get('http://localhost:6333/health', timeout=3)
-                    if response.status_code == 200:
-                        logger.info("✅ Qdrant started successfully")
-                        self.qdrant_running = True
-                        os.chdir(PROJECT_ROOT)  # Change back to project root
-                        return True
-                except:
-                    if attempt < 9:
-                        await asyncio.sleep(2)
-            
-            logger.error("❌ Qdrant failed to start")
-            os.chdir(PROJECT_ROOT)
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ Qdrant startup error: {e}")
-            os.chdir(PROJECT_ROOT)
-            return False
-
 class ConfigurationManager:
-    """Enhanced configuration manager with automatic path detection."""
+    """Enhanced configuration manager with fallback support."""
     
-    def __init__(self, config_base_path: Optional[str] = None):
-        # PERMANENT FIX: Auto-detect config path
-        if config_base_path is None:
-            # Try different possible locations
-            possible_paths = [
-                PROJECT_ROOT / "app" / "config",
-                Path("./app/config"),
-                Path("/workspace/Google-STT-Google-TTS/app/config"),
-                Path("/workspace/app/config"),
-            ]
-            
-            for path in possible_paths:
-                if path.exists() and (path / "agents").exists():
-                    config_base_path = str(path)
-                    logger.info(f"✅ Auto-detected config path: {config_base_path}")
-                    break
-            
-            if config_base_path is None:
-                config_base_path = str(PROJECT_ROOT / "app" / "config")
-                logger.warning(f"⚠️ Using default config path: {config_base_path}")
-        
+    def __init__(self, config_base_path: str = "app/config"):
         self.config_base_path = Path(config_base_path)
         self.agents_config_path = self.config_base_path / "agents"
         self._configs_cache = {}
@@ -310,12 +87,11 @@ class ConfigurationManager:
             'redis': False,
             'qdrant': False
         }
+        logger.info(f"ConfigurationManager initialized with base path: {self.config_base_path}")
         
         # Ensure config directories exist
         self.config_base_path.mkdir(parents=True, exist_ok=True)
         self.agents_config_path.mkdir(parents=True, exist_ok=True)
-        
-        logger.info(f"ConfigurationManager initialized with base path: {self.config_base_path}")
     
     def load_yaml_config(self, config_path: Path) -> Dict[str, Any]:
         """Load and parse YAML configuration file."""
@@ -334,6 +110,11 @@ class ConfigurationManager:
             logger.error(f"❌ Failed to load config {config_path}: {e}")
             return {}
     
+    def load_agent_config(self, agent_config_file: str) -> Dict[str, Any]:
+        """Load specific agent configuration."""
+        config_path = self.agents_config_path / agent_config_file
+        return self.load_yaml_config(config_path)
+    
     def load_all_agent_configs(self) -> Dict[str, Dict[str, Any]]:
         """Load all agent configurations from the agents directory."""
         agent_configs = {}
@@ -348,7 +129,6 @@ class ConfigurationManager:
         for yaml_file in yaml_files:
             # Skip template files
             if "template" in yaml_file.name.lower():
-                logger.info(f"⏭️ Skipping template file: {yaml_file.name}")
                 continue
                 
             try:
@@ -367,11 +147,241 @@ class ConfigurationManager:
             except Exception as e:
                 logger.error(f"❌ Failed to load agent config from {yaml_file}: {e}")
         
-        logger.info(f"📋 Total agent configs loaded: {len(agent_configs)}")
         return agent_configs
+    
+    def get_redis_config(self) -> Dict[str, Any]:
+        """Get Redis configuration with fallback to defaults."""
+        # Default Redis configuration for RunPod
+        default_config = {
+            "host": "127.0.0.1",
+            "port": 6379,
+            "timeout": 5,
+            "max_connections": 100,
+            "retry_on_timeout": True,
+            "decode_responses": False,
+            "fallback_to_memory": True  # Enable memory fallback
+        }
+        
+        return default_config
+    
+    async def ensure_redis_running(self) -> bool:
+        """Ensure Redis is running with proper error handling."""
+        if self.services_started['redis']:
+            return True
+            
+        logger.info("🔧 Ensuring Redis is running...")
+        
+        # Get Redis configuration
+        redis_config = self.get_redis_config()
+        host = redis_config.get("host", "127.0.0.1")
+        port = redis_config.get("port", 6379)
+        
+        # Check if Redis is already running
+        try:
+            import redis
+            test_client = redis.Redis(host=host, port=port, socket_timeout=2)
+            response = test_client.ping()
+            if response:
+                logger.info("✅ Redis already running")
+                self.services_started['redis'] = True
+                return True
+        except Exception as e:
+            logger.warning(f"Redis not running: {e}")
+        
+        # Try to start Redis with multiple approaches
+        redis_started = await self._try_start_redis()
+        
+        if redis_started:
+            self.services_started['redis'] = True
+            return True
+        else:
+            logger.warning("⚠️ Redis startup failed, will use memory fallback")
+            return False
+    
+    async def _try_start_redis(self) -> bool:
+        """Try different methods to start Redis."""
+        startup_commands = [
+            ['redis-server', '--daemonize', 'yes', '--port', '6379'],
+            ['redis-server', '--daemonize', 'yes'],
+            ['service', 'redis-server', 'start'],
+            ['systemctl', 'start', 'redis-server'],
+            ['systemctl', 'start', 'redis'],
+        ]
+        
+        for cmd in startup_commands:
+            try:
+                logger.info(f"Trying: {' '.join(cmd)}")
+                
+                # Try to start Redis
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                await asyncio.sleep(3)  # Wait for Redis to start
+                
+                # Test if Redis is responding
+                try:
+                    import redis
+                    test_client = redis.Redis(host='127.0.0.1', port=6379, socket_timeout=2)
+                    response = test_client.ping()
+                    if response:
+                        logger.info("✅ Redis started successfully")
+                        return True
+                except Exception as e:
+                    logger.debug(f"Redis test failed: {e}")
+                    continue
+                    
+            except Exception as e:
+                logger.debug(f"Redis startup attempt failed: {e}")
+                continue
+        
+        # Final attempt: install and start Redis
+        try:
+            logger.info("📦 Attempting to install Redis...")
+            subprocess.run(['apt-get', 'update'], capture_output=True, timeout=30)
+            subprocess.run(['apt-get', 'install', '-y', 'redis-server'], capture_output=True, timeout=60)
+            
+            # Try starting again
+            subprocess.run(['redis-server', '--daemonize', 'yes'], capture_output=True)
+            await asyncio.sleep(5)
+            
+            # Final test
+            import redis
+            test_client = redis.Redis(host='127.0.0.1', port=6379, socket_timeout=2)
+            response = test_client.ping()
+            if response:
+                logger.info("✅ Redis installed and started successfully")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to install Redis: {e}")
+        
+        return False
+    
+    async def start_qdrant_with_config(self) -> bool:
+        """Start Qdrant with fallback to in-memory mode."""
+        if self.services_started['qdrant']:
+            return True
+            
+        logger.info("🗄️ Starting Qdrant...")
+        
+        # Check if Qdrant is already running
+        try:
+            import requests
+            response = requests.get('http://localhost:6333/health', timeout=5)
+            if response.status_code == 200:
+                logger.info("✅ Qdrant already running")
+                self.services_started['qdrant'] = True
+                return True
+        except:
+            pass
+        
+        # Try to start Qdrant
+        qdrant_started = await self._try_start_qdrant()
+        
+        if qdrant_started:
+            self.services_started['qdrant'] = True
+            return True
+        else:
+            logger.warning("⚠️ Qdrant startup failed, will use in-memory fallback")
+            return False
+    
+    async def _try_start_qdrant(self) -> bool:
+        """Try to start Qdrant with error handling."""
+        # Create Qdrant setup directory
+        qdrant_setup_dir = Path("/workspace/qdrant-setup")
+        qdrant_setup_dir.mkdir(parents=True, exist_ok=True)
+        (qdrant_setup_dir / "config").mkdir(exist_ok=True)
+        (qdrant_setup_dir / "storage").mkdir(exist_ok=True)
+        
+        # Stop any existing Qdrant
+        try:
+            subprocess.run(['pkill', '-f', 'qdrant'], capture_output=True)
+            await asyncio.sleep(2)
+        except:
+            pass
+        
+        # Download Qdrant binary if not present
+        qdrant_binary = qdrant_setup_dir / "qdrant"
+        if not qdrant_binary.exists():
+            logger.info("📦 Downloading Qdrant binary...")
+            try:
+                import requests
+                url = "https://github.com/qdrant/qdrant/releases/download/v1.7.0/qdrant-x86_64-unknown-linux-gnu.tar.gz"
+                response = requests.get(url, timeout=120)
+                response.raise_for_status()
+                
+                import tarfile
+                import io
+                
+                with tarfile.open(fileobj=io.BytesIO(response.content), mode='r:gz') as tar:
+                    tar.extractall(path=qdrant_setup_dir)
+                
+                qdrant_binary.chmod(0o755)
+                logger.info("✅ Downloaded Qdrant binary")
+            except Exception as e:
+                logger.error(f"❌ Failed to download Qdrant: {e}")
+                return False
+        
+        # Create minimal config
+        config_file = qdrant_setup_dir / "config" / "production.yaml"
+        try:
+            minimal_config = {
+                'service': {
+                    'host': '0.0.0.0',
+                    'http_port': 6333,
+                    'grpc_port': 6334,
+                    'enable_cors': True
+                },
+                'storage': {
+                    'storage_path': './storage'
+                },
+                'telemetry': {'enabled': False}
+            }
+            
+            with open(config_file, 'w') as f:
+                yaml.dump(minimal_config, f, default_flow_style=False)
+            logger.info(f"✅ Created Qdrant config: {config_file}")
+        except Exception as e:
+            logger.error(f"❌ Failed to create Qdrant config: {e}")
+            return False
+        
+        # Start Qdrant
+        try:
+            os.chdir(qdrant_setup_dir)
+            
+            # Start Qdrant process
+            with open('qdrant.log', 'w') as log_file:
+                process = subprocess.Popen([
+                    './qdrant', '--config-path', str(config_file)
+                ], stdout=log_file, stderr=subprocess.STDOUT)
+            
+            # Save PID
+            with open('qdrant.pid', 'w') as pid_file:
+                pid_file.write(str(process.pid))
+            
+            logger.info(f"🚀 Started Qdrant (PID: {process.pid})")
+            
+            # Wait for Qdrant to start
+            await asyncio.sleep(10)
+            
+            # Test Qdrant connection
+            import requests
+            for attempt in range(10):
+                try:
+                    response = requests.get('http://localhost:6333/health', timeout=3)
+                    if response.status_code == 200:
+                        logger.info("✅ Qdrant started successfully")
+                        return True
+                except:
+                    if attempt < 9:
+                        await asyncio.sleep(2)
+                    
+            logger.error("❌ Qdrant failed to start")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start Qdrant: {e}")
+            return False
 
-# Global instances
-service_manager = ServiceManager()
+# Global configuration manager (initialized after logger is set up)
 config_manager = ConfigurationManager()
 
 # System components - global for performance
@@ -391,7 +401,7 @@ SYSTEM_INITIALIZED = False
 initialization_complete = asyncio.Event()
 shutdown_event = asyncio.Event()
 
-# Active sessions tracking
+# Active sessions tracking with enhanced metrics
 active_sessions = {}
 session_metrics = {
     "total_sessions": 0,
@@ -424,7 +434,7 @@ class SystemHealthResponse(BaseModel):
     system_version: str = "2.0.0"
 
 async def initialize_revolutionary_system():
-    """Initialize the complete multi-agent system with automatic service startup."""
+    """Initialize the complete multi-agent system with proper error handling."""
     global orchestrator, state_manager, health_monitor, agent_registry, agent_router
     global hybrid_vector_system, stt_system, tts_engine, tool_orchestrator
     global BASE_URL, SYSTEM_INITIALIZED
@@ -439,28 +449,29 @@ async def initialize_revolutionary_system():
             logger.warning("⚠️ BASE_URL not set, using default")
             BASE_URL = "http://localhost:8000"
         
-        # PERMANENT FIX: Auto-start services
-        logger.info("📊 Step 1: Auto-starting Redis...")
-        redis_success = await service_manager.ensure_redis_running()
-        config_manager.services_started['redis'] = redis_success
+        # Step 1: Ensure Redis is running with proper fallback
+        logger.info("📊 Step 1: Ensuring Redis is running...")
+        redis_success = await config_manager.ensure_redis_running()
         
-        logger.info("🗄️ Step 2: Auto-starting Qdrant...")
-        qdrant_success = await service_manager.ensure_qdrant_running()
-        config_manager.services_started['qdrant'] = qdrant_success
+        # Step 2: Start Qdrant with proper fallback
+        logger.info("🗄️ Step 2: Starting Qdrant...")
+        qdrant_success = await config_manager.start_qdrant_with_config()
         
-        # Step 3: Initialize Hybrid Vector System
+        # Step 3: Initialize Hybrid Vector System with fallback modes
         logger.info("📊 Step 3: Initializing hybrid vector architecture...")
+        
+        redis_config = config_manager.get_redis_config()
         
         if redis_success and qdrant_success:
             logger.info("🚀 Using external Redis and Qdrant")
             hybrid_vector_system = HybridVectorSystem(
                 redis_config={
-                    "host": "127.0.0.1",
-                    "port": 6379,
+                    "host": redis_config.get("host", "127.0.0.1"),
+                    "port": redis_config.get("port", 6379),
                     "cache_size": 50000,
                     "ttl_seconds": 3600,
-                    "timeout": 5,
-                    "max_connections": 100,
+                    "timeout": redis_config.get("timeout", 5),
+                    "max_connections": redis_config.get("max_connections", 100),
                     "fallback_to_memory": True
                 },
                 faiss_config={
@@ -516,9 +527,6 @@ async def initialize_revolutionary_system():
             await hybrid_vector_system.initialize()
             logger.info("✅ Fallback vector system initialized")
         
-        # Continue with rest of initialization...
-        # [Rest of initialization code remains the same as in original]
-        
         # 4. Initialize Enhanced STT System
         logger.info("🎤 Step 4: Initializing enhanced STT system...")
         try:
@@ -533,8 +541,9 @@ async def initialize_revolutionary_system():
             logger.info("✅ STT system initialized")
         except Exception as e:
             logger.error(f"❌ STT system initialization failed: {e}")
+            # Continue without STT system
         
-        # 5. Initialize TTS Engine
+        # 5. Initialize Dual Streaming TTS Engine
         logger.info("🔊 Step 5: Initializing dual streaming TTS engine...")
         try:
             tts_engine = DualStreamingTTSEngine()
@@ -542,8 +551,9 @@ async def initialize_revolutionary_system():
             logger.info("✅ TTS engine initialized")
         except Exception as e:
             logger.error(f"❌ TTS engine initialization failed: {e}")
+            # Continue without TTS engine
         
-        # 6. Initialize Tool Orchestrator
+        # 6. Initialize Comprehensive Tool Orchestrator
         logger.info("🛠️ Step 6: Initializing tool orchestration framework...")
         try:
             tool_orchestrator = ComprehensiveToolOrchestrator(
@@ -556,6 +566,7 @@ async def initialize_revolutionary_system():
             logger.info("✅ Tool orchestrator initialized")
         except Exception as e:
             logger.error(f"❌ Tool orchestrator initialization failed: {e}")
+            # Continue without tool orchestrator
         
         # 7. Initialize Agent Registry
         logger.info("🤖 Step 7: Initializing agent registry...")
@@ -570,8 +581,9 @@ async def initialize_revolutionary_system():
             logger.info("✅ Agent registry initialized")
         except Exception as e:
             logger.error(f"❌ Agent registry initialization failed: {e}")
+            # Continue without agent registry
         
-        # 8. Initialize Agent Router
+        # 8. Initialize Intelligent Agent Router
         logger.info("🧠 Step 8: Initializing intelligent agent router...")
         if agent_registry:
             try:
@@ -587,7 +599,7 @@ async def initialize_revolutionary_system():
             except Exception as e:
                 logger.error(f"❌ Agent router initialization failed: {e}")
         
-        # 9. Initialize State Manager
+        # 9. Initialize Conversation State Manager
         logger.info("💾 Step 9: Initializing conversation state manager...")
         try:
             state_manager = ConversationStateManager(
@@ -600,8 +612,9 @@ async def initialize_revolutionary_system():
             logger.info("✅ State manager initialized")
         except Exception as e:
             logger.error(f"❌ State manager initialization failed: {e}")
+            # Continue without state manager
         
-        # 10. Initialize Orchestrator
+        # 10. Initialize Multi-Agent Orchestrator
         logger.info("🎭 Step 10: Initializing multi-agent orchestrator...")
         if agent_registry and agent_router:
             try:
@@ -620,7 +633,7 @@ async def initialize_revolutionary_system():
             except Exception as e:
                 logger.error(f"❌ Orchestrator initialization failed: {e}")
         
-        # 11. Initialize Health Monitor
+        # 11. Initialize System Health Monitor
         logger.info("📈 Step 11: Initializing system health monitor...")
         try:
             health_monitor = SystemHealthMonitor(
@@ -639,7 +652,7 @@ async def initialize_revolutionary_system():
         except Exception as e:
             logger.error(f"❌ Health monitor initialization failed: {e}")
         
-        # 12. Deploy agents from YAML configs
+        # 12. Deploy specialized agents from YAML configs
         logger.info("🚀 Step 12: Deploying specialized agents...")
         if agent_registry:
             try:
@@ -660,22 +673,26 @@ async def initialize_revolutionary_system():
             agent_count = len(await agent_registry.list_active_agents())
             logger.info(f"🔄 Agents deployed: {agent_count}")
         
+        # Set initialization event
         initialization_complete.set()
         
     except Exception as e:
         logger.error(f"❌ System initialization failed: {e}", exc_info=True)
+        # Don't raise the exception, let the system continue with minimal functionality
+        logger.info("🔄 Continuing with minimal system functionality...")
         SYSTEM_INITIALIZED = True
         initialization_complete.set()
 
 async def deploy_agents_from_yaml():
-    """Deploy agents from YAML configuration files."""
+    """Deploy agents from YAML configuration files with error handling."""
     logger.info("🤖 Loading agent configurations from YAML files...")
     
     try:
+        # Load all agent configurations
         agent_configs = config_manager.load_all_agent_configs()
         
         if not agent_configs:
-            logger.warning("⚠️ No agent configurations found")
+            logger.warning("⚠️ No agent configurations found in config/agents/")
             return
         
         deployed_count = 0
@@ -684,6 +701,8 @@ async def deploy_agents_from_yaml():
         for agent_id, config in agent_configs.items():
             try:
                 logger.info(f"🚀 Deploying agent: {agent_id}")
+                
+                # Deploy the agent
                 result = await agent_registry.deploy_agent(config)
                 
                 if result.success:
@@ -704,32 +723,48 @@ async def deploy_agents_from_yaml():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan management."""
+    """Application lifespan management with proper initialization and cleanup."""
+    # Startup
     logger.info("🚀 Starting Revolutionary Multi-Agent Voice AI System...")
     try:
+        # Initialize system in background to avoid blocking startup
         initialization_task = asyncio.create_task(initialize_revolutionary_system())
         
+        # Also start a shutdown handler
         async def shutdown_handler():
             await shutdown_event.wait()
             await cleanup_system()
         
         shutdown_task = asyncio.create_task(shutdown_handler())
+        
         yield
         
     finally:
+        # Shutdown
         logger.info("🛑 Shutting down Revolutionary Multi-Agent Voice AI System...")
         shutdown_event.set()
         
+        # Wait a bit for cleanup
         try:
             await asyncio.wait_for(cleanup_system(), timeout=10.0)
         except asyncio.TimeoutError:
             logger.warning("⚠️ Cleanup timed out, forcing shutdown")
+        
+        # Cancel any remaining tasks
+        try:
+            if 'initialization_task' in locals():
+                initialization_task.cancel()
+            if 'shutdown_task' in locals():
+                shutdown_task.cancel()
+        except:
+            pass
 
 async def cleanup_system():
-    """Clean up all system resources."""
+    """Clean up all system resources with timeout."""
     global active_sessions
     
     try:
+        # Clean up active sessions
         logger.info(f"Cleaning up {len(active_sessions)} active sessions...")
         cleanup_tasks = []
         for session_id, handler in list(active_sessions.items()):
@@ -747,8 +782,9 @@ async def cleanup_system():
         
         active_sessions.clear()
         
-        # Cleanup system components
+        # Cleanup system components with timeout
         cleanup_components = []
+        
         if health_monitor:
             cleanup_components.append(health_monitor.shutdown())
         if orchestrator:
@@ -778,7 +814,7 @@ async def cleanup_system():
     except Exception as e:
         logger.error(f"❌ Error during cleanup: {e}")
 
-# FastAPI app
+# FastAPI app with enhanced configuration
 app = FastAPI(
     title="Revolutionary Multi-Agent Voice AI System",
     description="Ultra-low latency multi-agent conversation system with <377ms response time",
@@ -788,7 +824,7 @@ app = FastAPI(
     redoc_url="/redoc" if os.getenv("DEBUG", "false").lower() == "true" else None
 )
 
-# Middleware
+# Enhanced middleware for performance
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
@@ -802,6 +838,7 @@ app.add_middleware(
 async def ensure_system_initialized():
     """Ensure system is initialized before handling requests."""
     if not SYSTEM_INITIALIZED:
+        # Wait for initialization with timeout
         try:
             await asyncio.wait_for(initialization_complete.wait(), timeout=30.0)
         except asyncio.TimeoutError:
@@ -837,8 +874,8 @@ async def root():
         "target_latency_ms": 377,
         "active_sessions": len(active_sessions),
         "services": {
-            "redis": service_manager.redis_running,
-            "qdrant": service_manager.qdrant_running
+            "redis": config_manager.services_started.get('redis', False),
+            "qdrant": config_manager.services_started.get('qdrant', False)
         },
         "timestamp": time.time()
     }
@@ -852,13 +889,14 @@ async def comprehensive_health_check(
         if health_monitor:
             health_data = await health_monitor.get_comprehensive_health()
         else:
+            # Basic health data if monitor not available
             health_data = {
                 "status": "operational" if SYSTEM_INITIALIZED else "initializing",
                 "timestamp": time.time(),
                 "components": {
                     "system": "operational",
-                    "redis": "operational" if service_manager.redis_running else "degraded",
-                    "qdrant": "operational" if service_manager.qdrant_running else "degraded"
+                    "redis": "operational" if config_manager.services_started.get('redis') else "degraded",
+                    "qdrant": "operational" if config_manager.services_started.get('qdrant') else "degraded"
                 },
                 "performance_metrics": {
                     "avg_response_time_ms": 200.0,
@@ -904,10 +942,7 @@ async def list_agent_configs():
             "available_configs": config_summary,
             "total_count": len(config_summary),
             "config_directory": str(config_manager.agents_config_path),
-            "services_status": {
-                "redis": service_manager.redis_running,
-                "qdrant": service_manager.qdrant_running
-            }
+            "services_status": config_manager.services_started
         }
     except Exception as e:
         logger.error(f"Error listing agent configs: {e}")
@@ -919,24 +954,20 @@ async def list_agent_configs():
 
 @app.get("/stats")
 async def get_stats():
-    """Get comprehensive statistics."""
+    """Get comprehensive statistics including conversation metrics."""
     stats = {
         "timestamp": time.time(),
         "system": {
             "initialized": SYSTEM_INITIALIZED,
             "active_calls": len(active_sessions),
             "base_url": BASE_URL,
-            "services": {
-                "redis": service_manager.redis_running,
-                "qdrant": service_manager.qdrant_running
-            },
-            "project_root": str(PROJECT_ROOT),
-            "config_path": str(config_manager.agents_config_path)
+            "services": config_manager.services_started
         },
         "calls": {},
         "sessions": {}
     }
     
+    # Add individual call stats
     for session_id, handler in active_sessions.items():
         try:
             stats["calls"][session_id] = handler.get_stats()
@@ -951,15 +982,9 @@ async def get_config():
     """Get current configuration."""
     config = {
         "base_url": BASE_URL,
-        "project_root": str(PROJECT_ROOT),
-        "config_path": str(config_manager.config_base_path),
-        "agents_config_path": str(config_manager.agents_config_path),
         "google_credentials": os.getenv('GOOGLE_APPLICATION_CREDENTIALS'),
         "google_project": os.getenv('GOOGLE_CLOUD_PROJECT'),
-        "services": {
-            "redis": service_manager.redis_running,
-            "qdrant": service_manager.qdrant_running
-        },
+        "services": config_manager.services_started,
         "conversation_features": {
             "continuous_streaming": True,
             "session_management": True,
@@ -997,20 +1022,20 @@ signal.signal(signal.SIGINT, handle_shutdown_signal)
 if __name__ == '__main__':
     print("🚀 Starting Revolutionary Multi-Agent Voice AI System...")
     print(f"🎯 Target latency: <377ms (84% improvement)")
-    print(f"🔧 Project root: {PROJECT_ROOT}")
-    print(f"🔧 Working directory: {os.getcwd()}")
+    print(f"🔧 Base URL: {os.getenv('BASE_URL', 'Not configured')}")
     print(f"📊 Vector DB: Hybrid 3-tier (Redis+FAISS+Qdrant)")
     print(f"🤖 Agents: Hot deployment with YAML configuration")
     print(f"🛠️ Tools: Comprehensive orchestration framework")
-    print(f"📋 Config Directory: {config_manager.agents_config_path}")
+    print(f"📋 Config Directory: app/config/")
     print(f"⚙️ Services: Auto-startup with configuration integration")
     
     # Verify config directory exists
-    if config_manager.agents_config_path.exists():
-        yaml_files = list(config_manager.agents_config_path.glob("*.yaml"))
+    config_path = Path("app/config/agents")
+    if config_path.exists():
+        yaml_files = list(config_path.glob("*.yaml"))
         print(f"📄 Found {len(yaml_files)} agent config files")
     else:
-        print("⚠️ Config directory not found - will be created automatically")
+        print("⚠️ Config directory not found - please check app/config/agents/")
     
     # Create logs directory
     os.makedirs('./logs', exist_ok=True)
@@ -1020,8 +1045,9 @@ if __name__ == '__main__':
         app,
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", "8000")),
-        reload=False,
+        reload=False,  # Disable reload for production
         log_level="info",
-        workers=1,
-        loop="asyncio"
+        workers=1,  # Single worker for stateful system
+        loop="asyncio",
+        lifespan="on"
     )

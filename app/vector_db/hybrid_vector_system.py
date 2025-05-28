@@ -1,1169 +1,920 @@
 """
-Revolutionary Hybrid Vector Database System
-3-tier architecture: Redis (1ms) + FAISS (5ms) + Qdrant (15ms)
-Target: <5ms average vector retrieval with intelligent promotion/demotion
+Hybrid Vector System with Robust Fallback Mechanisms
+Fixed version with proper error handling and graceful degradation for RunPod deployment.
 """
 import asyncio
 import logging
 import time
-import json
-import hashlib
-import numpy as np
-from typing import Dict, Any, Optional, List, Tuple, Union
+import uuid
+from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass, field
-from enum import Enum
-import statistics
-from concurrent.futures import ThreadPoolExecutor
-
-from app.vector_db.redis_cache import RedisVectorCache
-from app.vector_db.faiss_hot_tier import FAISSHotTier
-from app.vector_db.qdrant_manager import QdrantManager
+import numpy as np
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-class SearchTier(str, Enum):
-    """Vector search tiers with different performance characteristics."""
-    REDIS = "redis"      # <1ms - Hot cache
-    FAISS = "faiss"      # <5ms - In-memory active data
-    QDRANT = "qdrant"    # <15ms - Primary storage
-
-class PromotionStrategy(str, Enum):
-    """Strategies for promoting vectors between tiers."""
-    FREQUENCY_BASED = "frequency"
-    RECENCY_BASED = "recency"
-    PERFORMANCE_BASED = "performance"
-    INTELLIGENT = "intelligent"
-
 @dataclass
 class SearchResult:
-    """Enhanced search result with tier information and metadata."""
+    """Result from vector search operation."""
     vectors: List[Dict[str, Any]]
-    scores: List[float]
-    tier_used: SearchTier
     search_time_ms: float
+    tier_used: str
     total_results: int
+    confidence_scores: List[float] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    cache_hit: bool = False
-    promotion_candidates: List[str] = field(default_factory=list)
 
-@dataclass
-class VectorStats:
-    """Statistics for vector performance tracking."""
-    vector_id: str
-    access_count: int = 0
-    last_accessed: float = field(default_factory=time.time)
-    average_search_time_ms: float = 0.0
-    tier_history: List[SearchTier] = field(default_factory=list)
-    promotion_score: float = 0.0
-
-@dataclass
-class TierPerformanceMetrics:
-    """Performance metrics for each tier."""
-    tier: SearchTier
-    total_queries: int = 0
-    cache_hits: int = 0
-    average_latency_ms: float = 0.0
-    p95_latency_ms: float = 0.0
-    error_count: int = 0
-    promotion_count: int = 0
-    demotion_count: int = 0
-    last_updated: float = field(default_factory=time.time)
-
-class IntelligentPromotionEngine:
-    """AI-powered vector promotion/demotion engine."""
+class InMemoryVectorCache:
+    """In-memory fallback for Redis cache."""
     
-    def __init__(self, 
-                 frequency_weight: float = 0.4,
-                 recency_weight: float = 0.3,
-                 performance_weight: float = 0.3):
-        self.frequency_weight = frequency_weight
-        self.recency_weight = recency_weight
-        self.performance_weight = performance_weight
-        self.vector_stats: Dict[str, VectorStats] = {}
-        
-    def calculate_promotion_score(self, vector_id: str) -> float:
-        """Calculate intelligent promotion score for a vector."""
-        if vector_id not in self.vector_stats:
-            return 0.0
-            
-        stats = self.vector_stats[vector_id]
-        current_time = time.time()
-        
-        # Frequency score (normalized)
-        frequency_score = min(1.0, stats.access_count / 100.0)
-        
-        # Recency score (exponential decay)
-        time_diff = current_time - stats.last_accessed
-        recency_score = np.exp(-time_diff / 3600.0)  # 1-hour half-life
-        
-        # Performance score (inverted latency)
-        performance_score = max(0.0, 1.0 - (stats.average_search_time_ms / 100.0))
-        
-        # Combined weighted score
-        total_score = (
-            self.frequency_weight * frequency_score +
-            self.recency_weight * recency_score +
-            self.performance_weight * performance_score
-        )
-        
-        stats.promotion_score = total_score
-        return total_score
+    def __init__(self, max_size: int = 10000):
+        self.cache = {}
+        self.access_times = {}
+        self.max_size = max_size
+        self.hits = 0
+        self.misses = 0
     
-    def update_vector_stats(self, vector_id: str, search_time_ms: float, tier: SearchTier):
-        """Update statistics for a vector."""
-        if vector_id not in self.vector_stats:
-            self.vector_stats[vector_id] = VectorStats(vector_id=vector_id)
-            
-        stats = self.vector_stats[vector_id]
-        stats.access_count += 1
-        stats.last_accessed = time.time()
+    async def get(self, key: str) -> Optional[np.ndarray]:
+        """Get vector from memory cache."""
+        if key in self.cache:
+            self.access_times[key] = time.time()
+            self.hits += 1
+            return self.cache[key]
         
-        # Update average search time
-        if stats.average_search_time_ms == 0:
-            stats.average_search_time_ms = search_time_ms
-        else:
-            stats.average_search_time_ms = (
-                (stats.average_search_time_ms * (stats.access_count - 1) + search_time_ms) /
-                stats.access_count
+        self.misses += 1
+        return None
+    
+    async def set(self, key: str, vector: np.ndarray, ttl: int = 3600):
+        """Set vector in memory cache with LRU eviction."""
+        if len(self.cache) >= self.max_size:
+            # Remove oldest entry
+            oldest_key = min(self.access_times.keys(), key=lambda k: self.access_times[k])
+            del self.cache[oldest_key]
+            del self.access_times[oldest_key]
+        
+        self.cache[key] = vector
+        self.access_times[key] = time.time()
+    
+    async def delete(self, key: str):
+        """Delete vector from memory cache."""
+        if key in self.cache:
+            del self.cache[key]
+            del self.access_times[key]
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        total_requests = self.hits + self.misses
+        hit_rate = self.hits / total_requests if total_requests > 0 else 0.0
+        
+        return {
+            "type": "in_memory",
+            "size": len(self.cache),
+            "max_size": self.max_size,
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": hit_rate
+        }
+
+class RedisCacheWrapper:
+    """Redis cache wrapper with fallback to in-memory."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.client = None
+        self.fallback_cache = InMemoryVectorCache(config.get("cache_size", 10000))
+        self.use_fallback = config.get("fallback_to_memory", True)
+        self.redis_available = False
+        self.connection_attempts = 0
+        self.max_connection_attempts = 3
+        
+    async def initialize(self):
+        """Initialize Redis connection with fallback."""
+        if self.config.get("host") == ":memory:":
+            logger.info("Using in-memory cache mode")
+            self.use_fallback = True
+            self.redis_available = False
+            return
+        
+        try:
+            import redis.asyncio as redis
+            
+            # Create Redis client
+            self.client = redis.Redis(
+                host=self.config.get("host", "127.0.0.1"),
+                port=self.config.get("port", 6379),
+                decode_responses=False,
+                socket_timeout=self.config.get("timeout", 5),
+                socket_connect_timeout=5,
+                retry_on_timeout=True,
+                health_check_interval=30
             )
-        
-        # Track tier usage
-        stats.tier_history.append(tier)
-        if len(stats.tier_history) > 10:  # Keep last 10 accesses
-            stats.tier_history.pop(0)
-    
-    async def get_promotion_candidates(self, tier: SearchTier, limit: int = 100) -> List[str]:
-        """Get vectors that should be promoted to a higher tier."""
-        candidates = []
-        
-        for vector_id, stats in self.vector_stats.items():
-            if len(stats.tier_history) == 0:
-                continue
-                
-            current_tier = stats.tier_history[-1]
             
-            # Only consider vectors from lower tiers
-            if ((tier == SearchTier.REDIS and current_tier in [SearchTier.FAISS, SearchTier.QDRANT]) or
-                (tier == SearchTier.FAISS and current_tier == SearchTier.QDRANT)):
-                
-                score = self.calculate_promotion_score(vector_id)
-                candidates.append((vector_id, score))
-        
-        # Sort by promotion score and return top candidates
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        return [vector_id for vector_id, _ in candidates[:limit]]
-    
-    async def get_demotion_candidates(self, tier: SearchTier, limit: int = 50) -> List[str]:
-        """Get vectors that should be demoted to a lower tier."""
-        candidates = []
-        current_time = time.time()
-        
-        for vector_id, stats in self.vector_stats.items():
-            if len(stats.tier_history) == 0:
-                continue
-                
-            current_tier = stats.tier_history[-1]
+            # Test connection
+            await self.client.ping()
+            self.redis_available = True
+            logger.info("✅ Redis cache initialized successfully")
             
-            # Only consider vectors from higher tiers
-            if ((tier == SearchTier.FAISS and current_tier == SearchTier.REDIS) or
-                (tier == SearchTier.QDRANT and current_tier in [SearchTier.REDIS, SearchTier.FAISS])):
-                
-                # Calculate demotion score (inverse of promotion score)
-                time_since_access = current_time - stats.last_accessed
-                low_frequency = stats.access_count < 5
-                old_access = time_since_access > 3600  # 1 hour
-                
-                demotion_score = time_since_access / 3600.0  # Hours since last access
-                
-                if low_frequency or old_access:
-                    candidates.append((vector_id, demotion_score))
+        except Exception as e:
+            self.connection_attempts += 1
+            logger.warning(f"❌ Redis connection failed (attempt {self.connection_attempts}): {e}")
+            
+            if self.use_fallback:
+                logger.info("🔄 Falling back to in-memory cache")
+                self.redis_available = False
+            else:
+                raise
+    
+    async def get(self, key: str) -> Optional[np.ndarray]:
+        """Get vector with fallback support."""
+        # Try Redis first if available
+        if self.redis_available and self.client:
+            try:
+                data = await self.client.get(key)
+                if data:
+                    return np.frombuffer(data, dtype=np.float32)
+            except Exception as e:
+                logger.warning(f"Redis get error: {e}")
+                await self._handle_redis_error()
         
-        # Sort by demotion score (higher = more suitable for demotion)
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        return [vector_id for vector_id, _ in candidates[:limit]]
+        # Fallback to in-memory cache
+        return await self.fallback_cache.get(key)
+    
+    async def set(self, key: str, vector: np.ndarray, ttl: int = 3600):
+        """Set vector with fallback support."""
+        # Try Redis first if available
+        if self.redis_available and self.client:
+            try:
+                data = vector.tobytes()
+                await self.client.setex(key, ttl, data)
+                return
+            except Exception as e:
+                logger.warning(f"Redis set error: {e}")
+                await self._handle_redis_error()
+        
+        # Fallback to in-memory cache
+        await self.fallback_cache.set(key, vector, ttl)
+    
+    async def delete(self, key: str):
+        """Delete vector with fallback support."""
+        # Try Redis first if available
+        if self.redis_available and self.client:
+            try:
+                await self.client.delete(key)
+            except Exception as e:
+                logger.warning(f"Redis delete error: {e}")
+                await self._handle_redis_error()
+        
+        # Also delete from fallback cache
+        await self.fallback_cache.delete(key)
+    
+    async def _handle_redis_error(self):
+        """Handle Redis errors and potentially switch to fallback."""
+        if self.connection_attempts >= self.max_connection_attempts:
+            logger.warning("⚠️ Max Redis connection attempts reached, switching to fallback mode")
+            self.redis_available = False
+        else:
+            self.connection_attempts += 1
+            # Try to reconnect
+            try:
+                if self.client:
+                    await self.client.ping()
+                    self.redis_available = True
+                    self.connection_attempts = 0
+            except:
+                pass
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        stats = self.fallback_cache.get_stats()
+        stats.update({
+            "redis_available": self.redis_available,
+            "connection_attempts": self.connection_attempts,
+            "mode": "redis" if self.redis_available else "in_memory_fallback"
+        })
+        return stats
 
-class VectorPerformanceTracker:
-    """Track performance metrics across all tiers."""
+class InMemoryFAISS:
+    """In-memory FAISS implementation with numpy fallback."""
     
-    def __init__(self):
-        self.tier_metrics: Dict[SearchTier, TierPerformanceMetrics] = {
-            SearchTier.REDIS: TierPerformanceMetrics(SearchTier.REDIS),
-            SearchTier.FAISS: TierPerformanceMetrics(SearchTier.FAISS),
-            SearchTier.QDRANT: TierPerformanceMetrics(SearchTier.QDRANT)
-        }
-        self.latency_history: Dict[SearchTier, List[float]] = {
-            tier: [] for tier in SearchTier
-        }
-    
-    def record_search(self, tier: SearchTier, latency_ms: float, cache_hit: bool = False):
-        """Record a search operation."""
-        metrics = self.tier_metrics[tier]
-        metrics.total_queries += 1
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.vectors = {}
+        self.index_built = False
+        self.dimension = None
         
-        if cache_hit:
-            metrics.cache_hits += 1
+    async def initialize(self):
+        """Initialize in-memory FAISS."""
+        logger.info("✅ In-memory FAISS initialized")
         
-        # Update latency metrics
-        self.latency_history[tier].append(latency_ms)
-        
-        # Keep only last 1000 measurements
-        if len(self.latency_history[tier]) > 1000:
-            self.latency_history[tier].pop(0)
-        
-        # Update averages
-        latencies = self.latency_history[tier]
-        if latencies:
-            metrics.average_latency_ms = statistics.mean(latencies)
-            if len(latencies) >= 20:
-                metrics.p95_latency_ms = statistics.quantiles(latencies, n=20)[18]
-        
-        metrics.last_updated = time.time()
-    
-    def record_error(self, tier: SearchTier):
-        """Record an error for a tier."""
-        self.tier_metrics[tier].error_count += 1
-    
-    def record_promotion(self, from_tier: SearchTier, to_tier: SearchTier):
-        """Record a vector promotion."""
-        self.tier_metrics[to_tier].promotion_count += 1
-        self.tier_metrics[from_tier].demotion_count += 1
-    
-    def get_performance_summary(self) -> Dict[str, Any]:
-        """Get comprehensive performance summary."""
-        summary = {}
-        
-        for tier, metrics in self.tier_metrics.items():
-            cache_hit_rate = (metrics.cache_hits / max(metrics.total_queries, 1)) * 100
-            error_rate = (metrics.error_count / max(metrics.total_queries, 1)) * 100
+    async def add_vectors(self, vectors: Dict[str, np.ndarray]):
+        """Add vectors to in-memory index."""
+        for vector_id, vector in vectors.items():
+            if self.dimension is None:
+                self.dimension = len(vector)
             
-            summary[tier.value] = {
-                "total_queries": metrics.total_queries,
-                "cache_hit_rate_percent": cache_hit_rate,
-                "average_latency_ms": metrics.average_latency_ms,
-                "p95_latency_ms": metrics.p95_latency_ms,
-                "error_rate_percent": error_rate,
-                "promotions": metrics.promotion_count,
-                "demotions": metrics.demotion_count,
-                "last_updated": metrics.last_updated
-            }
+            self.vectors[vector_id] = vector
         
-        return summary
+        self.index_built = True
+        logger.debug(f"Added {len(vectors)} vectors to in-memory FAISS")
+    
+    async def search(self, query_vector: np.ndarray, top_k: int = 10) -> List[Dict[str, Any]]:
+        """Search vectors using cosine similarity."""
+        if not self.vectors:
+            return []
+        
+        # Calculate cosine similarity with all vectors
+        similarities = []
+        for vector_id, vector in self.vectors.items():
+            similarity = self._cosine_similarity(query_vector, vector)
+            similarities.append((vector_id, similarity, vector))
+        
+        # Sort by similarity and return top_k
+        similarities.sort(key=lambda x: x[1], reverse=True)
+        
+        results = []
+        for vector_id, similarity, vector in similarities[:top_k]:
+            results.append({
+                "id": vector_id,
+                "score": similarity,
+                "vector": vector,
+                "metadata": {"source": "in_memory_faiss"}
+            })
+        
+        return results
+    
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """Calculate cosine similarity between two vectors."""
+        dot_product = np.dot(vec1, vec2)
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        
+        return dot_product / (norm1 * norm2)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get FAISS statistics."""
+        return {
+            "type": "in_memory",
+            "vector_count": len(self.vectors),
+            "dimension": self.dimension,
+            "index_built": self.index_built
+        }
+
+class InMemoryQdrant:
+    """In-memory Qdrant implementation."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.collections = {}
+        
+    async def initialize(self):
+        """Initialize in-memory Qdrant."""
+        logger.info("✅ In-memory Qdrant initialized")
+    
+    async def create_collection(self, collection_name: str, vector_size: int, distance: str = "cosine"):
+        """Create a collection."""
+        self.collections[collection_name] = {
+            "vectors": {},
+            "vector_size": vector_size,
+            "distance": distance
+        }
+        logger.debug(f"Created collection: {collection_name}")
+    
+    async def upsert_vectors(self, collection_name: str, vectors: List[Dict[str, Any]]):
+        """Upsert vectors to collection."""
+        if collection_name not in self.collections:
+            # Auto-create collection
+            if vectors:
+                vector_size = len(vectors[0]["vector"])
+                await self.create_collection(collection_name, vector_size)
+        
+        collection = self.collections[collection_name]
+        for vector_data in vectors:
+            vector_id = vector_data["id"]
+            collection["vectors"][vector_id] = vector_data
+        
+        logger.debug(f"Upserted {len(vectors)} vectors to {collection_name}")
+    
+    async def search(self, collection_name: str, query_vector: np.ndarray, 
+                    top_k: int = 10, score_threshold: float = 0.0) -> List[Dict[str, Any]]:
+        """Search vectors in collection."""
+        if collection_name not in self.collections:
+            return []
+        
+        collection = self.collections[collection_name]
+        similarities = []
+        
+        for vector_id, vector_data in collection["vectors"].items():
+            vector = np.array(vector_data["vector"])
+            similarity = self._cosine_similarity(query_vector, vector)
+            
+            if similarity >= score_threshold:
+                similarities.append({
+                    "id": vector_id,
+                    "score": similarity,
+                    "payload": vector_data.get("payload", {}),
+                    "vector": vector
+                })
+        
+        # Sort by similarity and return top_k
+        similarities.sort(key=lambda x: x["score"], reverse=True)
+        return similarities[:top_k]
+    
+    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """Calculate cosine similarity."""
+        dot_product = np.dot(vec1, vec2)
+        norm1 = np.linalg.norm(vec1)
+        norm2 = np.linalg.norm(vec2)
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        
+        return dot_product / (norm1 * norm2)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get Qdrant statistics."""
+        total_vectors = sum(len(collection["vectors"]) for collection in self.collections.values())
+        return {
+            "type": "in_memory",
+            "collections": len(self.collections),
+            "total_vectors": total_vectors,
+            "collection_details": {
+                name: {
+                    "vector_count": len(collection["vectors"]),
+                    "vector_size": collection["vector_size"]
+                }
+                for name, collection in self.collections.items()
+            }
+        }
+
+class QdrantWrapper:
+    """Qdrant wrapper with fallback to in-memory."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.client = None
+        self.fallback_qdrant = InMemoryQdrant(config)
+        self.use_fallback = config.get("fallback_to_memory", True)
+        self.qdrant_available = False
+        
+    async def initialize(self):
+        """Initialize Qdrant connection with fallback."""
+        if self.config.get("host") == ":memory:":
+            logger.info("Using in-memory Qdrant mode")
+            self.use_fallback = True
+            self.qdrant_available = False
+            await self.fallback_qdrant.initialize()
+            return
+        
+        try:
+            from qdrant_client import AsyncQdrantClient
+            from qdrant_client.http.exceptions import UnexpectedResponse
+            
+            # Create Qdrant client
+            self.client = AsyncQdrantClient(
+                host=self.config.get("host", "localhost"),
+                port=self.config.get("port", 6333),
+                grpc_port=self.config.get("grpc_port", 6334),
+                prefer_grpc=self.config.get("prefer_grpc", False),
+                timeout=self.config.get("timeout", 10.0)
+            )
+            
+            # Test connection
+            collections = await self.client.get_collections()
+            self.qdrant_available = True
+            logger.info("✅ Qdrant initialized successfully")
+            
+        except Exception as e:
+            logger.warning(f"❌ Qdrant connection failed: {e}")
+            
+            if self.use_fallback:
+                logger.info("🔄 Falling back to in-memory Qdrant")
+                self.qdrant_available = False
+                await self.fallback_qdrant.initialize()
+            else:
+                raise
+    
+    async def create_collection(self, collection_name: str, vector_size: int, distance: str = "cosine"):
+        """Create collection with fallback."""
+        if self.qdrant_available and self.client:
+            try:
+                from qdrant_client.http.models import Distance, VectorParams
+                
+                distance_map = {
+                    "cosine": Distance.COSINE,
+                    "euclidean": Distance.EUCLID,
+                    "dot": Distance.DOT
+                }
+                
+                await self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=vector_size,
+                        distance=distance_map.get(distance, Distance.COSINE)
+                    )
+                )
+                return
+            except Exception as e:
+                logger.warning(f"Qdrant create_collection error: {e}")
+                if not self.use_fallback:
+                    raise
+        
+        # Fallback to in-memory
+        await self.fallback_qdrant.create_collection(collection_name, vector_size, distance)
+    
+    async def upsert_vectors(self, collection_name: str, vectors: List[Dict[str, Any]]):
+        """Upsert vectors with fallback."""
+        if self.qdrant_available and self.client:
+            try:
+                from qdrant_client.http.models import PointStruct
+                
+                points = []
+                for vector_data in vectors:
+                    point = PointStruct(
+                        id=vector_data["id"],
+                        vector=vector_data["vector"].tolist() if isinstance(vector_data["vector"], np.ndarray) else vector_data["vector"],
+                        payload=vector_data.get("payload", {})
+                    )
+                    points.append(point)
+                
+                await self.client.upsert(
+                    collection_name=collection_name,
+                    points=points
+                )
+                return
+            except Exception as e:
+                logger.warning(f"Qdrant upsert error: {e}")
+                if not self.use_fallback:
+                    raise
+        
+        # Fallback to in-memory
+        await self.fallback_qdrant.upsert_vectors(collection_name, vectors)
+    
+    async def search(self, collection_name: str, query_vector: np.ndarray, 
+                    top_k: int = 10, score_threshold: float = 0.0) -> List[Dict[str, Any]]:
+        """Search with fallback."""
+        if self.qdrant_available and self.client:
+            try:
+                results = await self.client.search(
+                    collection_name=collection_name,
+                    query_vector=query_vector.tolist() if isinstance(query_vector, np.ndarray) else query_vector,
+                    limit=top_k,
+                    score_threshold=score_threshold
+                )
+                
+                formatted_results = []
+                for result in results:
+                    formatted_results.append({
+                        "id": result.id,
+                        "score": result.score,
+                        "payload": result.payload,
+                        "vector": np.array(result.vector) if result.vector else None
+                    })
+                
+                return formatted_results
+            except Exception as e:
+                logger.warning(f"Qdrant search error: {e}")
+                if not self.use_fallback:
+                    raise
+        
+        # Fallback to in-memory
+        return await self.fallback_qdrant.search(collection_name, query_vector, top_k, score_threshold)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get Qdrant statistics."""
+        stats = self.fallback_qdrant.get_stats()
+        stats.update({
+            "qdrant_available": self.qdrant_available,
+            "mode": "qdrant" if self.qdrant_available else "in_memory_fallback"
+        })
+        return stats
 
 class HybridVectorSystem:
     """
-    Revolutionary 3-tier hybrid vector database system.
-    Delivers <5ms average search latency through intelligent tier management.
+    Hybrid 3-tier vector system with robust fallback mechanisms.
+    Fixed version for RunPod deployment with graceful degradation.
     """
     
-    def __init__(self,
-                 redis_config: Optional[Dict[str, Any]] = None,
-                 faiss_config: Optional[Dict[str, Any]] = None,
-                 qdrant_config: Optional[Dict[str, Any]] = None,
-                 promotion_strategy: PromotionStrategy = PromotionStrategy.INTELLIGENT,
-                 auto_optimization: bool = True,
-                 optimization_interval: int = 300):  # 5 minutes
-        """Initialize the hybrid vector system."""
+    def __init__(
+        self,
+        redis_config: Dict[str, Any],
+        faiss_config: Dict[str, Any],
+        qdrant_config: Dict[str, Any]
+    ):
+        """Initialize hybrid vector system with fallback support."""
+        self.redis_config = redis_config
+        self.faiss_config = faiss_config
+        self.qdrant_config = qdrant_config
         
-        # Tier configurations
-        self.redis_config = redis_config or {}
-        self.faiss_config = faiss_config or {}
-        self.qdrant_config = qdrant_config or {}
-        
-        # System components
-        self.redis_cache: Optional[RedisVectorCache] = None
-        self.faiss_hot_tier: Optional[FAISSHotTier] = None
-        self.qdrant_primary: Optional[QdrantManager] = None
-        
-        # Intelligence engines
-        self.promotion_engine = IntelligentPromotionEngine()
-        self.performance_tracker = VectorPerformanceTracker()
-        
-        # Configuration
-        self.promotion_strategy = promotion_strategy
-        self.auto_optimization = auto_optimization
-        self.optimization_interval = optimization_interval
-        
-        # Threading for parallel operations
-        self.thread_executor = ThreadPoolExecutor(max_workers=4)
-        
-        # Background tasks
-        self.optimization_task: Optional[asyncio.Task] = None
+        # Initialize components
+        self.redis_cache = RedisCacheWrapper(redis_config)
+        self.faiss_hot_tier = InMemoryFAISS(faiss_config)
+        self.qdrant_manager = QdrantWrapper(qdrant_config)
         
         # System state
         self.initialized = False
-        self.total_vectors = 0
-        self.system_start_time = time.time()
-        
-        logger.info("Hybrid Vector System initialized with 3-tier architecture")
-
-    async def _init_qdrant(self):
-        """Initialize Qdrant with robust error handling and connection retry."""
-        logger.info("🔗 Initializing Qdrant connection...")
-        
-        try:
-            # Handle in-memory mode
-            if self.qdrant_config.get("host") == ":memory:":
-                logger.info("🧠 Using in-memory Qdrant")
-                self.qdrant_client = QdrantClient(":memory:")
-                self.qdrant_initialized = True
-                self.qdrant_fallback_mode = True
-                return
-            
-            # Force HTTP connection for RunPod compatibility
-            self.qdrant_client = QdrantClient(
-                host=self.qdrant_config["host"],
-                port=self.qdrant_config["port"],
-                prefer_grpc=False,  # Force HTTP
-                timeout=self.qdrant_config.get("timeout", 10.0),
-                api_key=None,  # No API key for local instance
-                https=False    # Use HTTP not HTTPS
-            )
-            
-            # Test connection with retry logic
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    # Simple health check
-                    collections = self.qdrant_client.get_collections()
-                    logger.info(f"✅ Qdrant connected successfully ({len(collections.collections)} collections)")
-                    self.qdrant_initialized = True
-                    return
-                    
-                except Exception as e:
-                    logger.warning(f"Qdrant connection attempt {attempt + 1}/{max_retries} failed: {e}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                    else:
-                        raise
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Qdrant: {e}")
-            logger.info("🔄 Falling back to in-memory vector storage...")
-            
-            # Fallback to in-memory storage
-            self.qdrant_client = QdrantClient(":memory:")
-            self.qdrant_initialized = True
-            self.qdrant_fallback_mode = True
-
-    async def _check_qdrant_health(self) -> Dict[str, Any]:
-        """Check Qdrant database health."""
-        health_info = {
-            "status": "unknown",
-            "collections_count": 0,
-            "total_points": 0,
-            "connection_type": "unknown",
-            "error": None
+        self.performance_stats = {
+            "searches_performed": 0,
+            "cache_hits": 0,
+            "faiss_hits": 0,
+            "qdrant_hits": 0,
+            "average_search_time_ms": 0.0,
+            "error_count": 0
         }
         
-        try:
-            if not self.qdrant_client:
-                health_info["status"] = "not_initialized"
-                health_info["error"] = "Qdrant client not initialized"
-                return health_info
-            
-            # Check collections
-            collections = self.qdrant_client.get_collections()
-            health_info["collections_count"] = len(collections.collections)
-            
-            # Count total points across all collections
-            total_points = 0
-            for collection in collections.collections:
-                try:
-                    collection_info = self.qdrant_client.get_collection(collection.name)
-                    if collection_info.points_count:
-                        total_points += collection_info.points_count
-                except Exception as e:
-                    logger.debug(f"Could not get info for collection {collection.name}: {e}")
-            
-            health_info["total_points"] = total_points
-            health_info["connection_type"] = "memory" if getattr(self, 'qdrant_fallback_mode', False) else "http"
-            health_info["status"] = "healthy"
-            
-        except Exception as e:
-            health_info["status"] = "error"
-            health_info["error"] = str(e)
-            logger.error(f"Qdrant health check failed: {e}")
-        
-        return health_info
-
-    async def _check_redis_health(self) -> Dict[str, Any]:
-        """Check Redis health."""
-        health_info = {
-            "status": "unknown",
-            "cached_vectors": 0,
-            "hit_rate": 0.0,
-            "error": None
-        }
-        
-        try:
-            if not self.redis_cache or not self.redis_cache.client:
-                health_info["status"] = "not_initialized"
-                health_info["error"] = "Redis client not initialized"
-                return health_info
-            
-            # Test Redis connection
-            response = self.redis_cache.client.ping()
-            if response:
-                health_info["status"] = "healthy"
-                
-                # Get cache stats
-                info = self.redis_cache.client.info()
-                health_info["cached_vectors"] = info.get("keyspace_hits", 0)
-                
-                hits = info.get("keyspace_hits", 0)
-                misses = info.get("keyspace_misses", 0)
-                if hits + misses > 0:
-                    health_info["hit_rate"] = hits / (hits + misses)
-            else:
-                health_info["status"] = "error"
-                health_info["error"] = "Redis ping failed"
-                
-        except Exception as e:
-            health_info["status"] = "error"
-            health_info["error"] = str(e)
-            logger.error(f"Redis health check failed: {e}")
-        
-        return health_info
-
-    async def _check_faiss_health(self) -> Dict[str, Any]:
-        """Check FAISS health."""
-        health_info = {
-            "status": "unknown",
-            "indexed_vectors": 0,
-            "error": None
-        }
-        
-        try:
-            if not hasattr(self, 'faiss_hot_tier') or not self.faiss_hot_tier:
-                health_info["status"] = "not_initialized"
-                health_info["error"] = "FAISS not initialized"
-                return health_info
-            
-            # Check FAISS index
-            if hasattr(self.faiss_hot_tier, 'index') and self.faiss_hot_tier.index:
-                health_info["indexed_vectors"] = self.faiss_hot_tier.index.ntotal
-                health_info["status"] = "healthy"
-            else:
-                health_info["status"] = "warning"
-                health_info["error"] = "FAISS index not ready"
-                
-        except Exception as e:
-            health_info["status"] = "error"
-            health_info["error"] = str(e)
-            logger.error(f"FAISS health check failed: {e}")
-        
-        return health_info
-
-    
+        logger.info("HybridVectorSystem created with fallback support")
     
     async def initialize(self):
-        """Initialize all three tiers of the vector system."""
-        logger.info("🚀 Initializing Revolutionary 3-Tier Hybrid Vector System...")
-        start_time = time.time()
+        """Initialize all tiers with error handling."""
+        logger.info("🚀 Initializing Hybrid Vector System...")
         
+        initialization_errors = []
+        
+        # Initialize Redis cache (Tier 1)
         try:
-            # Initialize Tier 1: Redis Cache (Sub-millisecond)
-            logger.info("📊 Initializing Tier 1: Redis Cache...")
-            self.redis_cache = RedisVectorCache(**self.redis_config)
             await self.redis_cache.initialize()
-            
-            # Initialize Tier 2: FAISS Hot Tier (Sub-5ms)
-            logger.info("⚡ Initializing Tier 2: FAISS Hot Tier...")
-            self.faiss_hot_tier = FAISSHotTier(**self.faiss_config)
-            await self.faiss_hot_tier.initialize()
-            
-            # Initialize Tier 3: Qdrant Primary (Sub-15ms)
-            logger.info("🎯 Initializing Tier 3: Qdrant Primary...")
-            self.qdrant_primary = QdrantManager(**self.qdrant_config)
-            await self.qdrant_primary.initialize()
-            
-            # Start background optimization if enabled
-            if self.auto_optimization:
-                self.optimization_task = asyncio.create_task(self._background_optimization())
-            
-            initialization_time = time.time() - start_time
-            self.initialized = True
-            
-            logger.info(f"✅ Hybrid Vector System initialized in {initialization_time:.2f}s")
-            logger.info(f"🎯 Target: <5ms average search latency")
-            logger.info(f"📈 Expected improvement: 95% faster than current system")
-            
+            logger.info("✅ Tier 1 (Redis Cache) initialized")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize Hybrid Vector System: {e}", exc_info=True)
-            raise
-    
-    async def hybrid_search(self,
-                          query_vector: np.ndarray,
-                          agent_id: str,
-                          top_k: int = 5,
-                          similarity_threshold: float = 0.7,
-                          filters: Optional[Dict[str, Any]] = None) -> SearchResult:
-        """
-        Intelligent multi-tier search with automatic fallback and promotion.
+            error_msg = f"Tier 1 (Redis Cache) initialization failed: {e}"
+            logger.error(error_msg)
+            initialization_errors.append(error_msg)
         
-        Search order: Redis Cache → FAISS Hot Tier → Qdrant Primary
+        # Initialize FAISS hot tier (Tier 2)
+        try:
+            await self.faiss_hot_tier.initialize()
+            logger.info("✅ Tier 2 (FAISS Hot Tier) initialized")
+        except Exception as e:
+            error_msg = f"Tier 2 (FAISS Hot Tier) initialization failed: {e}"
+            logger.error(error_msg)
+            initialization_errors.append(error_msg)
+        
+        # Initialize Qdrant manager (Tier 3)
+        try:
+            await self.qdrant_manager.initialize()
+            logger.info("✅ Tier 3 (Qdrant Manager) initialized")
+        except Exception as e:
+            error_msg = f"Tier 3 (Qdrant Manager) initialization failed: {e}"
+            logger.error(error_msg)
+            initialization_errors.append(error_msg)
+        
+        # Mark as initialized even if some tiers failed
+        self.initialized = True
+        
+        if initialization_errors:
+            logger.warning(f"⚠️ System initialized with {len(initialization_errors)} errors:")
+            for error in initialization_errors:
+                logger.warning(f"  • {error}")
+            logger.info("🔄 System will continue with available tiers")
+        else:
+            logger.info("✅ All tiers initialized successfully")
+    
+    async def hybrid_search(
+        self,
+        query_vector: np.ndarray,
+        agent_id: Optional[str] = None,
+        top_k: int = 10,
+        similarity_threshold: float = 0.7,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> Optional[SearchResult]:
+        """
+        Perform hybrid search across all available tiers with fallback.
         """
         if not self.initialized:
-            raise RuntimeError("Hybrid Vector System not initialized")
+            await self.initialize()
         
-        search_start_time = time.time()
-        query_hash = self._generate_query_hash(query_vector, agent_id, top_k, filters)
+        search_start = time.time()
         
-        # Tier 1: Redis Cache (Target: <1ms)
         try:
-            tier1_start = time.time()
-            redis_result = await self.redis_cache.search(
-                query_vector=query_vector,
-                namespace=f"agent_{agent_id}",
-                top_k=top_k,
-                filters=filters
-            )
-            tier1_time = (time.time() - tier1_start) * 1000
+            self.performance_stats["searches_performed"] += 1
             
-            if redis_result and self._is_result_sufficient(redis_result, similarity_threshold):
-                self.performance_tracker.record_search(SearchTier.REDIS, tier1_time, cache_hit=True)
-                
-                # Update vector stats
-                for vector_data in redis_result.vectors:
-                    vector_id = vector_data.get('id')
-                    if vector_id:
-                        self.promotion_engine.update_vector_stats(vector_id, tier1_time, SearchTier.REDIS)
-                
-                logger.debug(f"🚀 Redis cache hit: {tier1_time:.2f}ms for agent_{agent_id}")
+            # Generate cache key
+            cache_key = self._generate_cache_key(query_vector, agent_id, top_k, filters)
+            
+            # Tier 1: Redis Cache
+            cached_result = await self._search_redis_cache(cache_key)
+            if cached_result:
+                search_time = (time.time() - search_start) * 1000
+                self.performance_stats["cache_hits"] += 1
+                self._update_average_search_time(search_time)
                 
                 return SearchResult(
-                    vectors=redis_result.vectors,
-                    scores=redis_result.scores,
-                    tier_used=SearchTier.REDIS,
-                    search_time_ms=tier1_time,
-                    total_results=len(redis_result.vectors),
-                    cache_hit=True,
-                    metadata={"query_hash": query_hash}
+                    vectors=cached_result,
+                    search_time_ms=search_time,
+                    tier_used="redis_cache",
+                    total_results=len(cached_result)
                 )
-                
-        except Exception as e:
-            logger.warning(f"Redis cache search failed: {e}")
-            self.performance_tracker.record_error(SearchTier.REDIS)
-        
-        # Tier 2: FAISS Hot Tier (Target: <5ms)
-        try:
-            tier2_start = time.time()
-            faiss_result = await self.faiss_hot_tier.search(
-                query_vector=query_vector,
-                agent_id=agent_id,
-                top_k=top_k,
-                filters=filters
-            )
-            tier2_time = (time.time() - tier2_start) * 1000
             
-            if faiss_result and self._is_result_sufficient(faiss_result, similarity_threshold):
-                self.performance_tracker.record_search(SearchTier.FAISS, tier2_time)
+            # Tier 2: FAISS Hot Tier
+            faiss_results = await self._search_faiss_hot_tier(query_vector, top_k, similarity_threshold)
+            if faiss_results:
+                search_time = (time.time() - search_start) * 1000
+                self.performance_stats["faiss_hits"] += 1
+                self._update_average_search_time(search_time)
                 
-                # Promote to Redis cache for next time
-                asyncio.create_task(self._promote_to_redis(query_vector, faiss_result, f"agent_{agent_id}"))
-                
-                # Update vector stats
-                for vector_data in faiss_result.vectors:
-                    vector_id = vector_data.get('id')
-                    if vector_id:
-                        self.promotion_engine.update_vector_stats(vector_id, tier2_time, SearchTier.FAISS)
-                
-                logger.debug(f"⚡ FAISS hot tier hit: {tier2_time:.2f}ms for agent_{agent_id}")
+                # Cache results for future use
+                await self._cache_search_results(cache_key, faiss_results)
                 
                 return SearchResult(
-                    vectors=faiss_result.vectors,
-                    scores=faiss_result.scores,
-                    tier_used=SearchTier.FAISS,
-                    search_time_ms=tier2_time,
-                    total_results=len(faiss_result.vectors),
-                    metadata={"query_hash": query_hash, "promoted_to_redis": True}
+                    vectors=faiss_results,
+                    search_time_ms=search_time,
+                    tier_used="faiss_hot_tier",
+                    total_results=len(faiss_results)
                 )
+            
+            # Tier 3: Qdrant Manager
+            qdrant_results = await self._search_qdrant(query_vector, agent_id, top_k, similarity_threshold, filters)
+            if qdrant_results:
+                search_time = (time.time() - search_start) * 1000
+                self.performance_stats["qdrant_hits"] += 1
+                self._update_average_search_time(search_time)
                 
-        except Exception as e:
-            logger.warning(f"FAISS hot tier search failed: {e}")
-            self.performance_tracker.record_error(SearchTier.FAISS)
-        
-        # Tier 3: Qdrant Primary (Target: <15ms)
-        try:
-            tier3_start = time.time()
-            qdrant_result = await self.qdrant_primary.search(
-                query_vector=query_vector,
-                collection_name=f"agent_{agent_id}",
-                top_k=top_k,
-                score_threshold=similarity_threshold,
-                filters=filters
-            )
-            tier3_time = (time.time() - tier3_start) * 1000
-            
-            self.performance_tracker.record_search(SearchTier.QDRANT, tier3_time)
-            
-            # Consider promotion to higher tiers
-            if qdrant_result:
-                asyncio.create_task(self._consider_promotion(agent_id, query_vector, qdrant_result))
+                # Cache results and promote to hot tier
+                await self._cache_search_results(cache_key, qdrant_results)
+                await self._promote_to_hot_tier(qdrant_results)
                 
-                # Update vector stats
-                for vector_data in qdrant_result.vectors:
-                    vector_id = vector_data.get('id')
-                    if vector_id:
-                        self.promotion_engine.update_vector_stats(vector_id, tier3_time, SearchTier.QDRANT)
+                return SearchResult(
+                    vectors=qdrant_results,
+                    search_time_ms=search_time,
+                    tier_used="qdrant_manager",
+                    total_results=len(qdrant_results)
+                )
             
-            logger.debug(f"🎯 Qdrant primary search: {tier3_time:.2f}ms for agent_{agent_id}")
+            # No results found
+            search_time = (time.time() - search_start) * 1000
+            self._update_average_search_time(search_time)
             
-            total_search_time = (time.time() - search_start_time) * 1000
-            
-            return SearchResult(
-                vectors=qdrant_result.vectors if qdrant_result else [],
-                scores=qdrant_result.scores if qdrant_result else [],
-                tier_used=SearchTier.QDRANT,
-                search_time_ms=total_search_time,
-                total_results=len(qdrant_result.vectors) if qdrant_result else 0,
-                metadata={"query_hash": query_hash}
-            )
-            
-        except Exception as e:
-            logger.error(f"Qdrant primary search failed: {e}")
-            self.performance_tracker.record_error(SearchTier.QDRANT)
-            
-            # Return empty result if all tiers fail
             return SearchResult(
                 vectors=[],
-                scores=[],
-                tier_used=SearchTier.QDRANT,
-                search_time_ms=(time.time() - search_start_time) * 1000,
+                search_time_ms=search_time,
+                tier_used="none",
+                total_results=0
+            )
+            
+        except Exception as e:
+            self.performance_stats["error_count"] += 1
+            search_time = (time.time() - search_start) * 1000
+            logger.error(f"❌ Hybrid search error: {e}")
+            
+            return SearchResult(
+                vectors=[],
+                search_time_ms=search_time,
+                tier_used="error",
                 total_results=0,
-                metadata={"error": "All tiers failed", "query_hash": query_hash}
+                metadata={"error": str(e)}
             )
     
-    async def add_vectors(self,
-                         vectors: List[Dict[str, Any]],
-                         agent_id: str,
-                         auto_optimize: bool = True) -> Dict[str, Any]:
-        """Add vectors to the hybrid system with intelligent placement."""
-        if not self.initialized:
-            raise RuntimeError("Hybrid Vector System not initialized")
-        
-        start_time = time.time()
-        collection_name = f"agent_{agent_id}"
-        
-        # Always add to Qdrant (primary storage)
-        qdrant_result = await self.qdrant_primary.add_vectors(
-            vectors=vectors,
-            collection_name=collection_name
-        )
-        
-        # Add high-priority vectors to FAISS hot tier
-        if auto_optimize:
-            hot_vectors = []
-            for vector_data in vectors:
-                # Add vectors with high expected usage to hot tier
-                priority = vector_data.get('metadata', {}).get('priority', 'normal')
-                if priority in ['high', 'critical']:
-                    hot_vectors.append(vector_data)
-            
-            if hot_vectors:
-                await self.faiss_hot_tier.add_vectors(hot_vectors, agent_id)
-        
-        self.total_vectors += len(vectors)
-        processing_time = (time.time() - start_time) * 1000
-        
-        logger.info(f"Added {len(vectors)} vectors to agent_{agent_id} in {processing_time:.2f}ms")
-        
-        return {
-            "success": True,
-            "vectors_added": len(vectors),
-            "agent_id": agent_id,
-            "processing_time_ms": processing_time,
-            "qdrant_result": qdrant_result
-        }
-    
-    async def analyze_query_intent(self,
-                                 query: str,
-                                 context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Analyze query intent for intelligent routing and processing."""
-        # This would integrate with your existing NLP pipeline
-        # For now, providing a structure that can be enhanced
-        
-        analysis = {
-            "intent": "general",
-            "urgency": "normal",
-            "complexity": 0.5,
-            "entities": [],
-            "keywords": query.lower().split(),
-            "requires_tools": False,
-            "confidence": 0.8
-        }
-        
-        # Urgency detection
-        urgent_keywords = ["emergency", "urgent", "help", "stuck", "accident", "critical"]
-        if any(keyword in query.lower() for keyword in urgent_keywords):
-            analysis["urgency"] = "high"
-            analysis["complexity"] = 0.8
-        
-        # Tool requirement detection
-        tool_keywords = ["dispatch", "payment", "schedule", "create", "send", "update"]
-        if any(keyword in query.lower() for keyword in tool_keywords):
-            analysis["requires_tools"] = True
-            analysis["complexity"] = 0.7
-        
-        return analysis
-    
-    async def get_agent_context(self,
-                              agent_id: str,
-                              query: str,
-                              base_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Get agent-specific context from the vector system."""
-        # Create query vector (this would use your embedding model)
-        # For now, using a placeholder
-        query_vector = np.random.rand(1536).astype(np.float32)  # OpenAI embedding size
-        
-        # Search for relevant context
-        search_result = await self.hybrid_search(
-            query_vector=query_vector,
-            agent_id=agent_id,
-            top_k=3,
-            similarity_threshold=0.7
-        )
-        
-        # Build enriched context
-        enriched_context = {
-            **base_context,
-            "relevant_documents": [
-                {
-                    "content": vector.get("text", ""),
-                    "metadata": vector.get("metadata", {}),
-                    "score": score
-                }
-                for vector, score in zip(search_result.vectors, search_result.scores)
-            ],
-            "search_tier_used": search_result.tier_used.value,
-            "search_time_ms": search_result.search_time_ms
-        }
-        
-        return enriched_context
-    
-    def _generate_query_hash(self,
-                           query_vector: np.ndarray,
-                           agent_id: str,
-                           top_k: int,
-                           filters: Optional[Dict[str, Any]]) -> str:
-        """Generate a hash for caching query results."""
-        # Create a string representation of the query
-        query_str = f"{agent_id}_{top_k}_{query_vector.tobytes()}"
-        if filters:
-            query_str += json.dumps(filters, sort_keys=True)
-        
-        return hashlib.md5(query_str.encode()).hexdigest()
-    
-    def _is_result_sufficient(self,
-                            result: SearchResult,
-                            threshold: float) -> bool:
-        """Check if search result meets quality threshold."""
-        if not result or not result.vectors:
-            return False
-        
-        # Check if we have enough high-quality results
-        high_quality_results = [
-            score for score in result.scores 
-            if score >= threshold
-        ]
-        
-        return len(high_quality_results) >= min(3, len(result.vectors))
-    
-    async def _promote_to_redis(self,
-                              query_vector: np.ndarray,
-                              result: SearchResult,
-                              namespace: str):
-        """Promote search result to Redis cache."""
+    async def _search_redis_cache(self, cache_key: str) -> Optional[List[Dict[str, Any]]]:
+        """Search Redis cache tier."""
         try:
-            await self.redis_cache.store(
-                query_vector=query_vector,
-                result=result,
-                namespace=namespace
-            )
-            logger.debug(f"Promoted search result to Redis cache for {namespace}")
+            cached_data = await self.redis_cache.get(cache_key)
+            if cached_data is not None:
+                # Deserialize cached results
+                return self._deserialize_search_results(cached_data)
         except Exception as e:
-            logger.warning(f"Failed to promote to Redis cache: {e}")
+            logger.debug(f"Redis cache search error: {e}")
+        
+        return None
     
-    async def _consider_promotion(self,
-                                agent_id: str,
-                                query_vector: np.ndarray,
-                                result: SearchResult):
-        """Consider promoting vectors to higher tiers based on usage patterns."""
-        if not result or not result.vectors:
-            return
-        
-        # Get promotion candidates based on the intelligent engine
-        candidates = await self.promotion_engine.get_promotion_candidates(
-            SearchTier.FAISS, limit=10
-        )
-        
-        # Promote high-scoring vectors to FAISS
-        vectors_to_promote = []
-        for vector_data in result.vectors:
-            vector_id = vector_data.get('id')
-            if vector_id and vector_id in candidates:
-                vectors_to_promote.append(vector_data)
-        
-        if vectors_to_promote:
-            try:
-                await self.faiss_hot_tier.add_vectors(vectors_to_promote, agent_id)
-                self.performance_tracker.record_promotion(SearchTier.QDRANT, SearchTier.FAISS)
-                logger.debug(f"Promoted {len(vectors_to_promote)} vectors to FAISS for agent_{agent_id}")
-            except Exception as e:
-                logger.warning(f"Failed to promote vectors to FAISS: {e}")
-    
-    async def _background_optimization(self):
-        """Background task for continuous system optimization."""
-        logger.info(f"Starting background optimization (interval: {self.optimization_interval}s)")
-        
-        while True:
-            try:
-                await asyncio.sleep(self.optimization_interval)
-                
-                # Optimize tier assignments
-                await self._optimize_tier_assignments()
-                
-                # Clean up expired cache entries
-                await self._cleanup_expired_entries()
-                
-                # Rebalance hot tier
-                await self._rebalance_hot_tier()
-                
-                logger.debug("Background optimization cycle completed")
-                
-            except Exception as e:
-                logger.error(f"Error in background optimization: {e}")
-                await asyncio.sleep(60)  # Wait before retrying
-    
-    async def _optimize_tier_assignments(self):
-        """Optimize vector assignments across tiers."""
+    async def _search_faiss_hot_tier(
+        self,
+        query_vector: np.ndarray,
+        top_k: int,
+        similarity_threshold: float
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Search FAISS hot tier."""
         try:
-            # Get promotion candidates for Redis
-            redis_candidates = await self.promotion_engine.get_promotion_candidates(
-                SearchTier.REDIS, limit=50
-            )
+            results = await self.faiss_hot_tier.search(query_vector, top_k)
             
-            # Get promotion candidates for FAISS
-            faiss_candidates = await self.promotion_engine.get_promotion_candidates(
-                SearchTier.FAISS, limit=100
-            )
-            
-            # Get demotion candidates
-            redis_demotions = await self.promotion_engine.get_demotion_candidates(
-                SearchTier.FAISS, limit=25
-            )
-            
-            faiss_demotions = await self.promotion_engine.get_demotion_candidates(
-                SearchTier.QDRANT, limit=50
-            )
-            
-            # Execute optimizations
-            if redis_candidates:
-                await self._promote_vectors_to_redis(redis_candidates)
-            
-            if faiss_candidates:
-                await self._promote_vectors_to_faiss(faiss_candidates)
-            
-            if redis_demotions:
-                await self._demote_vectors_from_redis(redis_demotions)
-            
-            if faiss_demotions:
-                await self._demote_vectors_from_faiss(faiss_demotions)
-                
-        except Exception as e:
-            logger.error(f"Error optimizing tier assignments: {e}")
-    
-    async def _cleanup_expired_entries(self):
-        """Clean up expired entries from cache tiers."""
-        try:
-            if self.redis_cache:
-                await self.redis_cache.cleanup_expired()
-            
-            if self.faiss_hot_tier:
-                await self.faiss_hot_tier.cleanup_unused()
-                
-        except Exception as e:
-            logger.error(f"Error cleaning up expired entries: {e}")
-    
-    async def _rebalance_hot_tier(self):
-        """Rebalance the FAISS hot tier for optimal performance."""
-        try:
-            if self.faiss_hot_tier:
-                await self.faiss_hot_tier.rebalance()
-        except Exception as e:
-            logger.error(f"Error rebalancing hot tier: {e}")
-    
-    async def _promote_vectors_to_redis(self, vector_ids: List[str]):
-        """Promote specific vectors to Redis cache."""
-        # Implementation would fetch vectors from lower tiers and add to Redis
-        pass
-    
-    async def _promote_vectors_to_faiss(self, vector_ids: List[str]):
-        """Promote specific vectors to FAISS hot tier."""
-        # Implementation would fetch vectors from Qdrant and add to FAISS
-        pass
-    
-    async def _demote_vectors_from_redis(self, vector_ids: List[str]):
-        """Demote vectors from Redis cache."""
-        # Implementation would remove vectors from Redis
-        pass
-    
-    async def _demote_vectors_from_faiss(self, vector_ids: List[str]):
-        """Demote vectors from FAISS hot tier."""
-        # Implementation would remove vectors from FAISS
-        pass
-    
-    async def get_performance_stats(self) -> Dict[str, Any]:
-        """Get comprehensive performance statistics."""
-        uptime_hours = (time.time() - self.system_start_time) / 3600
-        
-        tier_performance = self.performance_tracker.get_performance_summary()
-        
-        # Calculate overall statistics
-        total_queries = sum(metrics["total_queries"] for metrics in tier_performance.values())
-        weighted_avg_latency = 0.0
-        
-        if total_queries > 0:
-            for tier_name, metrics in tier_performance.items():
-                weight = metrics["total_queries"] / total_queries
-                weighted_avg_latency += weight * metrics["average_latency_ms"]
-        
-        return {
-            "system_uptime_hours": uptime_hours,
-            "total_vectors": self.total_vectors,
-            "total_queries": total_queries,
-            "avg_search_time_ms": weighted_avg_latency,
-            "target_latency_ms": 5.0,
-            "performance_improvement": max(0, ((100 - weighted_avg_latency) / 100) * 100),
-            "tier_performance": tier_performance,
-            "promotion_engine_stats": {
-                "total_vectors_tracked": len(self.promotion_engine.vector_stats),
-                "avg_promotion_score": sum(
-                    stats.promotion_score for stats in self.promotion_engine.vector_stats.values()
-                ) / max(len(self.promotion_engine.vector_stats), 1)
-            },
-            "system_health": {
-                "redis_healthy": self.redis_cache is not None and self.redis_cache.is_healthy(),
-                "faiss_healthy": self.faiss_hot_tier is not None and self.faiss_hot_tier.is_healthy(),
-                "qdrant_healthy": self.qdrant_primary is not None and self.qdrant_primary.is_healthy()
-            }
-        }
-
-    async def _init_qdrant(self):
-        """Initialize Qdrant with robust error handling and connection retry."""
-        logger.info("🔗 Initializing Qdrant connection...")
-        
-        try:
-            # Handle in-memory mode
-            if self.qdrant_config.get("host") == ":memory:":
-                logger.info("🧠 Using in-memory Qdrant")
-                from qdrant_client import QdrantClient
-                self.qdrant_client = QdrantClient(":memory:")
-                self.qdrant_initialized = True
-                self.qdrant_fallback_mode = True
-                return
-            
-            # Force HTTP connection for RunPod compatibility
-            from qdrant_client import QdrantClient
-            self.qdrant_client = QdrantClient(
-                host=self.qdrant_config["host"],
-                port=self.qdrant_config["port"],
-                prefer_grpc=False,  # Force HTTP
-                timeout=self.qdrant_config.get("timeout", 10.0),
-                api_key=None,  # No API key for local instance
-                https=False    # Use HTTP not HTTPS
-            )
-            
-            # Test connection with retry logic
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    # Simple health check
-                    collections = self.qdrant_client.get_collections()
-                    logger.info(f"✅ Qdrant connected successfully ({len(collections.collections)} collections)")
-                    self.qdrant_initialized = True
-                    return
-                    
-                except Exception as e:
-                    logger.warning(f"Qdrant connection attempt {attempt + 1}/{max_retries} failed: {e}")
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                    else:
-                        raise
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Qdrant: {e}")
-            logger.info("🔄 Falling back to in-memory vector storage...")
-            
-            # Fallback to in-memory storage
-            from qdrant_client import QdrantClient
-            self.qdrant_client = QdrantClient(":memory:")
-            self.qdrant_initialized = True
-            self.qdrant_fallback_mode = True
-
-    async def _check_qdrant_health(self) -> Dict[str, Any]:
-        """Check Qdrant database health."""
-        health_info = {
-            "status": "unknown",
-            "collections_count": 0,
-            "total_points": 0,
-            "connection_type": "unknown",
-            "error": None
-        }
-        
-        try:
-            if not hasattr(self, 'qdrant_client') or not self.qdrant_client:
-                health_info["status"] = "not_initialized"
-                health_info["error"] = "Qdrant client not initialized"
-                return health_info
-            
-            # Check collections
-            collections = self.qdrant_client.get_collections()
-            health_info["collections_count"] = len(collections.collections)
-            
-            # Count total points across all collections
-            total_points = 0
-            for collection in collections.collections:
-                try:
-                    collection_info = self.qdrant_client.get_collection(collection.name)
-                    if collection_info.points_count:
-                        total_points += collection_info.points_count
-                except Exception as e:
-                    logger.debug(f"Could not get info for collection {collection.name}: {e}")
-            
-            health_info["total_points"] = total_points
-            health_info["connection_type"] = "memory" if getattr(self, 'qdrant_fallback_mode', False) else "http"
-            health_info["status"] = "healthy"
-            
-        except Exception as e:
-            health_info["status"] = "error"
-            health_info["error"] = str(e)
-            logger.error(f"Qdrant health check failed: {e}")
-        
-        return health_info
-
-    async def _check_redis_health(self) -> Dict[str, Any]:
-        """Check Redis health."""
-        health_info = {
-            "status": "unknown",
-            "cached_vectors": 0,
-            "hit_rate": 0.0,
-            "error": None
-        }
-        
-        try:
-            if not hasattr(self, 'redis_cache') or not self.redis_cache or not hasattr(self.redis_cache, 'client'):
-                health_info["status"] = "not_initialized"
-                health_info["error"] = "Redis client not initialized"
-                return health_info
-            
-            # Test Redis connection
-            response = self.redis_cache.client.ping()
-            if response:
-                health_info["status"] = "healthy"
-                
-                # Get cache stats
-                info = self.redis_cache.client.info()
-                health_info["cached_vectors"] = info.get("keyspace_hits", 0)
-                
-                hits = info.get("keyspace_hits", 0)
-                misses = info.get("keyspace_misses", 0)
-                if hits + misses > 0:
-                    health_info["hit_rate"] = hits / (hits + misses)
-            else:
-                health_info["status"] = "error"
-                health_info["error"] = "Redis ping failed"
-                
-        except Exception as e:
-            health_info["status"] = "error"
-            health_info["error"] = str(e)
-            logger.error(f"Redis health check failed: {e}")
-        
-        return health_info
-
-    async def _check_faiss_health(self) -> Dict[str, Any]:
-        """Check FAISS health."""
-        health_info = {
-            "status": "unknown",
-            "indexed_vectors": 0,
-            "error": None
-        }
-        
-        try:
-            if not hasattr(self, 'faiss_hot_tier') or not self.faiss_hot_tier:
-                health_info["status"] = "not_initialized"
-                health_info["error"] = "FAISS not initialized"
-                return health_info
-            
-            # Check FAISS index
-            if hasattr(self.faiss_hot_tier, 'index') and self.faiss_hot_tier.index:
-                health_info["indexed_vectors"] = self.faiss_hot_tier.index.ntotal
-                health_info["status"] = "healthy"
-            else:
-                health_info["status"] = "warning"
-                health_info["error"] = "FAISS index not ready"
-                
-        except Exception as e:
-            health_info["status"] = "error"
-            health_info["error"] = str(e)
-            logger.error(f"FAISS health check failed: {e}")
-        
-        return health_info
-
-    async def get_health_status(self) -> Dict[str, Any]:
-        """Get comprehensive health status of the hybrid vector system."""
-        health_status = {
-            "overall_status": "healthy",
-            "components": {},
-            "timestamp": time.time(),
-            "performance_metrics": {}
-        }
-        
-        try:
-            # Check Redis
-            redis_health = await self._check_redis_health()
-            health_status["components"]["redis"] = redis_health
-            
-            # Check FAISS
-            faiss_health = await self._check_faiss_health()
-            health_status["components"]["faiss"] = faiss_health
-            
-            # Check Qdrant
-            qdrant_health = await self._check_qdrant_health()
-            health_status["components"]["qdrant"] = qdrant_health
-            
-            # Determine overall status
-            component_statuses = [
-                redis_health.get("status", "unknown"),
-                faiss_health.get("status", "unknown"),
-                qdrant_health.get("status", "unknown")
+            # Filter by similarity threshold
+            filtered_results = [
+                result for result in results
+                if result.get("score", 0.0) >= similarity_threshold
             ]
             
-            if "error" in component_statuses:
-                health_status["overall_status"] = "degraded"
-            elif "warning" in component_statuses:
-                health_status["overall_status"] = "warning"
-            elif all(status == "healthy" for status in component_statuses):
-                health_status["overall_status"] = "healthy"
-            else:
-                health_status["overall_status"] = "unknown"
+            return filtered_results if filtered_results else None
+        except Exception as e:
+            logger.debug(f"FAISS hot tier search error: {e}")
+        
+        return None
+    
+    async def _search_qdrant(
+        self,
+        query_vector: np.ndarray,
+        agent_id: Optional[str],
+        top_k: int,
+        similarity_threshold: float,
+        filters: Optional[Dict[str, Any]]
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Search Qdrant tier."""
+        try:
+            # Determine collection name
+            collection_name = f"agent_{agent_id}" if agent_id else "default_collection"
             
-            # Add performance metrics
-            health_status["performance_metrics"] = {
-                "total_vectors": (
-                    redis_health.get("cached_vectors", 0) +
-                    faiss_health.get("indexed_vectors", 0) +
-                    qdrant_health.get("total_points", 0)
-                ),
-                "cache_hit_rate": getattr(self.redis_cache, 'hit_rate', 0.0) if hasattr(self, 'redis_cache') else 0.0,
-                "average_search_time_ms": getattr(self, 'avg_search_time_ms', 0.0),
-                "system_initialized": getattr(self, 'initialized', False)
-            }
+            # Ensure collection exists
+            try:
+                await self.qdrant_manager.create_collection(
+                    collection_name, 
+                    vector_size=len(query_vector)
+                )
+            except:
+                pass  # Collection might already exist
+            
+            results = await self.qdrant_manager.search(
+                collection_name=collection_name,
+                query_vector=query_vector,
+                top_k=top_k,
+                score_threshold=similarity_threshold
+            )
+            
+            return results if results else None
+        except Exception as e:
+            logger.debug(f"Qdrant search error: {e}")
+        
+        return None
+    
+    async def _cache_search_results(self, cache_key: str, results: List[Dict[str, Any]]):
+        """Cache search results in Redis."""
+        try:
+            serialized_results = self._serialize_search_results(results)
+            await self.redis_cache.set(cache_key, serialized_results, ttl=3600)
+        except Exception as e:
+            logger.debug(f"Result caching error: {e}")
+    
+    async def _promote_to_hot_tier(self, results: List[Dict[str, Any]]):
+        """Promote frequently accessed vectors to FAISS hot tier."""
+        try:
+            vectors_to_add = {}
+            for result in results:
+                if "vector" in result and "id" in result:
+                    vectors_to_add[result["id"]] = np.array(result["vector"])
+            
+            if vectors_to_add:
+                await self.faiss_hot_tier.add_vectors(vectors_to_add)
+        except Exception as e:
+            logger.debug(f"Hot tier promotion error: {e}")
+    
+    def _generate_cache_key(
+        self,
+        query_vector: np.ndarray,
+        agent_id: Optional[str],
+        top_k: int,
+        filters: Optional[Dict[str, Any]]
+    ) -> str:
+        """Generate cache key for search parameters."""
+        import hashlib
+        
+        # Create hash from query vector
+        vector_hash = hashlib.md5(query_vector.tobytes()).hexdigest()[:8]
+        
+        # Include other parameters
+        key_parts = [
+            vector_hash,
+            agent_id or "default",
+            str(top_k),
+            str(sorted(filters.items())) if filters else "no_filters"
+        ]
+        
+        return ":".join(key_parts)
+    
+    def _serialize_search_results(self, results: List[Dict[str, Any]]) -> np.ndarray:
+        """Serialize search results for caching."""
+        # Simple serialization - in production, use more sophisticated method
+        import pickle
+        serialized = pickle.dumps(results)
+        return np.frombuffer(serialized, dtype=np.uint8)
+    
+    def _deserialize_search_results(self, data: np.ndarray) -> List[Dict[str, Any]]:
+        """Deserialize cached search results."""
+        import pickle
+        return pickle.loads(data.tobytes())
+    
+    def _update_average_search_time(self, search_time_ms: float):
+        """Update average search time statistics."""
+        current_avg = self.performance_stats["average_search_time_ms"]
+        total_searches = self.performance_stats["searches_performed"]
+        
+        if total_searches == 1:
+            self.performance_stats["average_search_time_ms"] = search_time_ms
+        else:
+            new_avg = ((current_avg * (total_searches - 1)) + search_time_ms) / total_searches
+            self.performance_stats["average_search_time_ms"] = new_avg
+    
+    async def add_vectors(
+        self,
+        vectors: List[Dict[str, Any]],
+        agent_id: Optional[str] = None,
+        collection_name: Optional[str] = None
+    ):
+        """Add vectors to the system."""
+        try:
+            target_collection = collection_name or (f"agent_{agent_id}" if agent_id else "default_collection")
+            
+            # Add to Qdrant (persistent storage)
+            await self.qdrant_manager.upsert_vectors(target_collection, vectors)
+            
+            # Optionally add to hot tier for immediate access
+            hot_vectors = {}
+            for vector_data in vectors:
+                if "vector" in vector_data and "id" in vector_data:
+                    hot_vectors[vector_data["id"]] = np.array(vector_data["vector"])
+            
+            if hot_vectors:
+                await self.faiss_hot_tier.add_vectors(hot_vectors)
+            
+            logger.debug(f"Added {len(vectors)} vectors to {target_collection}")
             
         except Exception as e:
-            logger.error(f"Health status check failed: {e}")
-            health_status["overall_status"] = "error"
-            health_status["error"] = str(e)
+            logger.error(f"Error adding vectors: {e}")
+            raise
+    
+    def get_system_stats(self) -> Dict[str, Any]:
+        """Get comprehensive system statistics."""
+        stats = {
+            "system": {
+                "initialized": self.initialized,
+                "total_searches": self.performance_stats["searches_performed"],
+                "average_search_time_ms": self.performance_stats["average_search_time_ms"],
+                "error_count": self.performance_stats["error_count"]
+            },
+            "tier_performance": {
+                "cache_hits": self.performance_stats["cache_hits"],
+                "faiss_hits": self.performance_stats["faiss_hits"],
+                "qdrant_hits": self.performance_stats["qdrant_hits"]
+            },
+            "tier_stats": {}
+        }
+        
+        # Add individual tier stats
+        try:
+            stats["tier_stats"]["redis_cache"] = self.redis_cache.get_stats()
+        except:
+            stats["tier_stats"]["redis_cache"] = {"error": "stats unavailable"}
+        
+        try:
+            stats["tier_stats"]["faiss_hot_tier"] = self.faiss_hot_tier.get_stats()
+        except:
+            stats["tier_stats"]["faiss_hot_tier"] = {"error": "stats unavailable"}
+        
+        try:
+            stats["tier_stats"]["qdrant_manager"] = self.qdrant_manager.get_stats()
+        except:
+            stats["tier_stats"]["qdrant_manager"] = {"error": "stats unavailable"}
+        
+        return stats
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """Perform health check on all tiers."""
+        health_status = {
+            "overall_status": "healthy",
+            "tiers": {}
+        }
+        
+        # Check Redis cache
+        try:
+            redis_stats = self.redis_cache.get_stats()
+            health_status["tiers"]["redis_cache"] = {
+                "status": "healthy" if redis_stats.get("redis_available", False) else "degraded",
+                "mode": redis_stats.get("mode", "unknown")
+            }
+        except Exception as e:
+            health_status["tiers"]["redis_cache"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Check FAISS hot tier
+        try:
+            faiss_stats = self.faiss_hot_tier.get_stats()
+            health_status["tiers"]["faiss_hot_tier"] = {
+                "status": "healthy",
+                "vector_count": faiss_stats.get("vector_count", 0)
+            }
+        except Exception as e:
+            health_status["tiers"]["faiss_hot_tier"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Check Qdrant manager
+        try:
+            qdrant_stats = self.qdrant_manager.get_stats()
+            health_status["tiers"]["qdrant_manager"] = {
+                "status": "healthy" if qdrant_stats.get("qdrant_available", False) else "degraded",
+                "mode": qdrant_stats.get("mode", "unknown")
+            }
+        except Exception as e:
+            health_status["tiers"]["qdrant_manager"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
+        # Determine overall status
+        tier_statuses = [tier["status"] for tier in health_status["tiers"].values()]
+        if "error" in tier_statuses:
+            health_status["overall_status"] = "degraded"
+        elif "degraded" in tier_statuses:
+            health_status["overall_status"] = "degraded"
         
         return health_status
     
@@ -1171,27 +922,17 @@ class HybridVectorSystem:
         """Shutdown the hybrid vector system."""
         logger.info("Shutting down Hybrid Vector System...")
         
-        # Cancel background optimization
-        if self.optimization_task:
-            self.optimization_task.cancel()
-            try:
-                await self.optimization_task
-            except asyncio.CancelledError:
-                pass
-        
-        # Shutdown all tiers
-        if self.redis_cache:
-            await self.redis_cache.shutdown()
-        
-        if self.faiss_hot_tier:
-            await self.faiss_hot_tier.shutdown()
-        
-        if self.qdrant_primary:
-            await self.qdrant_primary.shutdown()
-        
-        # Shutdown thread executor
-        if self.thread_executor:
-            self.thread_executor.shutdown(wait=True)
-        
-        self.initialized = False
-        logger.info("✅ Hybrid Vector System shutdown complete")
+        try:
+            # Close Redis connection
+            if hasattr(self.redis_cache, 'client') and self.redis_cache.client:
+                await self.redis_cache.client.close()
+            
+            # Close Qdrant connection
+            if hasattr(self.qdrant_manager, 'client') and self.qdrant_manager.client:
+                await self.qdrant_manager.client.close()
+            
+            self.initialized = False
+            logger.info("✅ Hybrid Vector System shutdown complete")
+            
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
