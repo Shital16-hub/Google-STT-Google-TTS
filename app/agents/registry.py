@@ -729,6 +729,50 @@ class AgentRegistry:
             self._update_deployment_stats(False, result.deployment_time_ms)
             
             return result
+
+    async def _validate_agent_instance(self, agent: BaseAgent) -> Dict[str, Any]:
+        """FIXED: Validate agent instance after creation - MISSING METHOD ADDED."""
+        validation_result = {
+            "valid": True,
+            "errors": [],
+            "warnings": []
+        }
+        
+        try:
+            # Check initialization
+            if not agent.initialized:
+                validation_result["valid"] = False
+                validation_result["errors"].append("Agent not properly initialized")
+            
+            # Check status
+            if hasattr(agent, 'status') and agent.status != AgentStatus.ACTIVE:
+                validation_result["valid"] = False
+                validation_result["errors"].append(f"Agent status: {agent.status}")
+            
+            # Check if agent has required methods
+            required_methods = ['process_query', 'get_stats', 'get_health_status']
+            for method in required_methods:
+                if not hasattr(agent, method):
+                    validation_result["valid"] = False
+                    validation_result["errors"].append(f"Agent missing required method: {method}")
+            
+            # Perform health check if available
+            if hasattr(self, 'health_checker') and self.health_checker:
+                try:
+                    health_result = await self.health_checker.comprehensive_health_check(agent)
+                    if not health_result.get("healthy", True):
+                        validation_result["warnings"].extend(health_result.get("issues", []))
+                except Exception as health_error:
+                    validation_result["warnings"].append(f"Health check failed: {str(health_error)}")
+            
+            logger.info(f"Agent validation completed for {agent.agent_id}: {validation_result['valid']}")
+            
+        except Exception as e:
+            validation_result["valid"] = False
+            validation_result["errors"].append(f"Validation error: {str(e)}")
+            logger.error(f"Error validating agent instance: {e}")
+        
+        return validation_result
     
     async def _blue_green_deployment(self, config: Dict[str, Any]) -> bool:
         """Execute blue-green deployment strategy."""
