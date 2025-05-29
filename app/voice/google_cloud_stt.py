@@ -180,52 +180,61 @@ class GoogleCloudStreamingSTT:
     def _setup_config(self):
         """Setup recognition configuration with enhanced telephony optimization."""
         if not self.google_available:
+            logger.warning("Google Cloud not available, skipping config setup")
             return
         
-        # Audio encoding configuration
-        if self.encoding == "MULAW":
-            audio_encoding = self.cloud_speech.ExplicitDecodingConfig.AudioEncoding.MULAW
-        else:
-            audio_encoding = self.cloud_speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16
-        
-        # Enhanced recognition config for telephony
-        self.recognition_config = self.cloud_speech.RecognitionConfig(
-            explicit_decoding_config=self.cloud_speech.ExplicitDecodingConfig(
-                sample_rate_hertz=self.sample_rate,
-                encoding=audio_encoding,
-                audio_channel_count=self.channels,
-            ),
-            language_codes=[self.language],
-            model="telephony",  # Telephony model for better phone call recognition
-            features=self.cloud_speech.RecognitionFeatures(
-                # Enhanced features for better telephony performance
-                enable_automatic_punctuation=True,
-                enable_spoken_punctuation=False,
-                enable_spoken_emojis=False,
-                profanity_filter=False,  # Disable to avoid false positives
-                enable_word_confidence=True,  # Get word-level confidence
-                max_alternatives=1,  # Only get the best alternative
-            ),
-        )
-        
-        # Enhanced streaming configuration with voice activity detection
-        self.streaming_config = self.cloud_speech.StreamingRecognitionConfig(
-            config=self.recognition_config,
-            streaming_features=self.cloud_speech.StreamingRecognitionFeatures(
-                interim_results=self.interim_results,
-                enable_voice_activity_events=True,
-                voice_activity_timeout=self.cloud_speech.StreamingRecognitionFeatures.VoiceActivityTimeout(
-                    # More aggressive timeouts for telephony
-                    speech_start_timeout=self.Duration(seconds=5),   # Wait 5s for speech to start
-                    speech_end_timeout=self.Duration(seconds=1)      # Wait 1s after speech ends
+        try:
+            # Audio encoding configuration
+            if self.encoding == "MULAW":
+                audio_encoding = self.cloud_speech.ExplicitDecodingConfig.AudioEncoding.MULAW
+            else:
+                audio_encoding = self.cloud_speech.ExplicitDecodingConfig.AudioEncoding.LINEAR16
+            
+            # Enhanced recognition config for telephony
+            self.recognition_config = self.cloud_speech.RecognitionConfig(
+                explicit_decoding_config=self.cloud_speech.ExplicitDecodingConfig(
+                    sample_rate_hertz=self.sample_rate,
+                    encoding=audio_encoding,
+                    audio_channel_count=self.channels,
                 ),
-            ),
-        )
-        
-        self.config_request = self.cloud_speech.StreamingRecognizeRequest(
-            recognizer=self.recognizer_path,
-            streaming_config=self.streaming_config,
-        )
+                language_codes=[self.language],
+                model="telephony",  # Telephony model for better phone call recognition
+                features=self.cloud_speech.RecognitionFeatures(
+                    # Enhanced features for better telephony performance
+                    enable_automatic_punctuation=True,
+                    enable_spoken_punctuation=False,
+                    enable_spoken_emojis=False,
+                    profanity_filter=False,  # Disable to avoid false positives
+                    enable_word_confidence=True,  # Get word-level confidence
+                    max_alternatives=1,  # Only get the best alternative
+                ),
+            )
+            
+            # Enhanced streaming configuration with voice activity detection
+            self.streaming_config = self.cloud_speech.StreamingRecognitionConfig(
+                config=self.recognition_config,
+                streaming_features=self.cloud_speech.StreamingRecognitionFeatures(
+                    interim_results=self.interim_results,
+                    enable_voice_activity_events=True,
+                    voice_activity_timeout=self.cloud_speech.StreamingRecognitionFeatures.VoiceActivityTimeout(
+                        # More aggressive timeouts for telephony
+                        speech_start_timeout=self.Duration(seconds=5),   # Wait 5s for speech to start
+                        speech_end_timeout=self.Duration(seconds=1)      # Wait 1s after speech ends
+                    ),
+                ),
+            )
+            
+            
+            
+            # Verify configuration was created successfully
+            if hasattr(self, 'streaming_config') and self.streaming_config:
+                logger.info("✅ STT streaming configuration created successfully")
+            else:
+                logger.error("❌ Failed to create streaming configuration")
+                
+        except Exception as e:
+            logger.error(f"❌ Error in _setup_config: {e}")
+            self.google_available = False
     
     def _create_callback_loop(self):
         """Create a separate event loop for handling async callbacks."""
@@ -254,43 +263,66 @@ class GoogleCloudStreamingSTT:
     def _request_generator(self) -> Iterator:
         """Generate requests with enhanced timeout and error handling."""
         if not self.google_available:
+            logger.warning("Google Cloud not available, stopping request generator")
             return
         
-        # Send initial config
-        yield self.config_request
-        
-        # Track last audio time for timeout detection
-        last_audio_sent = time.time()
-        
-        # Send audio chunks with better flow control
-        while not self.stop_event.is_set():
-            try:
-                # Get audio chunk with shorter timeout
-                chunk = self.audio_queue.get(timeout=0.1)
-                if chunk is None:
-                    break
+        try:
+            # CRITICAL FIX: Check if streaming_config exists before using it
+            if not hasattr(self, 'streaming_config') or not self.streaming_config:
+                logger.error("❌ streaming_config not available, recreating...")
+                self._setup_config()  # Try to recreate config
                 
-                # Check if we need to stop due to session limits
-                if self._should_restart_session():
-                    logger.info("Session approaching limits, preparing for restart")
+                if not hasattr(self, 'streaming_config') or not self.streaming_config:
+                    logger.error("❌ Failed to create streaming_config, aborting")
+                    return
+            
+            # Create initial config request on-the-fly
+            initial_request = self.cloud_speech.StreamingRecognizeRequest(
+                recognizer=self.recognizer_path,
+                streaming_config=self.streaming_config,
+            )
+            
+            logger.debug("✅ Sending initial streaming config request")
+            yield initial_request
+            
+            # Track last audio time for timeout detection
+            last_audio_sent = time.time()
+            
+            # Send audio chunks with better flow control
+            while not self.stop_event.is_set():
+                try:
+                    # Get audio chunk with shorter timeout
+                    chunk = self.audio_queue.get(timeout=0.1)
+                    if chunk is None:
+                        break
+                    
+                    # Check if we need to stop due to session limits
+                    if self._should_restart_session():
+                        logger.info("Session approaching limits, preparing for restart")
+                        break
+                    
+                    # Send audio and track timing
+                    audio_request = self.cloud_speech.StreamingRecognizeRequest(audio=chunk)
+                    yield audio_request
+                    self.audio_queue.task_done()
+                    self.last_audio_time = time.time()
+                    last_audio_sent = time.time()
+                    
+                except queue.Empty:
+                    # Check for timeout conditions
+                    current_time = time.time()
+                    if current_time - last_audio_sent > self.MAX_SILENCE_TIME:
+                        logger.info(f"No audio for {self.MAX_SILENCE_TIME}s, stopping session")
+                        break
+                    continue
+                except Exception as e:
+                    logger.error(f"Error in request generator audio loop: {e}")
                     break
-                
-                # Send audio and track timing
-                yield self.cloud_speech.StreamingRecognizeRequest(audio=chunk)
-                self.audio_queue.task_done()
-                self.last_audio_time = time.time()
-                last_audio_sent = time.time()
-                
-            except queue.Empty:
-                # Check for timeout conditions
-                current_time = time.time()
-                if current_time - last_audio_sent > self.MAX_SILENCE_TIME:
-                    logger.info(f"No audio for {self.MAX_SILENCE_TIME}s, stopping session")
-                    break
-                continue
-            except Exception as e:
-                logger.error(f"Error in request generator: {e}")
-                break
+                    
+        except Exception as e:
+            logger.error(f"❌ Critical error in request generator: {e}")
+            return
+
     
     def _should_restart_session(self) -> bool:
         """Enhanced logic to determine when to restart the session."""

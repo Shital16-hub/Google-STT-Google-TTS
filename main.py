@@ -685,7 +685,7 @@ class EnhancedWebSocketHandler:
         if not self.stream_sid or not self._ws:
             return
         
-        chunk_size = 400  # 50ms chunks
+        chunk_size = 160  # 20ms chunks for smooth playbook
         
         for i in range(0, len(audio_data), chunk_size):
             chunk = audio_data[i:i+chunk_size]
@@ -700,7 +700,7 @@ class EnhancedWebSocketHandler:
                 }
                 
                 await self._ws.send_text(json.dumps(message))
-                await asyncio.sleep(0.025)  # 25ms delay
+                await asyncio.sleep(0.020)  # 20ms delay matches chunk size
                 
             except Exception as e:
                 logger.error(f"Error sending audio chunk: {e}")

@@ -76,7 +76,7 @@ class EmotionState(Enum):
 @dataclass
 class VoiceParameters:
     """Voice synthesis parameters"""
-    voice_name: str = "en-US-Neural2-C"
+    voice_name: str = "en-US-Neural2-A" 
     language_code: str = "en-US"
     speaking_rate: float = 1.0
     pitch: float = 0.0
@@ -591,7 +591,7 @@ class DualStreamingTTSEngine:
         voice_selection = VoiceSelectionParams(
             language_code=voice_params.language_code,
             name=voice_params.voice_name,
-            ssml_gender=SsmlVoiceGender.NEUTRAL
+            ssml_gender=SsmlVoiceGender.FEMALE
         )
         
         audio_config = AudioConfig(
@@ -680,7 +680,7 @@ class DualStreamingTTSEngine:
         voice_selection = VoiceSelectionParams(
             language_code=modulated_params.language_code,
             name=modulated_params.voice_name,
-            ssml_gender=SsmlVoiceGender.NEUTRAL
+            ssml_gender=SsmlVoiceGender.FEMALE
         )
         
         audio_config = AudioConfig(

@@ -157,7 +157,7 @@ class ComprehensiveConfigValidator:
                 try:
                     field_result = validator(config[field])
                     if not field_result["valid"]:
-                        result["valid"] = False
+                        result["valid"] = False_create_agent_instance
                         result["errors"].extend(field_result["errors"])
                 except Exception as e:
                     result["valid"] = False
