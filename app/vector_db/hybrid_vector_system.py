@@ -524,6 +524,165 @@ class HybridVectorSystem:
         }
         
         logger.info("HybridVectorSystem created with fallback support")
+
+    async def analyze_query_intent(
+        self,
+        query: str,
+        context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Analyze query intent using keyword patterns and context.
+        This method was missing and causing the orchestration error.
+        """
+        try:
+            # Initialize analysis result
+            analysis = {
+                "intent": "general",
+                "urgency": "normal", 
+                "complexity": 0.5,
+                "entities": [],
+                "keywords": [],
+                "requires_tools": False,
+                "confidence": 0.8
+            }
+            
+            query_lower = query.lower()
+            
+            # Extract keywords
+            import re
+            words = re.findall(r'\b\w+\b', query_lower)
+            analysis["keywords"] = words
+            
+            # Determine intent based on keywords
+            roadside_keywords = ["tow", "stuck", "breakdown", "accident", "emergency", "help", "car", "vehicle"]
+            billing_keywords = ["bill", "payment", "charge", "refund", "invoice", "money", "cost"]
+            technical_keywords = ["error", "not working", "bug", "install", "setup", "login", "problem"]
+            
+            roadside_score = sum(1 for word in roadside_keywords if word in query_lower)
+            billing_score = sum(1 for word in billing_keywords if word in query_lower) 
+            technical_score = sum(1 for word in technical_keywords if word in query_lower)
+            
+            # Determine primary intent
+            if roadside_score > billing_score and roadside_score > technical_score:
+                analysis["intent"] = "roadside_assistance"
+                analysis["requires_tools"] = True
+            elif billing_score > roadside_score and billing_score > technical_score:
+                analysis["intent"] = "billing_support"
+                analysis["requires_tools"] = False
+            elif technical_score > 0:
+                analysis["intent"] = "technical_support"
+                analysis["requires_tools"] = True
+            
+            # Determine urgency
+            urgency_keywords = ["urgent", "emergency", "asap", "critical", "help", "stuck"]
+            if any(keyword in query_lower for keyword in urgency_keywords):
+                analysis["urgency"] = "high"
+                if "emergency" in query_lower or "accident" in query_lower:
+                    analysis["urgency"] = "critical"
+            
+            # Simple entity extraction
+            entities = []
+            # Look for phone numbers
+            phone_pattern = r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'
+            phones = re.findall(phone_pattern, query)
+            for phone in phones:
+                entities.append({"type": "phone", "value": phone})
+            
+            # Look for locations (simple pattern)
+            location_words = ["street", "avenue", "road", "highway", "parking", "lot", "address"]
+            for word in location_words:
+                if word in query_lower:
+                    entities.append({"type": "location_indicator", "value": word})
+            
+            analysis["entities"] = entities
+            
+            # Calculate complexity
+            word_count = len(words)
+            entity_count = len(entities)
+            analysis["complexity"] = min(1.0, (word_count / 20.0) + (entity_count / 5.0))
+            
+            # Update confidence based on matches
+            if roadside_score > 0 or billing_score > 0 or technical_score > 0:
+                analysis["confidence"] = 0.9
+            
+            logger.debug(f"Query intent analysis: {analysis['intent']} (confidence: {analysis['confidence']})")
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Error in analyze_query_intent: {e}")
+            # Return default analysis
+            return {
+                "intent": "general",
+                "urgency": "normal",
+                "complexity": 0.5,
+                "entities": [],
+                "keywords": query.split(),
+                "requires_tools": False,
+                "confidence": 0.5
+            }
+    
+    async def get_agent_context(
+        self,
+        agent_id: str,
+        query: str,
+        base_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Get agent-specific context enrichment.
+        This method was missing and causing the orchestration error.
+        """
+        try:
+            enriched_context = base_context.copy()
+            
+            # Add agent-specific context based on agent type
+            if "roadside" in agent_id.lower():
+                enriched_context.update({
+                    "domain": "emergency_services",
+                    "service_type": "roadside_assistance",
+                    "urgency_handling": "immediate",
+                    "tool_categories": ["dispatch", "location", "emergency"],
+                    "response_style": "professional_urgent"
+                })
+                
+            elif "billing" in agent_id.lower():
+                enriched_context.update({
+                    "domain": "financial_services", 
+                    "service_type": "billing_support",
+                    "urgency_handling": "standard",
+                    "tool_categories": ["payment", "refund", "account"],
+                    "response_style": "empathetic_helpful"
+                })
+                
+            elif "technical" in agent_id.lower():
+                enriched_context.update({
+                    "domain": "technical_support",
+                    "service_type": "troubleshooting", 
+                    "urgency_handling": "methodical",
+                    "tool_categories": ["diagnostic", "setup", "troubleshoot"],
+                    "response_style": "patient_instructional"
+                })
+            else:
+                # Default context for unknown agents
+                enriched_context.update({
+                    "domain": "general_support",
+                    "service_type": "general_assistance", 
+                    "urgency_handling": "standard",
+                    "tool_categories": ["general"],
+                    "response_style": "professional"
+                })
+            
+            # Add query-specific context
+            enriched_context["processed_query"] = query
+            enriched_context["agent_specialization"] = agent_id
+            enriched_context["context_timestamp"] = time.time()
+            
+            logger.debug(f"Enriched context for agent {agent_id}: {enriched_context.get('service_type')}")
+            return enriched_context
+            
+        except Exception as e:
+            logger.error(f"Error in get_agent_context: {e}")
+            # Return base context if enrichment fails
+            return base_context
     
     async def initialize(self):
         """Initialize all tiers with error handling."""

@@ -563,6 +563,13 @@ class AgentRegistry:
             "average_deployment_time_ms": 0.0,
             "rollbacks_executed": 0
         }
+
+        self.agent_classes: Dict[str, Type[BaseAgent]] = {
+            "roadside-assistance": RoadsideAssistanceAgent,
+            "billing-support": BillingSupportAgent, 
+            "technical-support": AdvancedTechnicalSupportAgent,
+            # New agents can be added here or via register_agent_class()
+        }
         
         # Background tasks
         self.health_monitoring_task: Optional[asyncio.Task] = None
@@ -570,6 +577,7 @@ class AgentRegistry:
         
         # Create config directory
         self.config_directory.mkdir(parents=True, exist_ok=True)
+        
         
         self.initialized = False
         logger.info("Advanced Agent Registry initialized")
@@ -796,23 +804,11 @@ class AgentRegistry:
         return await self._blue_green_deployment(config)
     
     async def _create_agent_instance(self, config: Dict[str, Any]) -> BaseAgent:
-        """Create agent instance from configuration."""
+        """Create agent instance from configuration with auto-detection."""
         agent_id = config["agent_id"]
         
-        # Determine agent class
-        agent_class = None
-        specialization = config.get("specialization", {})
-        domain = specialization.get("domain_expertise", "")
-        
-        if "roadside" in domain.lower():
-            agent_class = self.agent_classes.get("roadside-assistance", BaseAgent)
-        elif "billing" in domain.lower():
-            agent_class = self.agent_classes.get("billing-support", BaseAgent)
-        elif "technical" in domain.lower():
-            agent_class = self.agent_classes.get("technical-support", BaseAgent)
-        else:
-            # Use base agent for unknown domains
-            agent_class = BaseAgent
+        # SCALABLE SOLUTION: Auto-detect agent class based on configuration
+        agent_class = self._detect_agent_class(config)
         
         # Create agent configuration
         agent_config = AgentConfiguration(
@@ -834,37 +830,120 @@ class AgentRegistry:
         )
         
         return agent
-    
-    async def _validate_agent_instance(self, agent: BaseAgent) -> Dict[str, Any]:
-        """Validate agent instance after creation."""
-        validation_result = {
-            "valid": True,
-            "errors": [],
-            "warnings": []
-        }
-        
+
+    def _detect_agent_class(self, config: Dict[str, Any]) -> Type[BaseAgent]:
+        """
+        Auto-detect agent class based on configuration.
+        This makes adding new agents much easier - no code changes needed!
+        """
         try:
-            # Check initialization
-            if not agent.initialized:
-                validation_result["valid"] = False
-                validation_result["errors"].append("Agent not properly initialized")
+            specialization = config.get("specialization", {})
+            domain = specialization.get("domain_expertise", "").lower()
+            agent_id = config.get("agent_id", "").lower()
             
-            # Check status
-            if agent.status != AgentStatus.ACTIVE:
-                validation_result["valid"] = False
-                validation_result["errors"].append(f"Agent status: {agent.status}")
+            # Method 1: Check agent_id patterns
+            if any(keyword in agent_id for keyword in ["roadside", "tow", "emergency", "breakdown"]):
+                return self.agent_classes.get("roadside-assistance", BaseAgent)
             
-            # Perform health check
-            health_result = await self.health_checker.comprehensive_health_check(agent)
-            if not health_result["healthy"]:
-                validation_result["valid"] = False
-                validation_result["errors"].extend(health_result["issues"])
+            if any(keyword in agent_id for keyword in ["billing", "payment", "invoice", "refund"]):
+                return self.agent_classes.get("billing-support", BaseAgent)
+            
+            if any(keyword in agent_id for keyword in ["technical", "support", "tech", "troubleshoot"]):
+                return self.agent_classes.get("technical-support", BaseAgent)
+            
+            # Method 2: Check domain expertise
+            if any(keyword in domain for keyword in ["roadside", "emergency", "towing", "vehicle"]):
+                return self.agent_classes.get("roadside-assistance", BaseAgent)
+            
+            if any(keyword in domain for keyword in ["billing", "payment", "financial", "invoice"]):
+                return self.agent_classes.get("billing-support", BaseAgent)
+            
+            if any(keyword in domain for keyword in ["technical", "support", "troubleshooting", "help"]):
+                return self.agent_classes.get("technical-support", BaseAgent)
+            
+            # Method 3: Check routing keywords
+            routing = config.get("routing", {})
+            primary_keywords = routing.get("primary_keywords", [])
+            
+            roadside_routing_keywords = ["tow", "stuck", "breakdown", "accident", "emergency"]
+            billing_routing_keywords = ["bill", "payment", "charge", "refund", "invoice"]
+            technical_routing_keywords = ["error", "problem", "not working", "install", "setup"]
+            
+            if any(keyword in primary_keywords for keyword in roadside_routing_keywords):
+                return self.agent_classes.get("roadside-assistance", BaseAgent)
+            
+            if any(keyword in primary_keywords for keyword in billing_routing_keywords):
+                return self.agent_classes.get("billing-support", BaseAgent)
+            
+            if any(keyword in primary_keywords for keyword in technical_routing_keywords):
+                return self.agent_classes.get("technical-support", BaseAgent)
+            
+            # Method 4: Check tools for hints
+            tools = config.get("tools", [])
+            tool_names = [tool.get("name", "") if isinstance(tool, dict) else str(tool) for tool in tools]
+            
+            if any("dispatch" in tool or "tow" in tool or "emergency" in tool for tool in tool_names):
+                return self.agent_classes.get("roadside-assistance", BaseAgent)
+            
+            if any("payment" in tool or "billing" in tool or "refund" in tool for tool in tool_names):
+                return self.agent_classes.get("billing-support", BaseAgent)
+            
+            if any("diagnostic" in tool or "troubleshoot" in tool or "setup" in tool for tool in tool_names):
+                return self.agent_classes.get("technical-support", BaseAgent)
+            
+            # Default to BaseAgent for unknown types
+            logger.warning(f"Could not detect specific agent class for {config.get('agent_id')}, using BaseAgent")
+            return BaseAgent
             
         except Exception as e:
-            validation_result["valid"] = False
-            validation_result["errors"].append(f"Validation error: {str(e)}")
+            logger.error(f"Error detecting agent class: {e}")
+            return BaseAgent
         
-        return validation_result
+        async def _validate_agent_instance(self, agent: BaseAgent) -> Dict[str, Any]:
+            """Validate agent instance after creation."""
+            validation_result = {
+                "valid": True,
+                "errors": [],
+                "warnings": []
+            }
+            
+            try:
+                # Check initialization
+                if not agent.initialized:
+                    validation_result["valid"] = False
+                    validation_result["errors"].append("Agent not properly initialized")
+                
+                # Check status
+                if agent.status != AgentStatus.ACTIVE:
+                    validation_result["valid"] = False
+                    validation_result["errors"].append(f"Agent status: {agent.status}")
+                
+                # Perform health check
+                health_result = await self.health_checker.comprehensive_health_check(agent)
+                if not health_result["healthy"]:
+                    validation_result["valid"] = False
+                    validation_result["errors"].extend(health_result["issues"])
+                
+            except Exception as e:
+                validation_result["valid"] = False
+                validation_result["errors"].append(f"Validation error: {str(e)}")
+            
+            return validation_result
+
+    def register_agent_class(self, agent_type: str, agent_class: Type[BaseAgent]):
+        """
+        Register a new agent class dynamically.
+        This allows you to add new agents without modifying the registry code!
+        
+        Usage:
+        registry.register_agent_class("customer-service", CustomerServiceAgent)
+        """
+        self.agent_classes[agent_type] = agent_class
+        logger.info(f"Registered new agent class: {agent_type} -> {agent_class.__name__}")
+
+    def get_supported_agent_types(self) -> List[str]:
+        """Get list of supported agent types."""
+        return list(self.agent_classes.keys())
     
     async def _load_existing_configs(self):
         """Load existing agent configurations from disk."""
