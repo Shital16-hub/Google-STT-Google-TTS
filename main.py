@@ -34,7 +34,7 @@ from twilio.twiml.voice_response import VoiceResponse, Connect, Stream, Say, Gat
 from dotenv import load_dotenv
 
 # Core system imports
-from app.core.agent_orchestrator import MultiAgentOrchestrator
+from app.core.agent_orchestrator import EnhancedMultiAgentOrchestrator as MultiAgentOrchestrator
 from app.core.state_manager import ConversationStateManager
 from app.core.health_monitor import SystemHealthMonitor
 
@@ -50,6 +50,13 @@ from app.telephony.advanced_websocket_handler import AdvancedWebSocketHandler
 
 # Tool orchestration
 from app.tools.tool_orchestrator import ComprehensiveToolOrchestrator
+# NEW: Semantic Intent Detection System
+from app.llm.semantic_intent_detector import SemanticIntentDetector, SmartConversationHandler
+
+from app.llm.context_manager import LLMContextManager, ContextType
+from app.llm.intelligent_router import IntelligentLLMRouter, RoutingStrategy  
+from app.llm.streaming_handler import LLMStreamingHandler, StreamingConfig
+
 
 # Load environment variables
 load_dotenv()
@@ -438,17 +445,16 @@ class ConfigurationDrivenAgentMatcher:
         return "I'm here to help you. What do you need assistance with?"
 
 
-class ScalableConversationHandler:
+class FixedConversationHandler:
     """
-    UPDATED: Scalable conversation handler using pure configuration-driven system.
-    NO manual updates needed when adding agents!
+    FIXED: Configuration-driven conversation handler with proper orchestrator integration
     """
     
-    def __init__(self, agent_registry: Optional[Any] = None):
+    def __init__(self, agent_registry=None, orchestrator=None):
         self.agent_registry = agent_registry
+        self.orchestrator = orchestrator
         self.agent_matcher = ConfigurationDrivenAgentMatcher(agent_registry)
         
-        # Initialize patterns
         if agent_registry:
             asyncio.create_task(self.agent_matcher._load_agent_configurations())
     
@@ -456,10 +462,10 @@ class ScalableConversationHandler:
         self,
         user_input: str,
         session_id: str,
-        orchestrator = None,
+        orchestrator=None,
         context: Dict[str, Any] = None
     ) -> str:
-        """Process conversation with pure configuration-driven matching."""
+        """Process conversation with fixed orchestrator integration"""
         
         try:
             logger.info(f"🔍 Processing: '{user_input}'")
@@ -468,32 +474,35 @@ class ScalableConversationHandler:
             agent_match = await self.agent_matcher.find_best_agent(user_input, context)
             logger.info(f"🎯 Agent match: {agent_match}")
             
-            # Try orchestrator with enhanced context
-            if orchestrator and getattr(orchestrator, 'initialized', False):
+            # Use orchestrator if available (FIXED: respect agent routing)
+            if self.orchestrator and getattr(self.orchestrator, 'initialized', False):
                 try:
+                    # CRITICAL FIX: Pass preferred_agent_id properly
                     enhanced_context = {
                         **(context or {}),
-                        'preferred_agent_id': agent_match.get('agent_id'),
                         'domain': agent_match.get('domain'),
                         'urgency': agent_match.get('urgency'),
-                        'routing_confidence': agent_match.get('confidence')
+                        'routing_confidence': agent_match.get('confidence'),
+                        'input_mode': 'voice_websocket'
                     }
                     
-                    result = await orchestrator.process_conversation(
+                    # FIXED: Use process_conversation with preferred_agent_id
+                    result = await self.orchestrator.process_conversation(
                         session_id=session_id,
                         input_text=user_input,
-                        context=enhanced_context
+                        context=enhanced_context,
+                        preferred_agent_id=agent_match.get('agent_id')  # CRITICAL FIX
                     )
                     
                     if (result and hasattr(result, 'success') and result.success and 
                         hasattr(result, 'response') and result.response and result.response.strip()):
-                        logger.info(f"✅ Orchestrator success: {getattr(result, 'agent_id', 'unknown')}")
+                        logger.info(f"✅ Orchestrator success: {result.agent_id}")
                         return result.response
                     
                 except Exception as e:
                     logger.warning(f"⚠️ Orchestrator failed: {e}")
             
-            # Use configuration-driven response generation
+            # Fallback to configuration-driven response generation
             logger.info("🔄 Using configuration-driven response generation")
             response = self.agent_matcher.generate_response(user_input, agent_match)
             logger.info(f"✅ Generated response: {response[:100]}...")
@@ -502,6 +511,7 @@ class ScalableConversationHandler:
         except Exception as e:
             logger.error(f"❌ Processing error: {e}")
             return "I apologize for the technical difficulty. How can I help you today?"
+
 
 
 # ============================================================================
@@ -622,7 +632,7 @@ class EnhancedWebSocketHandler:
         self._ws = None
         
         # UPDATED: Use configuration-driven conversation handler
-        self.conversation_handler = ScalableConversationHandler(
+        self.conversation_handler = FixedConversationHandler(
             agent_registry=orchestrator.agent_registry if orchestrator else None
         )
         
@@ -1837,7 +1847,7 @@ async def test_websocket_integration():
     if orchestrator and agent_registry:
         try:
             # Create a test conversation handler
-            test_handler = ScalableConversationHandler(agent_registry)
+            test_handler = FixedConversationHandler(agent_registry)
             
             # Test different conversation types
             test_conversations = [
