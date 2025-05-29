@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Revolutionary Multi-Agent Voice AI System - Main FastAPI Application
-PERMANENT FIX: Auto-starts services and handles correct paths regardless of pod restarts.
-Speech Recognition Integration for RunPod Compatibility
+Revolutionary Multi-Agent Voice AI System - Enhanced WebSocket Integration
+Combines working WebSocket approach with advanced multi-agent orchestrator
 """
 import os
 import sys
@@ -13,6 +12,7 @@ import time
 import threading
 import subprocess
 import signal
+import base64
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 import uuid
@@ -43,7 +43,7 @@ from app.vector_db.hybrid_vector_system import HybridVectorSystem
 
 # Voice processing with enhanced pipeline
 from app.voice.enhanced_stt import EnhancedSTTSystem
-from app.voice.dual_streaming_tts import DualStreamingTTSEngine
+from app.voice.dual_streaming_tts import DualStreamingTTSEngine, StreamingMode, create_voice_params_for_agent
 from app.telephony.advanced_websocket_handler import AdvancedWebSocketHandler
 
 # Tool orchestration
@@ -403,6 +403,360 @@ class ConfigurationManager:
         logger.info(f"📋 Total agent configs loaded: {len(agent_configs)}")
         return agent_configs
 
+# ============================================================================
+# ENHANCED WEBSOCKET HANDLER FOR MULTI-AGENT INTEGRATION
+# ============================================================================
+
+class EnhancedWebSocketHandler:
+    """
+    Enhanced WebSocket handler that bridges your working approach 
+    with the new multi-agent orchestrator system.
+    """
+    
+    def __init__(self, call_sid: str, orchestrator, state_manager):
+        """Initialize with multi-agent orchestrator integration."""
+        self.call_sid = call_sid
+        self.stream_sid = None
+        self.orchestrator = orchestrator
+        self.state_manager = state_manager
+        
+        # Get project ID
+        self.project_id = self._get_project_id()
+        
+        # Session management
+        self.session_id = f"ws_{call_sid}"
+        self.conversation_active = True
+        self.is_speaking = False
+        self.call_ended = False
+        
+        # Audio processing
+        self.audio_buffer = bytearray()
+        self.last_audio_time = time.time()
+        self.last_tts_time = None
+        
+        # Performance tracking
+        self.session_start_time = time.time()
+        self.audio_received = 0
+        self.transcriptions = 0
+        self.responses_sent = 0
+        self.echo_detections = 0
+        
+        # WebSocket reference
+        self._ws = None
+        
+        logger.info(f"Enhanced WebSocket handler initialized for {call_sid}")
+    
+    def _get_project_id(self) -> str:
+        """Get project ID with fallback."""
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        if project_id:
+            return project_id
+        
+        credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if credentials_file and os.path.exists(credentials_file):
+            try:
+                with open(credentials_file, 'r') as f:
+                    creds_data = json.load(f)
+                    return creds_data.get('project_id', 'fallback-project')
+            except Exception:
+                pass
+        
+        return 'fallback-project'
+    
+    async def handle_websocket_session(self, websocket: WebSocket):
+        """Main WebSocket session handler integrated with multi-agent system."""
+        logger.info(f"🔗 Enhanced WebSocket session for call: {self.call_sid}")
+        
+        self._ws = websocket
+        
+        try:
+            # Initialize conversation state in state manager
+            if self.state_manager:
+                await self.state_manager.create_conversation_state(
+                    session_id=self.session_id,
+                    initial_context={
+                        "call_sid": self.call_sid,
+                        "media_format": "twilio_websocket",
+                        "platform": "enhanced_integration"
+                    }
+                )
+            
+            # Start STT streaming
+            if stt_system and not stt_system.is_streaming:
+                await stt_system.start_streaming(
+                    callback=self._handle_transcription_callback
+                )
+            
+            # Main message processing loop
+            async for message in websocket.iter_text():
+                await self._process_twilio_message(message)
+                
+        except WebSocketDisconnect:
+            logger.info(f"📞 Enhanced WebSocket disconnected: {self.call_sid}")
+        except Exception as e:
+            logger.error(f"❌ Enhanced WebSocket error: {e}", exc_info=True)
+        finally:
+            await self._cleanup()
+    
+    async def _process_twilio_message(self, message: str):
+        """Process Twilio WebSocket messages."""
+        try:
+            data = json.loads(message)
+            event = data.get('event')
+            
+            if event == 'connected':
+                logger.info(f"WebSocket connected for {self.call_sid}")
+                
+            elif event == 'start':
+                self.stream_sid = data.get('streamSid')
+                logger.info(f"Stream started: {self.stream_sid}")
+                await self._start_conversation()
+                
+            elif event == 'media':
+                await self._handle_audio_data(data)
+                
+            elif event == 'stop':
+                logger.info(f"Stream stopped for {self.call_sid}")
+                await self._cleanup()
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON: {e}")
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+    
+    async def _handle_audio_data(self, data: Dict[str, Any]):
+        """Handle audio data with enhanced processing."""
+        if self.call_ended or self.is_speaking:
+            return
+        
+        media = data.get('media', {})
+        payload = media.get('payload')
+        
+        if not payload:
+            return
+        
+        try:
+            # Decode audio
+            audio_data = base64.b64decode(payload)
+            self.audio_received += 1
+            self.last_audio_time = time.time()
+            
+            # Skip if too close to TTS output (echo prevention)
+            if self.last_tts_time and (time.time() - self.last_tts_time) < 2.0:
+                return
+            
+            # Process through STT system
+            if stt_system:
+                await stt_system.process_audio_chunk(
+                    audio_data,
+                    callback=self._handle_transcription_callback
+                )
+                
+        except Exception as e:
+            logger.error(f"Error processing audio: {e}")
+    
+    async def _handle_transcription_callback(self, result):
+        """Handle STT transcription results."""
+        if not result or not result.is_final or not result.text.strip():
+            return
+        
+        transcription = result.text.strip()
+        confidence = getattr(result, 'confidence', 0.0)
+        
+        logger.info(f"Transcription: '{transcription}' (conf: {confidence:.2f})")
+        
+        # Validate transcription
+        if not self._is_valid_transcription(transcription, confidence):
+            return
+        
+        # Process through multi-agent orchestrator
+        await self._process_with_orchestrator(transcription)
+    
+    def _is_valid_transcription(self, transcription: str, confidence: float) -> bool:
+        """Validate transcription with echo detection."""
+        # Basic validation
+        if len(transcription) < 2 or confidence < 0.3:
+            return False
+        
+        # Echo detection
+        if self._is_likely_echo(transcription):
+            self.echo_detections += 1
+            return False
+        
+        # Skip common filler words
+        skip_patterns = ['um', 'uh', 'hmm', 'okay', 'yes', 'no']
+        if transcription.lower().strip() in skip_patterns:
+            return False
+        
+        return True
+    
+    def _is_likely_echo(self, transcription: str) -> bool:
+        """Detect potential echo."""
+        # Check timing
+        if self.last_tts_time and (time.time() - self.last_tts_time) < 3.0:
+            return True
+        
+        # Check against system phrases
+        system_phrases = ["ready to help", "how can i help", "what would you like"]
+        for phrase in system_phrases:
+            if phrase in transcription.lower():
+                return True
+        
+        return False
+    
+    async def _process_with_orchestrator(self, transcription: str):
+        """Process transcription through multi-agent orchestrator."""
+        self.transcriptions += 1
+        self.is_speaking = True
+        
+        try:
+            # Process through orchestrator
+            result = await self.orchestrator.process_conversation(
+                session_id=self.session_id,
+                input_text=transcription,
+                context={
+                    "call_sid": self.call_sid,
+                    "input_mode": "voice_websocket",
+                    "platform": "twilio_enhanced",
+                    "confidence": 0.8  # Default confidence
+                }
+            )
+            
+            if result and hasattr(result, 'success') and result.success and result.response:
+                # Send response through TTS
+                await self._send_tts_response(result.response, getattr(result, 'agent_id', None))
+            else:
+                # Fallback response
+                await self._send_tts_response(
+                    "I'm sorry, I couldn't process that request."
+                )
+                
+        except Exception as e:
+            logger.error(f"Orchestrator error: {e}")
+            await self._send_tts_response(
+                "I encountered an error. Please try again."
+            )
+        finally:
+            self.is_speaking = False
+    
+    async def _send_tts_response(self, text: str, agent_id: str = None):
+        """Send TTS response using the enhanced TTS engine."""
+        if not text.strip() or self.call_ended:
+            return
+        
+        try:
+            logger.info(f"Sending TTS response: '{text}'")
+            
+            # Add to STT for echo prevention
+            if stt_system and hasattr(stt_system, 'add_tts_output'):
+                stt_system.add_tts_output(text)
+            
+            # Generate voice parameters based on agent
+            if tts_engine:
+                voice_params = create_voice_params_for_agent(
+                    agent_id or "general",
+                    urgency="normal"
+                )
+                
+                # Generate audio using streaming TTS
+                audio_chunks = []
+                async for chunk in tts_engine.synthesize_streaming(
+                    text=text,
+                    voice_params=voice_params,
+                    streaming_mode=StreamingMode.DUAL_STREAMING
+                ):
+                    audio_chunks.append(chunk.audio_data)
+                
+                if audio_chunks:
+                    # Combine chunks and send
+                    combined_audio = b''.join(audio_chunks)
+                    await self._send_audio_chunks(combined_audio)
+                    self.responses_sent += 1
+                    self.last_tts_time = time.time()
+                    
+            else:
+                logger.warning("TTS engine not available")
+                
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+    
+    async def _send_audio_chunks(self, audio_data: bytes):
+        """Send audio chunks to Twilio."""
+        if not self.stream_sid or not self._ws:
+            return
+        
+        chunk_size = 400  # 50ms chunks
+        
+        for i in range(0, len(audio_data), chunk_size):
+            chunk = audio_data[i:i+chunk_size]
+            
+            try:
+                audio_base64 = base64.b64encode(chunk).decode('utf-8')
+                
+                message = {
+                    "event": "media",
+                    "streamSid": self.stream_sid,
+                    "media": {"payload": audio_base64}
+                }
+                
+                await self._ws.send_text(json.dumps(message))
+                await asyncio.sleep(0.025)  # 25ms delay
+                
+            except Exception as e:
+                logger.error(f"Error sending audio chunk: {e}")
+                break
+    
+    async def _start_conversation(self):
+        """Start the conversation."""
+        await asyncio.sleep(0.1)  # Let connection stabilize
+        await self._send_tts_response(
+            "Hello! I'm your AI assistant. How can I help you today?"
+        )
+    
+    async def _cleanup(self):
+        """Cleanup resources."""
+        try:
+            self.call_ended = True
+            self.conversation_active = False
+            
+            # Stop STT
+            if stt_system and stt_system.is_streaming:
+                await stt_system.stop_streaming()
+            
+            # End conversation in state manager
+            if self.state_manager:
+                await self.state_manager.end_conversation(
+                    session_id=self.session_id,
+                    resolution_status="call_ended"
+                )
+            
+            # Log stats
+            duration = time.time() - self.session_start_time
+            logger.info(f"Call completed: {self.call_sid}, "
+                       f"Duration: {duration:.1f}s, "
+                       f"Transcriptions: {self.transcriptions}, "
+                       f"Responses: {self.responses_sent}")
+                       
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
+    
+    def get_stats(self):
+        """Get session statistics."""
+        duration = time.time() - self.session_start_time
+        
+        return {
+            "call_sid": self.call_sid,
+            "stream_sid": self.stream_sid,
+            "session_id": self.session_id,
+            "duration": round(duration, 2),
+            "audio_received": self.audio_received,
+            "transcriptions": self.transcriptions,
+            "responses_sent": self.responses_sent,
+            "echo_detections": self.echo_detections,
+            "conversation_active": self.conversation_active,
+            "is_speaking": self.is_speaking
+        }
+
 # Global instances
 service_manager = ServiceManager()
 config_manager = ConfigurationManager()
@@ -470,7 +824,7 @@ async def initialize_revolutionary_system():
         BASE_URL = os.getenv('BASE_URL')
         if not BASE_URL:
             logger.warning("⚠️ BASE_URL not set, using default")
-            BASE_URL = "http://localhost:8000"
+            BASE_URL = "http://localhost:5000"  # Changed from 8000 to 5000
         
         # PERMANENT FIX: Auto-start services
         logger.info("📊 Step 1: Auto-starting Redis...")
@@ -685,6 +1039,7 @@ async def initialize_revolutionary_system():
         logger.info(f"🎯 Target end-to-end latency: <377ms")
         logger.info(f"📊 Redis: {'✅' if redis_success else '⚠️ (in-memory)'}")
         logger.info(f"🗄️ Qdrant: {'✅' if qdrant_success else '🔄 (in-memory)'}")
+        logger.info(f"🔗 WebSocket Integration: ✅ Enhanced")
         
         if agent_registry:
             agent_count = len(await agent_registry.list_active_agents())
@@ -811,9 +1166,9 @@ async def cleanup_system():
 
 # FastAPI app
 app = FastAPI(
-    title="Revolutionary Multi-Agent Voice AI System",
-    description="Ultra-low latency multi-agent conversation system with <377ms response time",
-    version="2.0.0",
+    title="Revolutionary Multi-Agent Voice AI System - WebSocket Integrated",
+    description="Ultra-low latency multi-agent conversation system with WebSocket streaming",
+    version="2.1.0",
     lifespan=lifespan,
     docs_url="/docs" if os.getenv("DEBUG", "false").lower() == "true" else None,
     redoc_url="/redoc" if os.getenv("DEBUG", "false").lower() == "true" else None
@@ -848,59 +1203,102 @@ async def ensure_system_initialized():
         )
 
 # ============================================================================
-# TWILIO VOICE INTEGRATION ENDPOINTS - SPEECH RECOGNITION BASED
+# ENHANCED WEBSOCKET ENDPOINTS
 # ============================================================================
 
-@app.post("/voice/call")
+@app.websocket("/ws/stream/{call_sid}")
+async def enhanced_websocket_stream(websocket: WebSocket, call_sid: str):
+    """Enhanced WebSocket endpoint integrated with multi-agent system."""
+    
+    logger.info(f"🔗 Enhanced WebSocket connection for call: {call_sid}")
+    
+    try:
+        await websocket.accept()
+        
+        # Check system readiness
+        if not SYSTEM_INITIALIZED:
+            await websocket.send_text(json.dumps({
+                "error": "System not ready"
+            }))
+            await websocket.close()
+            return
+        
+        # Create enhanced handler
+        handler = EnhancedWebSocketHandler(
+            call_sid=call_sid,
+            orchestrator=orchestrator,
+            state_manager=state_manager
+        )
+        
+        # Store in active sessions
+        active_sessions[call_sid] = handler
+        session_metrics["active_count"] = len(active_sessions)
+        session_metrics["total_sessions"] += 1
+        
+        # Handle session
+        await handler.handle_websocket_session(websocket)
+        
+    except WebSocketDisconnect:
+        logger.info(f"📞 Enhanced WebSocket disconnected: {call_sid}")
+    except Exception as e:
+        logger.error(f"❌ Enhanced WebSocket error: {e}", exc_info=True)
+    finally:
+        # Cleanup
+        if call_sid in active_sessions:
+            try:
+                await active_sessions[call_sid]._cleanup()
+                del active_sessions[call_sid]
+                session_metrics["active_count"] = len(active_sessions)
+            except Exception as cleanup_error:
+                logger.error(f"Cleanup error: {cleanup_error}")
+
+# ============================================================================
+# TWILIO VOICE WEBHOOKS - WEBSOCKET INTEGRATION
+# ============================================================================
+
+@app.post("/voice/incoming")
 async def handle_incoming_call(
+    request: Request,
     CallSid: str = Form(...),
     From: str = Form(...),
     To: str = Form(...),
     CallStatus: str = Form(...),
     _: None = Depends(ensure_system_initialized)
 ):
-    """Handle incoming Twilio voice calls with speech recognition (RunPod compatible)"""
+    """Handle incoming calls from Twilio - matches your webhook configuration"""
     
     logger.info(f"📞 Incoming call: {CallSid} from {From} to {To} (Status: {CallStatus})")
     
     try:
-        # Create TwiML response using speech recognition instead of WebSocket
+        # Log the full request for debugging
+        form_data = await request.form()
+        logger.info(f"Full form data: {dict(form_data)}")
+        
         response = VoiceResponse()
         
-        # Welcome message
-        response.say("Hello! Welcome to our AI support system.")
-        response.say("I'm here to help you with roadside assistance, billing, or technical support.")
+        # Create WebSocket connection
+        ws_url = f'{BASE_URL.replace("http", "ws")}/ws/stream/{CallSid}'
+        logger.info(f"🔗 WebSocket URL: {ws_url}")
         
-        # Use Gather with speech input (works reliably everywhere)
-        gather = response.gather(
-            input='speech',
-            timeout=10,
-            speechTimeout='auto',
-            action=f"/voice/process/{CallSid}",
-            method='POST',
-            language='en-US'
-        )
+        connect = Connect()
+        stream = Stream(url=ws_url)
+        connect.append(stream)
+        response.append(connect)
         
-        gather.say("Please tell me how I can help you today. Speak clearly after the tone.")
-        
-        # Fallback if no speech detected
-        response.say("I didn't hear your response. Let me try with a menu instead.")
-        response.redirect(f"/voice/menu/{CallSid}")
-        
-        logger.info(f"✅ Speech-based TwiML response sent for {CallSid}")
+        twiml_content = str(response)
+        logger.info(f"✅ Generated TwiML for incoming call {CallSid}")
         
         return PlainTextResponse(
-            content=str(response),
+            content=twiml_content,
             media_type="application/xml"
         )
         
     except Exception as e:
-        logger.error(f"❌ Error handling incoming call {CallSid}: {e}", exc_info=True)
+        logger.error(f"❌ Incoming call error: {e}", exc_info=True)
         
-        # Ultra-simple fallback
         response = VoiceResponse()
-        response.say("Hello! Thanks for calling. Our system is currently being optimized.")
-        response.say("Please try calling again in a few minutes, or contact our support team directly.")
+        response.say("Hello! Thank you for calling. Our system is ready to help you.")
+        response.say("Please wait a moment while I connect you.")
         response.hangup()
         
         return PlainTextResponse(
@@ -908,94 +1306,36 @@ async def handle_incoming_call(
             media_type="application/xml"
         )
 
-@app.post("/voice/process/{call_sid}")
-async def process_speech(
-    call_sid: str,
-    SpeechResult: str = Form(None),
-    Confidence: str = Form(None),
-    From: str = Form(None),
+@app.post("/voice/call")
+async def handle_websocket_call(
+    request: Request,
+    CallSid: str = Form(...),
+    From: str = Form(...),
+    To: str = Form(...),
+    CallStatus: str = Form(...),
     _: None = Depends(ensure_system_initialized)
 ):
-    """Process speech input and route to appropriate AI agent"""
+    """Enhanced Twilio webhook for WebSocket integration."""
     
-    logger.info(f"🎤 Processing speech for {call_sid}: '{SpeechResult}' (confidence: {Confidence})")
+    logger.info(f"📞 Enhanced WebSocket call: {CallSid} from {From} to {To}")
     
     try:
+        # Log the full request for debugging
+        form_data = await request.form()
+        logger.info(f"Full form data: {dict(form_data)}")
+        
         response = VoiceResponse()
         
-        if SpeechResult and len(SpeechResult.strip()) > 0:
-            # Store the call in active sessions for tracking
-            session_id = f"speech_{call_sid}"
-            
-            # Process through your multi-agent orchestrator
-            if orchestrator:
-                try:
-                    result = await orchestrator.process_conversation(
-                        session_id=session_id,
-                        input_text=SpeechResult,
-                        context={
-                            "call_sid": call_sid,
-                            "input_mode": "speech",
-                            "confidence": float(Confidence) if Confidence else 0.0,
-                            "caller": From,
-                            "platform": "twilio_speech"
-                        }
-                    )
-                    
-                    # Update session metrics
-                    session_metrics["total_sessions"] += 1
-                    active_sessions[call_sid] = {
-                        "session_id": session_id,
-                        "start_time": time.time(),
-                        "input": SpeechResult,
-                        "status": "processed"
-                    }
-                    session_metrics["active_count"] = len(active_sessions)
-                    
-                    if result and hasattr(result, 'success') and result.success and hasattr(result, 'response') and result.response:
-                        # AI agent provided a response
-                        ai_response = result.response
-                        response.say(ai_response)
-                        
-                        logger.info(f"✅ AI response sent for {call_sid}: {ai_response[:100]}...")
-                        
-                        # Ask for follow-up
-                        gather = response.gather(
-                            input='speech',
-                            timeout=8,
-                            speechTimeout='auto',
-                            action=f"/voice/followup/{call_sid}",
-                            method='POST'
-                        )
-                        gather.say("Is there anything else I can help you with?")
-                        
-                        # End call if no follow-up
-                        response.say("Thank you for calling! Have a great day.")
-                        response.hangup()
-                        
-                    else:
-                        # Orchestrator didn't provide a good response
-                        response.say("I understand you need help with: " + SpeechResult)
-                        response.say("Let me connect you to the right department.")
-                        response.redirect(f"/voice/route/{call_sid}?query={SpeechResult}")
-                        
-                except Exception as orch_error:
-                    logger.error(f"Orchestrator error for {call_sid}: {orch_error}")
-                    response.say("I heard you say: " + SpeechResult)
-                    response.say("I'm processing your request now. Please hold on.")
-                    response.pause(length=2)
-                    response.say("Our team will follow up with you shortly. Thank you for calling!")
-                    response.hangup()
-            else:
-                # No orchestrator available - simple response
-                response.say(f"Thank you for your request about: {SpeechResult}")
-                response.say("I've noted your inquiry and our team will get back to you soon.")
-                response.hangup()
-        else:
-            # No speech detected or empty
-            response.say("I didn't catch what you said clearly.")
-            response.say("Let me try a different approach with a menu.")
-            response.redirect(f"/voice/menu/{call_sid}")
+        # Create WebSocket connection
+        ws_url = f'{BASE_URL.replace("http", "ws")}/ws/stream/{CallSid}'
+        logger.info(f"WebSocket URL: {ws_url}")
+        
+        connect = Connect()
+        stream = Stream(url=ws_url)
+        connect.append(stream)
+        response.append(connect)
+        
+        logger.info(f"WebSocket TwiML generated for {CallSid}")
         
         return PlainTextResponse(
             content=str(response),
@@ -1003,11 +1343,10 @@ async def process_speech(
         )
         
     except Exception as e:
-        logger.error(f"❌ Error processing speech for {call_sid}: {e}", exc_info=True)
+        logger.error(f"❌ WebSocket call error: {e}", exc_info=True)
         
         response = VoiceResponse()
-        response.say("I'm having trouble processing your request right now.")
-        response.say("Please try calling again later. Thank you!")
+        response.say("Hello! Our system is currently optimizing. Please try again shortly.")
         response.hangup()
         
         return PlainTextResponse(
@@ -1015,290 +1354,43 @@ async def process_speech(
             media_type="application/xml"
         )
 
-@app.post("/voice/followup/{call_sid}")
-async def handle_followup(
-    call_sid: str,
-    SpeechResult: str = Form(None),
-    Confidence: str = Form(None)
+@app.post("/voice/status")
+async def handle_call_status(
+    request: Request,
+    CallSid: str = Form(...),
+    CallStatus: str = Form(...),
+    CallDuration: str = Form(None)
 ):
-    """Handle follow-up questions"""
+    """Handle call status callbacks from Twilio"""
     
-    logger.info(f"🔄 Follow-up for {call_sid}: '{SpeechResult}'")
+    logger.info(f"📞 Call status update: {CallSid} - Status: {CallStatus}, Duration: {CallDuration}")
     
-    response = VoiceResponse()
-    
-    if SpeechResult and len(SpeechResult.strip()) > 0:
-        # Check for common follow-up patterns
-        speech_lower = SpeechResult.lower()
+    try:
+        # Log the full request for debugging
+        form_data = await request.form()
+        logger.info(f"Status callback data: {dict(form_data)}")
         
-        if any(word in speech_lower for word in ['no', 'nothing', 'that\'s all', 'goodbye']):
-            response.say("Perfect! Thank you for calling. Have a wonderful day!")
-            response.hangup()
-        elif any(word in speech_lower for word in ['yes', 'yeah', 'help', 'question']):
-            # Redirect back to main processing
-            response.say("Of course! Let me help you with that.")
-            response.redirect(f"/voice/process/{call_sid}")
-        else:
-            # Process as new request
-            response.say("Let me help you with that additional request.")
-            response.redirect(f"/voice/process/{call_sid}")
-    else:
-        # No clear follow-up
-        response.say("Thank you for calling! Goodbye!")
-        response.hangup()
-    
-    return PlainTextResponse(
-        content=str(response),
-        media_type="application/xml"
-    )
-
-@app.post("/voice/menu/{call_sid}")
-async def voice_menu(call_sid: str):
-    """Simple voice menu when speech recognition fails"""
-    
-    logger.info(f"📋 Voice menu for {call_sid}")
-    
-    response = VoiceResponse()
-    
-    gather = response.gather(
-        input='dtmf',
-        timeout=10,
-        numDigits=1,
-        action=f"/voice/menu-choice/{call_sid}",
-        method='POST'
-    )
-    
-    gather.say("Please select from the following options:")
-    gather.say("Press 1 for roadside assistance and towing")
-    gather.say("Press 2 for billing and payment support") 
-    gather.say("Press 3 for technical support")
-    gather.say("Press 9 to repeat this menu")
-    gather.say("Press 0 to leave a callback number")
-    
-    response.say("Thank you for calling. Goodbye!")
-    response.hangup()
-    
-    return PlainTextResponse(
-        content=str(response),
-        media_type="application/xml"
-    )
-
-@app.post("/voice/menu-choice/{call_sid}")
-async def handle_menu_choice(
-    call_sid: str,
-    Digits: str = Form(None)
-):
-    """Handle menu selections"""
-    
-    logger.info(f"📋 Menu choice for {call_sid}: {Digits}")
-    
-    response = VoiceResponse()
-    
-    # Route to appropriate agent based on selection
-    agent_responses = {
-        "1": "You've reached roadside assistance. I can help you with towing, flat tires, lockouts, and emergency roadside service. Please describe your situation and location.",
-        "2": "You've reached billing support. I can help with payment questions, refunds, account issues, and billing inquiries. How can I assist you today?",
-        "3": "You've reached technical support. I can help troubleshoot technical issues, setup problems, and system questions. What technical issue are you experiencing?"
-    }
-    
-    if Digits in agent_responses:
-        response.say(agent_responses[Digits])
+        # Clean up session if call ended
+        if CallStatus in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
+            if CallSid in active_sessions:
+                try:
+                    if hasattr(active_sessions[CallSid], '_cleanup'):
+                        await active_sessions[CallSid]._cleanup()
+                    del active_sessions[CallSid]
+                    session_metrics["active_count"] = len(active_sessions)
+                    logger.info(f"✅ Cleaned up session for ended call: {CallSid}")
+                except Exception as e:
+                    logger.error(f"Error cleaning up call {CallSid}: {e}")
         
-        # Collect more info
-        gather = response.gather(
-            input='speech',
-            timeout=15,
-            speechTimeout='auto',
-            action=f"/voice/agent-response/{call_sid}/{Digits}",
-            method='POST'
-        )
-        gather.say("Please provide details about your request.")
+        return {"status": "received", "call_sid": CallSid, "call_status": CallStatus}
         
-        response.say("Thank you. Our team will contact you soon.")
-        response.hangup()
-        
-    elif Digits == "9":
-        # Repeat menu
-        response.redirect(f"/voice/menu/{call_sid}")
-    elif Digits == "0":
-        # Callback option
-        response.say("Please leave your callback number after the tone, followed by the pound key.")
-        response.record(
-            timeout=10,
-            finishOnKey='#',
-            action=f"/voice/callback/{call_sid}",
-            method='POST'
-        )
-    else:
-        response.say("Invalid selection. Let me repeat the menu.")
-        response.redirect(f"/voice/menu/{call_sid}")
-    
-    return PlainTextResponse(
-        content=str(response),
-        media_type="application/xml"
-    )
-
-@app.post("/voice/agent-response/{call_sid}/{agent_type}")
-async def handle_agent_response(
-    call_sid: str,
-    agent_type: str,
-    SpeechResult: str = Form(None),
-    Confidence: str = Form(None)
-):
-    """Handle agent-specific responses"""
-    
-    logger.info(f"🤖 Agent response for {call_sid} (type: {agent_type}): '{SpeechResult}'")
-    
-    response = VoiceResponse()
-    
-    if SpeechResult and len(SpeechResult.strip()) > 0:
-        # Map agent types to specific responses
-        agent_map = {
-            "1": "roadside-assistance-v2",
-            "2": "billing-support-v2", 
-            "3": "technical-support-v2"
-        }
-        
-        agent_id = agent_map.get(agent_type, "general")
-        
-        # Process through orchestrator with agent context
-        if orchestrator:
-            try:
-                session_id = f"agent_{call_sid}_{agent_type}"
-                
-                result = await orchestrator.process_conversation(
-                    session_id=session_id,
-                    input_text=SpeechResult,
-                    context={
-                        "call_sid": call_sid,
-                        "preferred_agent": agent_id,
-                        "agent_type": agent_type,
-                        "input_mode": "speech",
-                        "confidence": float(Confidence) if Confidence else 0.0
-                    }
-                )
-                
-                if result and hasattr(result, 'success') and result.success and result.response:
-                    response.say(result.response)
-                else:
-                    # Fallback response
-                    fallback_responses = {
-                        "1": f"I understand you need roadside assistance for: {SpeechResult}. Our dispatch team will contact you within 15 minutes to arrange service.",
-                        "2": f"I've noted your billing inquiry about: {SpeechResult}. Our billing team will review your account and contact you within 24 hours.",
-                        "3": f"I understand you're experiencing: {SpeechResult}. Our technical team will investigate and provide a solution within 2 business days."
-                    }
-                    response.say(fallback_responses.get(agent_type, "Thank you for your request. Our team will follow up with you."))
-                    
-            except Exception as e:
-                logger.error(f"Agent processing error: {e}")
-                response.say(f"I've recorded your request about: {SpeechResult}")
-                response.say(f"Our specialized team will contact you soon.")
-        else:
-            response.say(f"Thank you for providing those details: {SpeechResult}")
-            response.say("Our team has been notified and will contact you shortly.")
-    else:
-        response.say("I didn't catch your details clearly.")
-        response.say("Our team will call you back to gather more information.")
-    
-    response.say("Thank you for calling. Have a great day!")
-    response.hangup()
-    
-    # Clean up session
-    if call_sid in active_sessions:
-        del active_sessions[call_sid]
-        session_metrics["active_count"] = len(active_sessions)
-    
-    return PlainTextResponse(
-        content=str(response),
-        media_type="application/xml"
-    )
-
-@app.post("/voice/callback/{call_sid}")
-async def handle_callback(call_sid: str):
-    """Handle callback requests"""
-    
-    logger.info(f"📞 Callback requested for {call_sid}")
-    
-    response = VoiceResponse()
-    response.say("Thank you! We've recorded your callback number and will contact you within 24 hours.")
-    response.say("Have a great day!")
-    response.hangup()
-    
-    # Clean up session
-    if call_sid in active_sessions:
-        del active_sessions[call_sid]
-        session_metrics["active_count"] = len(active_sessions)
-    
-    return PlainTextResponse(
-        content=str(response),
-        media_type="application/xml"
-    )
-
-@app.post("/voice/route/{call_sid}")
-async def route_request(
-    call_sid: str,
-    query: str = Form(None)
-):
-    """Route requests based on content analysis"""
-    
-    logger.info(f"🔀 Routing request for {call_sid}: {query}")
-    
-    response = VoiceResponse()
-    
-    if query:
-        # Simple keyword-based routing
-        query_lower = query.lower()
-        
-        if any(word in query_lower for word in ['tow', 'car', 'stuck', 'accident', 'roadside', 'tire', 'battery']):
-            response.say("I can see you need roadside assistance.")
-            response.redirect(f"/voice/agent-response/{call_sid}/1")
-        elif any(word in query_lower for word in ['bill', 'payment', 'charge', 'refund', 'account', 'money']):
-            response.say("I can help you with your billing inquiry.")
-            response.redirect(f"/voice/agent-response/{call_sid}/2")
-        elif any(word in query_lower for word in ['technical', 'not working', 'error', 'problem', 'setup', 'install']):
-            response.say("Let me connect you with technical support.")
-            response.redirect(f"/voice/agent-response/{call_sid}/3")
-        else:
-            response.say("Let me help you find the right department.")
-            response.redirect(f"/voice/menu/{call_sid}")
-    else:
-        response.redirect(f"/voice/menu/{call_sid}")
-    
-    return PlainTextResponse(
-        content=str(response),
-        media_type="application/xml"
-    )
-
-# ============================================================================
-# VOICE SYSTEM STATUS AND MONITORING ENDPOINTS
-# ============================================================================
-
-@app.get("/voice/status")
-async def voice_system_status():
-    """Get voice system status and active calls"""
-    
-    return {
-        "voice_system": "operational" if SYSTEM_INITIALIZED else "initializing",
-        "integration_type": "speech_recognition",
-        "active_calls": len(active_sessions),
-        "total_sessions": session_metrics.get("total_sessions", 0),
-        "stt_system": "available" if stt_system else "unavailable",
-        "tts_engine": "available" if tts_engine else "unavailable",
-        "orchestrator": "available" if orchestrator else "unavailable",
-        "session_metrics": session_metrics,
-        "base_url": BASE_URL,
-        "webhook_url": f"{BASE_URL}/voice/call" if BASE_URL else "not_configured",
-        "endpoints": {
-            "main_webhook": "/voice/call",
-            "speech_processing": "/voice/process/{call_sid}",
-            "voice_menu": "/voice/menu/{call_sid}",
-            "agent_routing": "/voice/route/{call_sid}"
-        },
-        "timestamp": time.time()
-    }
+    except Exception as e:
+        logger.error(f"❌ Status callback error: {e}", exc_info=True)
+        return {"error": str(e), "call_sid": CallSid}
 
 @app.post("/voice/hangup")
 async def handle_call_hangup(
+    request: Request,
     CallSid: str = Form(...),
     CallStatus: str = Form(...),
     CallDuration: str = Form(None)
@@ -1307,74 +1399,75 @@ async def handle_call_hangup(
     
     logger.info(f"📞 Call hangup: {CallSid} (Status: {CallStatus}, Duration: {CallDuration})")
     
-    # Clean up any remaining session
-    if CallSid in active_sessions:
-        try:
-            if hasattr(active_sessions[CallSid], 'cleanup'):
-                await active_sessions[CallSid].cleanup()
-            del active_sessions[CallSid]
-            session_metrics["active_count"] = len(active_sessions)
-        except Exception as e:
-            logger.error(f"Error cleaning up hung up call {CallSid}: {e}")
-    
-    return {"status": "acknowledged"}
-
-@app.get("/voice/test")
-async def test_voice_system():
-    """Test voice system components"""
-    
-    test_results = {
-        "timestamp": time.time(),
-        "system_initialized": SYSTEM_INITIALIZED,
-        "integration_type": "speech_recognition_based",
-        "components": {}
-    }
-    
-    # Test STT system
-    if stt_system:
-        try:
-            test_results["components"]["stt"] = {"status": "available", "provider": "google_cloud_v2"}
-        except Exception as e:
-            test_results["components"]["stt"] = {"status": "error", "error": str(e)}
-    else:
-        test_results["components"]["stt"] = {"status": "not_initialized"}
-    
-    # Test TTS engine
-    if tts_engine:
-        try:
-            test_results["components"]["tts"] = {"status": "available", "engine": "dual_streaming"}
-        except Exception as e:
-            test_results["components"]["tts"] = {"status": "error", "error": str(e)}
-    else:
-        test_results["components"]["tts"] = {"status": "not_initialized"}
-    
-    # Test orchestrator
-    if orchestrator:
-        try:
-            test_results["components"]["orchestrator"] = {"status": "available", "agents": 3}
-        except Exception as e:
-            test_results["components"]["orchestrator"] = {"status": "error", "error": str(e)}
-    else:
-        test_results["components"]["orchestrator"] = {"status": "not_initialized"}
-    
-    # Test speech recognition capability
-    test_results["components"]["speech_recognition"] = {"status": "available", "provider": "twilio_builtin"}
-    
-    return test_results
+    try:
+        # Log the full request for debugging
+        form_data = await request.form()
+        logger.info(f"Hangup callback data: {dict(form_data)}")
+        
+        # Clean up any remaining session
+        if CallSid in active_sessions:
+            try:
+                if hasattr(active_sessions[CallSid], '_cleanup'):
+                    await active_sessions[CallSid]._cleanup()
+                del active_sessions[CallSid]
+                session_metrics["active_count"] = len(active_sessions)
+                logger.info(f"✅ Cleaned up session for hung up call: {CallSid}")
+            except Exception as e:
+                logger.error(f"Error cleaning up hung up call {CallSid}: {e}")
+        
+        return {"status": "acknowledged", "call_sid": CallSid, "call_status": CallStatus}
+        
+    except Exception as e:
+        logger.error(f"❌ Hangup callback error: {e}", exc_info=True)
+        return {"error": str(e), "call_sid": CallSid}
 
 # ============================================================================
-# EXISTING SYSTEM ENDPOINTS (keeping all your original endpoints)
+# ENDPOINT COMPATIBILITY ALIASES
+# ============================================================================
+
+@app.post("/voice/webhook")
+async def webhook_alias(request: Request):
+    """Alias for /voice/incoming"""
+    # Extract form data manually since we need to pass it through
+    form_data = await request.form()
+    
+    return await handle_incoming_call(
+        request=request,
+        CallSid=form_data.get("CallSid", ""),
+        From=form_data.get("From", ""),
+        To=form_data.get("To", ""),
+        CallStatus=form_data.get("CallStatus", "")
+    )
+
+@app.post("/webhook/voice")
+async def webhook_voice_alias(request: Request):
+    """Alternative webhook endpoint"""
+    # Extract form data manually since we need to pass it through
+    form_data = await request.form()
+    
+    return await handle_incoming_call(
+        request=request,
+        CallSid=form_data.get("CallSid", ""),
+        From=form_data.get("From", ""),
+        To=form_data.get("To", ""),
+        CallStatus=form_data.get("CallStatus", "")
+    )
+
+# ============================================================================
+# SYSTEM STATUS AND MONITORING ENDPOINTS
 # ============================================================================
 
 @app.get("/", response_model=Dict[str, Any])
 async def root():
     """System status and welcome endpoint."""
     return {
-        "system": "Revolutionary Multi-Agent Voice AI System",
-        "version": "2.0.0",
+        "system": "Revolutionary Multi-Agent Voice AI System - WebSocket Integrated",
+        "version": "2.1.0",
         "status": "operational" if SYSTEM_INITIALIZED else "initializing",
+        "integration_type": "websocket_streaming",
         "features": [
             "Multi-agent specialization with hot deployment",
+            "Real-time WebSocket streaming with Twilio",
             "Hybrid 3-tier vector architecture (Redis+FAISS+Qdrant)",
             "Enhanced STT/TTS with dual streaming",
             "LangGraph orchestration with stateful execution",
@@ -1383,8 +1476,8 @@ async def root():
             "Real-time performance monitoring",
             "YAML-based configuration management",
             "Automatic service startup and management",
-            "Twilio voice integration with speech recognition",
-            "RunPod optimized deployment"
+            "Echo prevention and detection",
+            "Continuous conversation management"
         ],
         "target_latency_ms": 377,
         "active_sessions": len(active_sessions),
@@ -1392,12 +1485,13 @@ async def root():
             "redis": service_manager.redis_running,
             "qdrant": service_manager.qdrant_running
         },
-        "voice_integration": {
-            "type": "speech_recognition",
-            "webhook_url": f"{BASE_URL}/voice/call" if BASE_URL else "not_configured",
-            "status_url": f"{BASE_URL}/voice/status" if BASE_URL else "not_configured",
-            "test_url": f"{BASE_URL}/voice/test" if BASE_URL else "not_configured"
+        "websocket_integration": {
+            "webhook_url": f"{BASE_URL}/voice/incoming" if BASE_URL else "not_configured",
+            "status_callback_url": f"{BASE_URL}/voice/status" if BASE_URL else "not_configured",
+            "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}" if BASE_URL else "not_configured",
+            "status": "enhanced_integration_active"
         },
+        "port": 5000,
         "timestamp": time.time()
     }
 
@@ -1417,7 +1511,9 @@ async def comprehensive_health_check(
                     "system": "operational",
                     "redis": "operational" if service_manager.redis_running else "degraded",
                     "qdrant": "operational" if service_manager.qdrant_running else "degraded",
-                    "voice_system": "operational" if (stt_system and tts_engine) else "degraded"
+                    "websocket_integration": "operational",
+                    "stt_system": "operational" if stt_system else "degraded",
+                    "tts_engine": "operational" if tts_engine else "degraded"
                 },
                 "performance_metrics": {
                     "avg_response_time_ms": 200.0,
@@ -1443,38 +1539,123 @@ async def comprehensive_health_check(
             active_sessions=len(active_sessions)
         )
 
-@app.get("/config/agents")
-async def list_agent_configs():
-    """List all available agent configurations."""
-    try:
-        agent_configs = config_manager.load_all_agent_configs()
+@app.get("/voice/endpoints")
+async def list_voice_endpoints():
+    """List all available voice endpoints for debugging"""
+    
+    voice_endpoints = {
+        "webhook_endpoints": {
+            "/voice/incoming": "Primary incoming call webhook (matches your Twilio config)",
+            "/voice/call": "Alternative incoming call webhook", 
+            "/voice/webhook": "Alias for /voice/incoming",
+            "/webhook/voice": "Alternative webhook endpoint"
+        },
         
-        config_summary = {}
-        for agent_id, config in agent_configs.items():
-            config_summary[agent_id] = {
-                "version": config.get("version", "unknown"),
-                "domain_expertise": config.get("specialization", {}).get("domain_expertise", "unknown"),
-                "status": config.get("status", "unknown"),
-                "tools_count": len(config.get("tools", [])),
-                "routing_keywords": len(config.get("routing", {}).get("primary_keywords", []))
-            }
+        "status_endpoints": {
+            "/voice/status": "Call status callbacks (matches your Twilio config)",
+            "/voice/hangup": "Alternative hangup handler"
+        },
         
-        return {
-            "available_configs": config_summary,
-            "total_count": len(config_summary),
-            "config_directory": str(config_manager.agents_config_path),
-            "services_status": {
-                "redis": service_manager.redis_running,
-                "qdrant": service_manager.qdrant_running
+        "websocket_endpoints": {
+            "/ws/stream/{call_sid}": "WebSocket streaming endpoint for real-time audio"
+        },
+        
+        "test_endpoints": {
+            "/voice/test-websocket-integration": "Test WebSocket integration",
+            "/voice/endpoints": "This endpoint - lists all voice endpoints"
+        },
+        
+        "recommended_twilio_config": {
+            "webhook_url": f"{BASE_URL}/voice/incoming",
+            "status_callback_url": f"{BASE_URL}/voice/status",
+            "method": "POST"
+        },
+        
+        "current_base_url": BASE_URL,
+        "websocket_url_pattern": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}" if BASE_URL else "not_configured"
+    }
+    
+    return voice_endpoints
+
+@app.get("/voice/test-websocket-integration")
+async def test_websocket_integration():
+    """Test the WebSocket integration with multi-agent system."""
+    
+    test_results = {
+        "timestamp": time.time(),
+        "system_status": SYSTEM_INITIALIZED,
+        "base_url": BASE_URL,
+        "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/test_call" if BASE_URL else "not_configured",
+        
+        "components": {
+            "orchestrator": {
+                "available": orchestrator is not None,
+                "initialized": getattr(orchestrator, 'initialized', False) if orchestrator else False
+            },
+            "state_manager": {
+                "available": state_manager is not None
+            },
+            "stt_system": {
+                "available": stt_system is not None,
+                "initialized": getattr(stt_system, 'initialized', False) if stt_system else False
+            },
+            "tts_engine": {
+                "available": tts_engine is not None,
+                "initialized": getattr(tts_engine, 'initialized', False) if tts_engine else False
+            },
+            "agent_registry": {
+                "available": agent_registry is not None,
+                "agents_count": len(await agent_registry.list_active_agents()) if agent_registry else 0
             }
-        }
-    except Exception as e:
-        logger.error(f"Error listing agent configs: {e}")
-        return {
-            "available_configs": {},
-            "total_count": 0,
-            "error": str(e)
-        }
+        },
+        
+        "integration_status": {
+            "websocket_handler": "EnhancedWebSocketHandler",
+            "stt_integration": "Enhanced STT System",
+            "tts_integration": "Dual Streaming TTS Engine",
+            "orchestrator_integration": "Multi-Agent Orchestrator",
+            "echo_prevention": "Active",
+            "session_management": "Enhanced"
+        },
+        
+        "twilio_endpoints": {
+            "voice_webhook": "/voice/incoming",
+            "alt_voice_webhook": "/voice/call",
+            "websocket_stream": "/ws/stream/{call_sid}",
+            "status_callback": "/voice/status",
+            "hangup_callback": "/voice/hangup",
+            "test_endpoint": "/voice/test-websocket-integration"
+        },
+        
+        "test_recommendations": [
+            "1. Update Twilio webhook to your-url/voice/incoming",
+            "2. Update Twilio status callback to your-url/voice/status",
+            "3. Test WebSocket connection using browser dev tools",  
+            "4. Monitor logs during test calls",
+            "5. Check /stats endpoint for session metrics",
+            "6. Verify agent routing and responses"
+        ]
+    }
+    
+    # Test orchestrator if available
+    if orchestrator:
+        try:
+            test_result = await orchestrator.process_conversation(
+                session_id="test_integration",
+                input_text="Hello, I need help with roadside assistance",
+                context={"platform": "integration_test"}
+            )
+            
+            test_results["orchestrator_test"] = {
+                "success": getattr(test_result, 'success', False),
+                "response": getattr(test_result, 'response', 'No response')[:100],
+                "agent_id": getattr(test_result, 'agent_id', 'unknown'),
+                "latency_ms": getattr(test_result, 'latency_ms', 0)
+            }
+        except Exception as e:
+            test_results["orchestrator_test"] = {"error": str(e)}
+    
+    return test_results
 
 @app.get("/stats")
 async def get_stats():
@@ -1485,6 +1666,8 @@ async def get_stats():
             "initialized": SYSTEM_INITIALIZED,
             "active_calls": len(active_sessions),
             "base_url": BASE_URL,
+            "port": 5000,
+            "integration_type": "websocket_streaming",
             "services": {
                 "redis": service_manager.redis_running,
                 "qdrant": service_manager.qdrant_running
@@ -1493,13 +1676,13 @@ async def get_stats():
             "config_path": str(config_manager.agents_config_path)
         },
         "calls": {},
-        "sessions": {}
+        "sessions": session_metrics
     }
     
     for session_id, session_data in active_sessions.items():
         try:
-            if hasattr(session_data, 'get_session_metrics'):
-                stats["calls"][session_id] = session_data.get_session_metrics()
+            if hasattr(session_data, 'get_stats'):
+                stats["calls"][session_id] = session_data.get_stats()
             elif isinstance(session_data, dict):
                 stats["calls"][session_id] = session_data
             else:
@@ -1515,6 +1698,7 @@ async def get_config():
     """Get current configuration."""
     config = {
         "base_url": BASE_URL,
+        "port": 5000,
         "project_root": str(PROJECT_ROOT),
         "config_path": str(config_manager.config_base_path),
         "agents_config_path": str(config_manager.agents_config_path),
@@ -1524,22 +1708,111 @@ async def get_config():
             "redis": service_manager.redis_running,
             "qdrant": service_manager.qdrant_running
         },
-        "voice_integration": {
-            "type": "speech_recognition",
-            "webhook_url": f"{BASE_URL}/voice/call" if BASE_URL else "not_configured",
-            "test_url": f"{BASE_URL}/voice/test" if BASE_URL else "not_configured"
+        "websocket_integration": {
+            "type": "real_time_streaming",
+            "webhook_url": f"{BASE_URL}/voice/incoming" if BASE_URL else "not_configured",
+            "status_callback_url": f"{BASE_URL}/voice/status" if BASE_URL else "not_configured",
+            "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}" if BASE_URL else "not_configured",
+            "test_url": f"{BASE_URL}/voice/test-websocket-integration" if BASE_URL else "not_configured"
         },
         "conversation_features": {
-            "continuous_streaming": True,
+            "real_time_streaming": True,
             "session_management": True,
-            "auto_reconnection": True,
-            "configuration_management": True,
-            "voice_calls": True,
-            "speech_recognition": True,
-            "intelligent_routing": True
+            "echo_prevention": True,
+            "multi_agent_routing": True,
+            "voice_profiles": True,
+            "tool_orchestration": True
+        },
+        "twilio_configuration": {
+            "primary_webhook": "/voice/incoming",
+            "alternative_webhook": "/voice/call", 
+            "status_callback": "/voice/status",
+            "hangup_callback": "/voice/hangup",
+            "websocket_endpoint": "/ws/stream/{call_sid}",
+            "method": "POST",
+            "content_type": "application/x-www-form-urlencoded"
         }
     }
     return config
+
+# ============================================================================
+# DEBUGGING AND DEVELOPMENT ENDPOINTS
+# ============================================================================
+
+@app.get("/debug/sessions")
+async def debug_active_sessions():
+    """Debug endpoint to view active sessions."""
+    debug_info = {
+        "total_active_sessions": len(active_sessions),
+        "session_metrics": session_metrics,
+        "sessions": {}
+    }
+    
+    for session_id, handler in active_sessions.items():
+        try:
+            if hasattr(handler, 'get_stats'):
+                debug_info["sessions"][session_id] = handler.get_stats()
+            else:
+                debug_info["sessions"][session_id] = {
+                    "type": str(type(handler)),
+                    "status": "active"
+                }
+        except Exception as e:
+            debug_info["sessions"][session_id] = {"error": str(e)}
+    
+    return debug_info
+
+@app.post("/debug/test-call")
+async def debug_test_call():
+    """Create a test call session for debugging."""
+    test_call_sid = f"test_call_{int(time.time())}"
+    
+    try:
+        # Create test handler
+        test_handler = EnhancedWebSocketHandler(
+            call_sid=test_call_sid,
+            orchestrator=orchestrator,
+            state_manager=state_manager
+        )
+        
+        # Add to active sessions
+        active_sessions[test_call_sid] = test_handler
+        session_metrics["active_count"] = len(active_sessions)
+        session_metrics["total_sessions"] += 1
+        
+        return {
+            "test_call_sid": test_call_sid,
+            "status": "created",
+            "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{test_call_sid}" if BASE_URL else "not_configured",
+            "stats": test_handler.get_stats()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating test call: {e}")
+        return {"error": str(e), "test_call_sid": test_call_sid}
+
+@app.delete("/debug/cleanup-sessions")
+async def debug_cleanup_sessions():
+    """Force cleanup of all sessions for debugging."""
+    cleanup_count = 0
+    errors = []
+    
+    for session_id, handler in list(active_sessions.items()):
+        try:
+            if hasattr(handler, '_cleanup'):
+                await handler._cleanup()
+            del active_sessions[session_id]
+            cleanup_count += 1
+        except Exception as e:
+            errors.append(f"Session {session_id}: {str(e)}")
+    
+    session_metrics["active_count"] = len(active_sessions)
+    
+    return {
+        "cleaned_up": cleanup_count,
+        "remaining_sessions": len(active_sessions),
+        "errors": errors
+    }
 
 # Error handlers
 @app.exception_handler(HTTPException)
@@ -1576,7 +1849,12 @@ if __name__ == '__main__':
     print(f"🛠️ Tools: Comprehensive orchestration framework")
     print(f"📋 Config Directory: {config_manager.agents_config_path}")
     print(f"⚙️ Services: Auto-startup with configuration integration")
-    print(f"📞 Voice Integration: Speech Recognition (RunPod optimized)")
+    print(f"📞 Voice Integration: WebSocket + Multi-Agent (RunPod optimized)")
+    print(f"🌐 External URL: {BASE_URL}")
+    print(f"🔗 Primary Webhook: {BASE_URL}/voice/incoming" if BASE_URL else "Not configured")
+    print(f"📊 Status Callback: {BASE_URL}/voice/status" if BASE_URL else "Not configured")
+    print(f"🔗 WebSocket URL: {BASE_URL.replace('http', 'ws') if BASE_URL else 'Not configured'}/ws/stream/{{call_sid}}")
+    print(f"🚪 Port: 5000")
     
     # Verify config directory exists
     if config_manager.agents_config_path.exists():
@@ -1585,16 +1863,34 @@ if __name__ == '__main__':
     else:
         print("⚠️ Config directory not found - will be created automatically")
     
+    # Print webhook configuration summary
+    print("\n📞 Twilio Webhook Configuration:")
+    print(f"   Primary Webhook URL: {BASE_URL}/voice/incoming" if BASE_URL else "   Webhook URL: Not configured")
+    print(f"   Status Callback URL: {BASE_URL}/voice/status" if BASE_URL else "   Status Callback: Not configured")
+    print(f"   Method: POST")
+    print(f"   Content-Type: application/x-www-form-urlencoded")
+    print(f"   WebSocket Pattern: {BASE_URL.replace('http', 'ws') if BASE_URL else 'Not configured'}/ws/stream/{{call_sid}}")
+    
     # Create logs directory
     os.makedirs('./logs', exist_ok=True)
     
-    # Run with optimized settings
+    # CRITICAL: Make sure we bind to 0.0.0.0 for RunPod
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "5000"))
+    
+    print(f"\n🔧 Server Configuration:")
+    print(f"   Binding to: {host}:{port}")
+    print(f"   External access: {BASE_URL}")
+    print(f"   Environment: {'Development' if os.getenv('DEBUG', 'false').lower() == 'true' else 'Production'}")
+    
+    # Run with optimized settings for RunPod
     uvicorn.run(
         app,
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8000")),
+        host=host,
+        port=port,
         reload=False,
         log_level="info",
         workers=1,
-        loop="asyncio"
+        loop="asyncio",
+        access_log=True
     )
