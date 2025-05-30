@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FIXED: Revolutionary Multi-Agent Voice AI System - RunPod Optimized
-Enhanced with robust service startup and error recovery for cloud deployment.
+Fixed external URL detection and ChromaDB integration for RunPod deployment.
 """
 import os
 import sys
@@ -14,6 +14,7 @@ import subprocess
 import signal
 import base64
 import re
+import requests
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 import uuid
@@ -39,8 +40,9 @@ from app.core.state_manager import ConversationStateManager
 from app.core.health_monitor import SystemHealthMonitor
 
 # Agent and vector systems
-from app.agents.registry import AgentRegistry
+from app.agents.registry import AgentRegistry  
 from app.agents.router import IntelligentAgentRouter
+from app.agents.llm_router import LLMIntelligentRouter  # NEW: LLM-based router
 from app.vector_db.hybrid_vector_system import HybridVectorSystem
 
 # Voice processing with enhanced pipeline
@@ -82,11 +84,96 @@ def get_project_root():
     # Fallback to current directory
     return current_dir
 
+# ENHANCED: RunPod URL Detection
+def detect_runpod_url():
+    """
+    Detect RunPod external URL automatically.
+    Fixed version that properly detects the RunPod proxy URL.
+    """
+    # First, check environment variables
+    base_url = os.getenv('BASE_URL')
+    if base_url:
+        print(f"✅ Using BASE_URL from environment: {base_url}")
+        return base_url
+    
+    # Check for RunPod specific environment variables
+    runpod_pod_id = os.getenv('RUNPOD_POD_ID')
+    runpod_tcp_port_5000 = os.getenv('RUNPOD_TCP_PORT_5000')
+    runpod_public_ip = os.getenv('RUNPOD_PUBLIC_IP')
+    
+    if runpod_tcp_port_5000:
+        # RunPod provides the external URL directly
+        runpod_url = f"https://{runpod_tcp_port_5000}"
+        print(f"✅ Detected RunPod URL from RUNPOD_TCP_PORT_5000: {runpod_url}")
+        return runpod_url
+    
+    if runpod_pod_id:
+        # Try to construct RunPod URL using pod ID
+        potential_urls = [
+            f"https://{runpod_pod_id}-5000.proxy.runpod.net",
+            f"https://{runpod_pod_id}-tcp-5000.proxy.runpod.net",
+        ]
+        
+        for url in potential_urls:
+            try:
+                response = requests.get(f"{url}/health", timeout=5)
+                if response.status_code in [200, 404]:  # 404 is OK, means server is running but route not found
+                    print(f"✅ Detected RunPod URL: {url}")
+                    return url
+            except:
+                continue
+    
+    # Try to detect from system hostname or metadata
+    try:
+        # Check common RunPod patterns
+        hostname = os.uname().nodename
+        if 'runpod' in hostname.lower():
+            print(f"🔍 RunPod hostname detected: {hostname}")
+            
+            # Try to get external URL from RunPod metadata service
+            try:
+                # This is a common pattern for RunPod
+                metadata_response = requests.get('http://metadata.google.internal/computeMetadata/v1/instance/attributes/external-ip', 
+                                              headers={'Metadata-Flavor': 'Google'}, timeout=5)
+                if metadata_response.status_code == 200:
+                    external_ip = metadata_response.text.strip()
+                    runpod_url = f"https://{external_ip}:5000"
+                    print(f"✅ Detected RunPod URL from metadata: {runpod_url}")
+                    return runpod_url
+            except:
+                pass
+    except:
+        pass
+    
+    # If we're in a container, check for common port mappings
+    try:
+        # Check if port 5000 is exposed
+        with open('/proc/net/tcp', 'r') as f:
+            for line in f:
+                if ':1388' in line:  # 5000 in hex is 1388
+                    print("🔍 Port 5000 detected in container")
+                    break
+    except:
+        pass
+    
+    # Default fallback for RunPod
+    if runpod_pod_id or os.getenv('RUNPOD_PUBLIC_IP'):
+        fallback_url = "https://your-runpod-url-here.proxy.runpod.net"
+        print(f"⚠️ Could not auto-detect RunPod URL. Please set BASE_URL environment variable.")
+        print(f"    Your RunPod URL should look like: https://xxxxx-5000.proxy.runpod.net")
+        return fallback_url
+    
+    # Local development fallback
+    return "http://localhost:5000"
+
 # Set project root and change working directory
 PROJECT_ROOT = get_project_root()
 os.chdir(PROJECT_ROOT)
 print(f"🔧 Project root detected: {PROJECT_ROOT}")
 print(f"🔄 Working directory set to: {os.getcwd()}")
+
+# Enhanced RunPod URL detection
+BASE_URL = detect_runpod_url()
 
 # Ensure logs directory exists and configure logging
 try:
@@ -121,7 +208,6 @@ class EnhancedServiceManager:
     
     def __init__(self):
         self.redis_running = False
-        self.qdrant_running = False
         self.startup_attempts = {}
         self.max_attempts = 3
         
@@ -204,113 +290,6 @@ class EnhancedServiceManager:
                     logger.debug(f"Redis connection test failed: {e}")
         return False
     
-    async def ensure_qdrant_running(self) -> bool:
-        """Enhanced Qdrant startup specifically for RunPod environment."""
-        logger.info("🗄️ Starting Qdrant for RunPod environment...")
-        
-        # Test if Qdrant is already running
-        if await self._test_qdrant_connection():
-            logger.info("✅ Qdrant already running")
-            self.qdrant_running = True
-            return True
-        
-        # RunPod-specific Qdrant startup commands
-        runpod_qdrant_commands = [
-            # Try Docker first (most common on RunPod)
-            ['docker', 'run', '-d', '--name', 'qdrant', '--restart', 'unless-stopped',
-             '-p', '6333:6333', '-p', '6334:6334', 
-             '-v', f'{PROJECT_ROOT}/qdrant_storage:/qdrant/storage',
-             'qdrant/qdrant:latest'],
-            
-            # Try existing Docker container
-            ['docker', 'start', 'qdrant'],
-            
-            # Try direct binary if available
-            ['qdrant', '--host', '0.0.0.0', '--port', '6333'],
-            
-            # Try with nohup for background execution
-            ['nohup', 'qdrant', '--host', '0.0.0.0', '--port', '6333', '&'],
-            
-            # Try to install via package manager
-            ['apt-get', 'update', '&&', 'apt-get', 'install', '-y', 'qdrant'],
-        ]
-        
-        for cmd in runpod_qdrant_commands:
-            try:
-                logger.info(f"🔄 Trying Qdrant command: {' '.join(cmd)}")
-                
-                # Special handling for Docker commands
-                if cmd[0] == 'docker':
-                    # Check if Docker is available
-                    docker_check = subprocess.run(['which', 'docker'], capture_output=True)
-                    if docker_check.returncode != 0:
-                        logger.info("Docker not available, skipping Docker commands...")
-                        continue
-                    
-                    # Create storage directory for Docker
-                    os.makedirs(f'{PROJECT_ROOT}/qdrant_storage', exist_ok=True)
-                
-                # Execute the command
-                if '&' in cmd:
-                    # Handle background processes
-                    cmd_str = ' '.join(cmd)
-                    process = subprocess.Popen(
-                        cmd_str,
-                        shell=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        preexec_fn=os.setsid if hasattr(os, 'setsid') else None
-                    )
-                else:
-                    # Handle regular processes
-                    process = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        timeout=60,
-                        text=True
-                    )
-                    
-                    if process.returncode != 0:
-                        logger.debug(f"Command failed: {process.stderr}")
-                        continue
-                
-                # Wait for Qdrant to start
-                logger.info("⏳ Waiting for Qdrant to initialize...")
-                await asyncio.sleep(10)  # Qdrant needs more time to start
-                
-                # Test if Qdrant is now running
-                if await self._test_qdrant_connection():
-                    logger.info("✅ Qdrant started successfully on RunPod")
-                    self.qdrant_running = True
-                    return True
-                    
-            except subprocess.TimeoutExpired:
-                logger.warning(f"Qdrant command timed out: {' '.join(cmd)}")
-                continue
-            except Exception as e:
-                logger.debug(f"Qdrant command failed: {e}")
-                continue
-        
-        logger.warning("⚠️ Qdrant startup failed, using in-memory fallback")
-        return False
-
-    async def _test_qdrant_connection(self, max_retries: int = 3) -> bool:
-        """Test Qdrant connection with retries."""
-        for attempt in range(max_retries):
-            try:
-                import aiohttp
-                timeout = aiohttp.ClientTimeout(total=5)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get('http://localhost:6333/health') as response:
-                        if response.status == 200:
-                            return True
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2)
-                else:
-                    logger.debug(f"Qdrant connection test failed: {e}")
-        return False
-    
     async def install_missing_services(self):
         """Install missing services on RunPod if needed."""
         logger.info("🔧 Checking and installing missing services...")
@@ -326,771 +305,17 @@ class EnhancedServiceManager:
                 subprocess.run(['apt-get', 'install', '-y', 'redis-server'], 
                              capture_output=True, timeout=120)
             
-            # Install Docker if not available
-            docker_check = subprocess.run(['which', 'docker'], capture_output=True)
-            if docker_check.returncode != 0:
-                logger.info("🐳 Installing Docker...")
-                # Install Docker using convenience script
-                subprocess.run(['curl', '-fsSL', 'https://get.docker.com', '-o', 'get-docker.sh'], 
-                             capture_output=True, timeout=60)
-                subprocess.run(['sh', 'get-docker.sh'], capture_output=True, timeout=300)
-                subprocess.run(['systemctl', 'start', 'docker'], capture_output=True)
-                subprocess.run(['systemctl', 'enable', 'docker'], capture_output=True)
+            # Install ChromaDB dependencies
+            logger.info("📦 Installing ChromaDB dependencies...")
+            subprocess.run([sys.executable, '-m', 'pip', 'install', 'chromadb'], 
+                         capture_output=True, timeout=180)
             
         except Exception as e:
             logger.warning(f"Service installation encountered issues: {e}")
 
 
 # ============================================================================
-# TRULY SCALABLE CONFIGURATION-DRIVEN AGENT SYSTEM - ZERO HARDCODING!
-# ============================================================================
-
-class ConfigurationDrivenAgentMatcher:
-    """
-    Pure configuration-driven agent matching system.
-    Zero hardcoding - everything learned from agent configs.
-    """
-    
-    def __init__(self, agent_registry: Optional[Any] = None):
-        self.agent_registry = agent_registry
-        self.agent_configs = {}
-        self.keyword_scores = defaultdict(dict)
-        self.domain_mappings = {}
-        self.response_templates = {}
-        self.last_refresh = 0
-        
-    async def _load_agent_configurations(self):
-        """Load and analyze all agent configurations dynamically."""
-        if not self.agent_registry:
-            logger.warning("No agent registry available")
-            return
-            
-        try:
-            agents = await self.agent_registry.list_active_agents()
-            logger.info(f"🔍 Analyzing {len(agents)} agent configurations")
-            
-            # Clear previous data
-            self.agent_configs.clear()
-            self.keyword_scores.clear()
-            self.domain_mappings.clear()
-            self.response_templates.clear()
-            
-            for agent in agents:
-                agent_id = agent.agent_id
-                config = agent.config
-                
-                # Store full configuration
-                self.agent_configs[agent_id] = self._extract_config_data(config)
-                
-                # Build keyword scoring matrix
-                self._build_keyword_scores(agent_id, self.agent_configs[agent_id])
-                
-                # Build domain mappings
-                self._build_domain_mappings(agent_id, self.agent_configs[agent_id])
-                
-                # Build response templates from config
-                self._build_response_templates(agent_id, self.agent_configs[agent_id])
-                
-                logger.info(f"✅ Processed agent: {agent_id}")
-            
-            logger.info(f"✅ Loaded {len(self.agent_configs)} agent configurations")
-            self.last_refresh = time.time()
-            
-        except Exception as e:
-            logger.error(f"Error loading agent configurations: {e}")
-    
-    def _extract_config_data(self, config) -> Dict[str, Any]:
-        """Extract all relevant data from agent configuration."""
-        try:
-            # Handle both object and dict configs
-            if hasattr(config, '__dict__'):
-                config_dict = config.__dict__
-            else:
-                config_dict = config
-            
-            extracted = {
-                'routing': config_dict.get('routing', {}),
-                'specialization': config_dict.get('specialization', {}),
-                'tools': config_dict.get('tools', []),
-                'voice_settings': config_dict.get('voice_settings', {}),
-                'domain': '',
-                'keywords': [],
-                'phrases': [],
-                'context_indicators': []
-            }
-            
-            # Extract domain
-            specialization = extracted['specialization']
-            extracted['domain'] = specialization.get('domain_expertise', '').replace('_', ' ')
-            
-            # Extract all keywords from all sources
-            extracted['keywords'] = self._extract_all_keywords(extracted)
-            
-            # Extract phrases and context indicators
-            extracted['phrases'] = self._extract_phrases(extracted)
-            extracted['context_indicators'] = self._extract_context_indicators(extracted)
-            
-            return extracted
-            
-        except Exception as e:
-            logger.error(f"Error extracting config data: {e}")
-            return {}
-    
-    def _extract_all_keywords(self, config_data: Dict[str, Any]) -> List[str]:
-        """Extract keywords from all parts of configuration."""
-        all_keywords = []
-        
-        # From routing
-        routing = config_data.get('routing', {})
-        all_keywords.extend(routing.get('primary_keywords', []))
-        all_keywords.extend(routing.get('secondary_keywords', []))
-        all_keywords.extend(routing.get('context_keywords', []))
-        
-        # From domain expertise (split compound words)
-        domain = config_data.get('domain', '')
-        if domain:
-            domain_words = re.split(r'[_\s-]+', domain.lower())
-            all_keywords.extend([word for word in domain_words if len(word) > 2])
-        
-        # From tools (extract action words)
-        tools = config_data.get('tools', [])
-        for tool in tools:
-            tool_name = ''
-            if isinstance(tool, dict):
-                tool_name = tool.get('name', '')
-            elif isinstance(tool, str):
-                tool_name = tool
-            
-            if tool_name:
-                # Extract meaningful words from tool names
-                tool_words = re.split(r'[_\s-]+', tool_name.lower())
-                action_words = [word for word in tool_words if len(word) > 3]
-                all_keywords.extend(action_words)
-        
-        # Clean and deduplicate
-        cleaned_keywords = []
-        for keyword in all_keywords:
-            if isinstance(keyword, str) and len(keyword.strip()) > 1:
-                cleaned_keywords.append(keyword.strip().lower())
-        
-        return list(set(cleaned_keywords))
-    
-    def _extract_phrases(self, config_data: Dict[str, Any]) -> List[str]:
-        """Extract multi-word phrases from configuration."""
-        phrases = []
-        
-        # From routing configuration
-        routing = config_data.get('routing', {})
-        phrases.extend(routing.get('phrases', []))
-        phrases.extend(routing.get('common_requests', []))
-        
-        # Build phrases from domain + common words
-        domain = config_data.get('domain', '')
-        if domain:
-            common_starters = ['i need', 'i want', 'help with', 'assistance with']
-            for starter in common_starters:
-                phrases.append(f"{starter} {domain}")
-        
-        return [phrase.lower() for phrase in phrases if phrase]
-    
-    def _extract_context_indicators(self, config_data: Dict[str, Any]) -> List[str]:
-        """Extract context indicators that suggest this agent should handle the request."""
-        indicators = []
-        
-        # From specialization
-        specialization = config_data.get('specialization', {})
-        personality = specialization.get('personality_profile', '')
-        
-        # Personality-based indicators
-        if 'emergency' in personality:
-            indicators.extend(['urgent', 'emergency', 'asap', 'immediately'])
-        elif 'empathetic' in personality:
-            indicators.extend(['problem', 'issue', 'trouble', 'help'])
-        elif 'technical' in personality:
-            indicators.extend(['error', 'not working', 'broken', 'setup'])
-        
-        # From voice settings (emotion indicators)
-        voice_settings = config_data.get('voice_settings', {})
-        if voice_settings.get('empathy_mode'):
-            indicators.extend(['frustrated', 'confused', 'need help'])
-        
-        return indicators
-    
-    def _build_keyword_scores(self, agent_id: str, config_data: Dict[str, Any]):
-        """Build keyword scoring matrix for this agent."""
-        keywords = config_data.get('keywords', [])
-        
-        # Assign scores based on keyword source
-        routing = config_data.get('routing', {})
-        primary_keywords = routing.get('primary_keywords', [])
-        secondary_keywords = routing.get('secondary_keywords', [])
-        
-        for keyword in keywords:
-            if keyword in primary_keywords:
-                self.keyword_scores[keyword][agent_id] = 10  # Highest score
-            elif keyword in secondary_keywords:
-                self.keyword_scores[keyword][agent_id] = 7   # High score
-            else:
-                self.keyword_scores[keyword][agent_id] = 3   # Medium score
-    
-    def _build_domain_mappings(self, agent_id: str, config_data: Dict[str, Any]):
-        """Build domain to agent mappings."""
-        domain = config_data.get('domain', '')
-        if domain:
-            self.domain_mappings[domain] = agent_id
-    
-    def _build_response_templates(self, agent_id: str, config_data: Dict[str, Any]):
-        """Build response templates from configuration."""
-        domain = config_data.get('domain', 'general assistance')
-        specialization = config_data.get('specialization', {})
-        personality = specialization.get('personality_profile', 'professional')
-        
-        # Generate templates based on configuration
-        templates = {
-            'greeting': self._generate_greeting_template(domain, personality),
-            'about': self._generate_about_template(domain, personality),
-            'help_offer': self._generate_help_template(domain, personality),
-            'clarification': self._generate_clarification_template(domain, personality)
-        }
-        
-        self.response_templates[agent_id] = templates
-    
-    def _generate_greeting_template(self, domain: str, personality: str) -> str:
-        """Generate greeting template from domain and personality."""
-        domain_clean = domain.replace('_', ' ').title()
-        
-        if 'emergency' in personality:
-            return f"I'm your {domain_clean} specialist, available 24/7 for urgent situations. What emergency assistance do you need?"
-        elif 'empathetic' in personality:
-            return f"Hello! I'm here to help with {domain_clean}. I understand these situations can be stressful - how can I assist you today?"
-        elif 'technical' in personality:
-            return f"Hi! I'm your {domain_clean} expert. I'll guide you through any technical challenges step by step. What can I help you with?"
-        else:
-            return f"Hello! I specialize in {domain_clean}. How can I assist you today?"
-    
-    def _generate_about_template(self, domain: str, personality: str) -> str:
-        """Generate about template from domain and personality."""
-        domain_clean = domain.replace('_', ' ').title()
-        return f"I'm a specialized AI assistant for {domain_clean}. I'm designed to provide expert assistance in this area and help resolve your needs efficiently."
-    
-    def _generate_help_template(self, domain: str, personality: str) -> str:
-        """Generate help offer template from domain and personality."""
-        domain_clean = domain.replace('_', ' ').title()
-        
-        if 'emergency' in personality:
-            return f"I can provide immediate {domain_clean} assistance. What's your current situation?"
-        else:
-            return f"I'm ready to help with your {domain_clean} needs. What specific assistance do you require?"
-    
-    def _generate_clarification_template(self, domain: str, personality: str) -> str:
-        """Generate clarification template from domain and personality."""
-        domain_clean = domain.replace('_', ' ').title()
-        return f"I'd be happy to help with your {domain_clean} request. Could you provide more details about what you need?"
-    
-    async def find_best_agent(self, user_input: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Find best agent using pure configuration-driven matching."""
-        # Refresh if needed
-        if time.time() - self.last_refresh > 300:
-            await self._load_agent_configurations()
-        
-        user_input_lower = user_input.lower()
-        agent_scores = {}
-        
-        # Score agents based on keyword matches
-        for keyword, agent_scores_for_keyword in self.keyword_scores.items():
-            if keyword in user_input_lower:
-                for agent_id, score in agent_scores_for_keyword.items():
-                    agent_scores[agent_id] = agent_scores.get(agent_id, 0) + score
-                    logger.debug(f"Agent {agent_id}: +{score} for keyword '{keyword}'")
-        
-        # Score based on phrases
-        for agent_id, config_data in self.agent_configs.items():
-            phrases = config_data.get('phrases', [])
-            for phrase in phrases:
-                if phrase in user_input_lower:
-                    agent_scores[agent_id] = agent_scores.get(agent_id, 0) + 15
-                    logger.debug(f"Agent {agent_id}: +15 for phrase '{phrase}'")
-        
-        # Score based on context indicators
-        for agent_id, config_data in self.agent_configs.items():
-            indicators = config_data.get('context_indicators', [])
-            for indicator in indicators:
-                if indicator in user_input_lower:
-                    agent_scores[agent_id] = agent_scores.get(agent_id, 0) + 5
-                    logger.debug(f"Agent {agent_id}: +5 for context indicator '{indicator}'")
-        
-        # Find best match
-        if agent_scores:
-            best_agent_id = max(agent_scores, key=agent_scores.get)
-            best_score = agent_scores[best_agent_id]
-            
-            logger.info(f"🎯 Best agent: {best_agent_id} (score: {best_score})")
-            
-            if best_score > 0:
-                config_data = self.agent_configs[best_agent_id]
-                return {
-                    'agent_id': best_agent_id,
-                    'confidence': min(best_score / 20.0, 1.0),
-                    'domain': config_data.get('domain', 'general'),
-                    'urgency': 'normal'
-                }
-        
-        logger.warning("⚠️ No agent match found")
-        return {
-            'agent_id': None,
-            'confidence': 0.3,
-            'domain': 'general',
-            'urgency': 'normal'
-        }
-    
-    def generate_response(self, user_input: str, agent_match: Dict[str, Any] = None) -> str:
-        """Generate response using pure template system from configuration."""
-        if not agent_match:
-            agent_match = {'agent_id': None}
-        
-        agent_id = agent_match.get('agent_id')
-        user_input_lower = user_input.lower()
-        
-        # Use agent-specific templates if available
-        if agent_id and agent_id in self.response_templates:
-            templates = self.response_templates[agent_id]
-            
-            # Determine response type from user input patterns
-            if any(word in user_input_lower for word in ['hello', 'hi', 'hey', 'good morning', 'good afternoon']):
-                return templates.get('greeting', 'Hello! How can I help you?')
-            elif any(phrase in user_input_lower for phrase in ['tell me about', 'who are you', 'what are you', 'about yourself']):
-                return templates.get('about', 'I am here to help you.')
-            elif '?' in user_input or any(word in user_input_lower for word in ['help', 'assist', 'what', 'how', 'when', 'where']):
-                return templates.get('clarification', 'How can I help you?')
-            else:
-                return templates.get('help_offer', 'I understand. How can I assist you?')
-        
-        # Generic fallback
-        return "I'm here to help you. What do you need assistance with?"
-
-
-class FixedConversationHandler:
-    """
-    FIXED: Configuration-driven conversation handler with proper orchestrator integration
-    """
-    
-    def __init__(self, agent_registry=None, orchestrator=None):
-        self.agent_registry = agent_registry
-        self.orchestrator = orchestrator
-        self.agent_matcher = ConfigurationDrivenAgentMatcher(agent_registry)
-        
-        if agent_registry:
-            asyncio.create_task(self.agent_matcher._load_agent_configurations())
-    
-    async def process_conversation(
-        self,
-        user_input: str,
-        session_id: str,
-        orchestrator=None,
-        context: Dict[str, Any] = None
-    ) -> str:
-        """Process conversation with fixed orchestrator integration"""
-        
-        try:
-            logger.info(f"🔍 Processing: '{user_input}'")
-            
-            # Find best agent using configuration-driven matching
-            agent_match = await self.agent_matcher.find_best_agent(user_input, context)
-            logger.info(f"🎯 Agent match: {agent_match}")
-            
-            # Use orchestrator if available (FIXED: respect agent routing)
-            if self.orchestrator and getattr(self.orchestrator, 'initialized', False):
-                try:
-                    # CRITICAL FIX: Pass preferred_agent_id properly
-                    enhanced_context = {
-                        **(context or {}),
-                        'domain': agent_match.get('domain'),
-                        'urgency': agent_match.get('urgency'),
-                        'routing_confidence': agent_match.get('confidence'),
-                        'input_mode': 'voice_websocket'
-                    }
-                    
-                    # FIXED: Use process_conversation with preferred_agent_id
-                    result = await self.orchestrator.process_conversation(
-                        session_id=session_id,
-                        input_text=user_input,
-                        context=enhanced_context,
-                        preferred_agent_id=agent_match.get('agent_id')  # CRITICAL FIX
-                    )
-                    
-                    if (result and hasattr(result, 'success') and result.success and 
-                        hasattr(result, 'response') and result.response and result.response.strip()):
-                        logger.info(f"✅ Orchestrator success: {result.agent_id}")
-                        return result.response
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ Orchestrator failed: {e}")
-            
-            # Fallback to configuration-driven response generation
-            logger.info("🔄 Using configuration-driven response generation")
-            response = self.agent_matcher.generate_response(user_input, agent_match)
-            logger.info(f"✅ Generated response: {response[:100]}...")
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Processing error: {e}")
-            return "I apologize for the technical difficulty. How can I help you today?"
-
-
-# ============================================================================
-# ENHANCED WEBSOCKET HANDLER WITH CONFIGURATION-DRIVEN CONVERSATION
-# ============================================================================
-
-class EnhancedWebSocketHandler:
-    """
-    UPDATED: Enhanced WebSocket Handler with Configuration-Driven Agent Integration
-    """
-    
-    def __init__(self, call_sid: str, orchestrator, state_manager):
-        """Initialize the enhanced WebSocket handler."""
-        self.call_sid = call_sid
-        self.orchestrator = orchestrator
-        self.state_manager = state_manager
-        
-        # Get project ID
-        self.project_id = self._get_project_id()
-        
-        # Session management
-        self.session_id = f"ws_{call_sid}"
-        self.conversation_active = True
-        self.is_speaking = False
-        self.call_ended = False
-        
-        # Audio processing
-        self.audio_buffer = bytearray()
-        self.last_audio_time = time.time()
-        self.last_tts_time = None
-        
-        # Performance tracking
-        self.session_start_time = time.time()
-        self.audio_received = 0
-        self.transcriptions = 0
-        self.responses_sent = 0
-        self.echo_detections = 0
-        
-        # WebSocket reference
-        self._ws = None
-        
-        # UPDATED: Use configuration-driven conversation handler
-        self.conversation_handler = FixedConversationHandler(
-            agent_registry=orchestrator.agent_registry if orchestrator else None,
-            orchestrator=orchestrator
-        )
-        
-        logger.info(f"Enhanced WebSocket handler initialized for {call_sid}")
-    
-    def _get_project_id(self) -> str:
-        """Get project ID with fallback."""
-        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
-        if project_id:
-            return project_id
-        
-        credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        if credentials_file and os.path.exists(credentials_file):
-            try:
-                with open(credentials_file, 'r') as f:
-                    creds_data = json.load(f)
-                    return creds_data.get('project_id', 'fallback-project')
-            except Exception:
-                pass
-        
-        return 'fallback-project'
-    
-    async def handle_websocket_session(self, websocket: WebSocket):
-        """Main WebSocket session handler integrated with configuration-driven multi-agent system."""
-        logger.info(f"🔗 Configuration-driven WebSocket session for call: {self.call_sid}")
-        
-        self._ws = websocket
-        
-        try:
-            # Initialize conversation state in state manager
-            if self.state_manager:
-                await self.state_manager.create_conversation_state(
-                    session_id=self.session_id,
-                    initial_context={
-                        "call_sid": self.call_sid,
-                        "media_format": "twilio_websocket",
-                        "platform": "configuration_driven_integration"
-                    }
-                )
-            
-            # Start STT streaming
-            if stt_system and not stt_system.is_streaming:
-                await stt_system.start_streaming(
-                    callback=self._handle_transcription_callback
-                )
-            
-            # Main message processing loop
-            async for message in websocket.iter_text():
-                await self._process_twilio_message(message)
-                
-        except WebSocketDisconnect:
-            logger.info(f"📞 Configuration-driven WebSocket disconnected: {self.call_sid}")
-        except Exception as e:
-            logger.error(f"❌ Configuration-driven WebSocket error: {e}", exc_info=True)
-        finally:
-            await self._cleanup()
-    
-    async def _process_twilio_message(self, message: str):
-        """Process Twilio WebSocket messages."""
-        try:
-            data = json.loads(message)
-            event = data.get('event')
-            
-            if event == 'connected':
-                logger.info(f"WebSocket connected for {self.call_sid}")
-                
-            elif event == 'start':
-                self.stream_sid = data.get('streamSid')
-                logger.info(f"Stream started: {self.stream_sid}")
-                await self._start_conversation()
-                
-            elif event == 'media':
-                await self._handle_audio_data(data)
-                
-            elif event == 'stop':
-                logger.info(f"Stream stopped for {self.call_sid}")
-                await self._cleanup()
-                
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON: {e}")
-        except Exception as e:
-            logger.error(f"Error processing message: {e}")
-    
-    async def _handle_audio_data(self, data: Dict[str, Any]):
-        """Handle audio data with enhanced processing."""
-        if self.call_ended or self.is_speaking:
-            return
-        
-        media = data.get('media', {})
-        payload = media.get('payload')
-        
-        if not payload:
-            return
-        
-        try:
-            # Decode audio
-            audio_data = base64.b64decode(payload)
-            self.audio_received += 1
-            self.last_audio_time = time.time()
-            
-            # Skip if too close to TTS output (echo prevention)
-            if self.last_tts_time and (time.time() - self.last_tts_time) < 2.0:
-                return
-            
-            # Process through STT system
-            if stt_system:
-                await stt_system.process_audio_chunk(
-                    audio_data,
-                    callback=self._handle_transcription_callback
-                )
-                
-        except Exception as e:
-            logger.error(f"Error processing audio: {e}")
-    
-    async def _handle_transcription_callback(self, result):
-        """Handle STT transcription results."""
-        if not result or not result.is_final or not result.text.strip():
-            return
-        
-        transcription = result.text.strip()
-        confidence = getattr(result, 'confidence', 0.0)
-        
-        logger.info(f"Transcription: '{transcription}' (conf: {confidence:.2f})")
-        
-        # Validate transcription
-        if not self._is_valid_transcription(transcription, confidence):
-            return
-        
-        # UPDATED: Process through configuration-driven conversation handler
-        await self._process_with_configuration_driven_handler(transcription)
-    
-    def _is_valid_transcription(self, transcription: str, confidence: float) -> bool:
-        """Validate transcription with echo detection."""
-        # Basic validation
-        if len(transcription) < 2 or confidence < 0.3:
-            return False
-        
-        # Echo detection
-        if self._is_likely_echo(transcription):
-            self.echo_detections += 1
-            return False
-        
-        # Skip common filler words
-        skip_patterns = ['um', 'uh', 'hmm', 'okay', 'yes', 'no']
-        if transcription.lower().strip() in skip_patterns:
-            return False
-        
-        return True
-    
-    def _is_likely_echo(self, transcription: str) -> bool:
-        """Detect potential echo."""
-        # Check timing
-        if self.last_tts_time and (time.time() - self.last_tts_time) < 3.0:
-            return True
-        
-        # Check against system phrases
-        system_phrases = ["ready to help", "how can i help", "what would you like"]
-        for phrase in system_phrases:
-            if phrase in transcription.lower():
-                return True
-        
-        return False
-    
-    async def _process_with_configuration_driven_handler(self, transcription: str):
-        """UPDATED: Process transcription through configuration-driven conversation handler."""
-        self.transcriptions += 1
-        self.is_speaking = True
-        
-        try:
-            logger.info(f"🎯 Processing with configuration-driven handler: '{transcription}'")
-            
-            # Use configuration-driven conversation handler
-            response = await self.conversation_handler.process_conversation(
-                user_input=transcription,
-                session_id=self.session_id,
-                orchestrator=self.orchestrator,
-                context={
-                    "call_sid": self.call_sid,
-                    "input_mode": "voice_websocket",
-                    "platform": "twilio_configuration_driven"
-                }
-            )
-            
-            await self._send_tts_response(response)
-            
-        except Exception as e:
-            logger.error(f"❌ Configuration-driven handler error: {e}")
-            await self._send_tts_response("I apologize for the technical difficulty. How can I help you today?")
-        finally:
-            self.is_speaking = False
-    
-    async def _send_tts_response(self, text: str):
-        """Send TTS response using the enhanced TTS engine."""
-        if not text.strip() or self.call_ended:
-            return
-        
-        try:
-            logger.info(f"Sending TTS response: '{text}'")
-            
-            # Add to STT for echo prevention
-            if stt_system and hasattr(stt_system, 'add_tts_output'):
-                stt_system.add_tts_output(text)
-            
-            # Generate voice parameters
-            if tts_engine:
-                voice_params = create_voice_params_for_agent(
-                    "general",
-                    urgency="normal"
-                )
-                
-                # Generate audio using streaming TTS
-                audio_chunks = []
-                async for chunk in tts_engine.synthesize_streaming(
-                    text=text,
-                    voice_params=voice_params,
-                    streaming_mode=StreamingMode.DUAL_STREAMING
-                ):
-                    audio_chunks.append(chunk.audio_data)
-                
-                if audio_chunks:
-                    # Combine chunks and send
-                    combined_audio = b''.join(audio_chunks)
-                    await self._send_audio_chunks(combined_audio)
-                    self.responses_sent += 1
-                    self.last_tts_time = time.time()
-                    
-            else:
-                logger.warning("TTS engine not available")
-                
-        except Exception as e:
-            logger.error(f"TTS error: {e}")
-    
-    async def _send_audio_chunks(self, audio_data: bytes):
-        """Send audio chunks to Twilio."""
-        if not hasattr(self, 'stream_sid') or not self.stream_sid or not self._ws:
-            return
-        
-        chunk_size = 160  # 20ms chunks for smooth playback
-        
-        for i in range(0, len(audio_data), chunk_size):
-            chunk = audio_data[i:i+chunk_size]
-            
-            try:
-                audio_base64 = base64.b64encode(chunk).decode('utf-8')
-                
-                message = {
-                    "event": "media",
-                    "streamSid": self.stream_sid,
-                    "media": {"payload": audio_base64}
-                }
-                
-                await self._ws.send_text(json.dumps(message))
-                await asyncio.sleep(0.020)  # 20ms delay matches chunk size
-                
-            except Exception as e:
-                logger.error(f"Error sending audio chunk: {e}")
-                break
-    
-    async def _start_conversation(self):
-        """Start the conversation."""
-        await asyncio.sleep(0.1)  # Let connection stabilize
-        await self._send_tts_response(
-            "Hello! I'm your AI assistant. How can I help you today?"
-        )
-    
-    async def _cleanup(self):
-        """Cleanup resources."""
-        try:
-            self.call_ended = True
-            self.conversation_active = False
-            
-            # Stop STT
-            if stt_system and stt_system.is_streaming:
-                await stt_system.stop_streaming()
-            
-            # End conversation in state manager
-            if self.state_manager:
-                await self.state_manager.end_conversation(
-                    session_id=self.session_id,
-                    resolution_status="call_ended"
-                )
-            
-            # Log stats
-            duration = time.time() - self.session_start_time
-            logger.info(f"Call completed: {self.call_sid}, "
-                       f"Duration: {duration:.1f}s, "
-                       f"Transcriptions: {self.transcriptions}, "
-                       f"Responses: {self.responses_sent}")
-                       
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-    
-    def get_stats(self):
-        """Get session statistics."""
-        duration = time.time() - self.session_start_time
-        
-        return {
-            "call_sid": self.call_sid,
-            "stream_sid": getattr(self, 'stream_sid', None),
-            "session_id": self.session_id,
-            "duration": round(duration, 2),
-            "audio_received": self.audio_received,
-            "transcriptions": self.transcriptions,
-            "responses_sent": self.responses_sent,
-            "echo_detections": self.echo_detections,
-            "conversation_active": self.conversation_active,
-            "is_speaking": self.is_speaking
-        }
-
-
-# ============================================================================
-# CONFIGURATION MANAGER (UNCHANGED)
+# CONFIGURATION MANAGER WITH RUNPOD OPTIMIZATIONS
 # ============================================================================
 
 class ConfigurationManager:
@@ -1122,7 +347,7 @@ class ConfigurationManager:
         self._configs_cache = {}
         self.services_started = {
             'redis': False,
-            'qdrant': False
+            'chromadb': False  # Changed from qdrant to chromadb
         }
         
         # Ensure config directories exist
@@ -1195,13 +420,13 @@ state_manager: Optional[ConversationStateManager] = None
 health_monitor: Optional[SystemHealthMonitor] = None
 agent_registry: Optional[AgentRegistry] = None
 agent_router: Optional[IntelligentAgentRouter] = None
+llm_router: Optional[LLMIntelligentRouter] = None  # NEW: LLM-based router
 hybrid_vector_system: Optional[HybridVectorSystem] = None
 stt_system: Optional[EnhancedSTTSystem] = None
 tts_engine: Optional[DualStreamingTTSEngine] = None
 tool_orchestrator: Optional[ComprehensiveToolOrchestrator] = None
 
 # Configuration and state
-BASE_URL = None
 SYSTEM_INITIALIZED = False
 initialization_complete = asyncio.Event()
 shutdown_event = asyncio.Event()
@@ -1217,6 +442,47 @@ session_metrics = {
     "tool_usage": {},
     "error_count": 0
 }
+
+# FIXED: OpenAI Configuration and NLTK Setup
+def fix_openai_configuration():
+    """Fix OpenAI configuration issues."""
+    try:
+        openai_api_key = os.getenv('OPENAI_API_KEY')
+        if not openai_api_key:
+            logger.warning("⚠️ OPENAI_API_KEY not set")
+            return False
+        
+        # Remove problematic OPENAI_ORGANIZATION header
+        if 'OPENAI_ORGANIZATION' in os.environ:
+            logger.info("🔧 Removing OPENAI_ORGANIZATION to fix auth issues")
+            del os.environ['OPENAI_ORGANIZATION']
+        
+        logger.info("✅ OpenAI configuration fixed")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error fixing OpenAI configuration: {e}")
+        return False
+
+def setup_nltk_data():
+    """Setup required NLTK data."""
+    try:
+        import nltk
+        logger.info("📦 Installing NLTK data...")
+        
+        # Download required NLTK data
+        nltk.download('punkt', quiet=True)
+        nltk.download('punkt_tab', quiet=True)
+        nltk.download('stopwords', quiet=True)
+        nltk.download('averaged_perceptron_tagger', quiet=True)
+        nltk.download('wordnet', quiet=True)
+        
+        logger.info("✅ NLTK data installed successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error installing NLTK data: {e}")
+        return False
 
 # Request/Response models
 class AgentDeploymentRequest(BaseModel):
@@ -1236,26 +502,27 @@ class SystemHealthResponse(BaseModel):
     components: Dict[str, Any]
     performance_metrics: Dict[str, Any]
     active_sessions: int
-    system_version: str = "2.0.0"
+    system_version: str = "2.1.0-runpod-chromadb"
 
 async def initialize_revolutionary_system():
-    """FIXED: Initialize system with enhanced RunPod support."""
-    global orchestrator, state_manager, health_monitor, agent_registry, agent_router
+    """FIXED: Initialize system with LLM router and RunPod support."""
+    global orchestrator, state_manager, health_monitor, agent_registry, agent_router, llm_router
     global hybrid_vector_system, stt_system, tts_engine, tool_orchestrator
-    global BASE_URL, SYSTEM_INITIALIZED
+    global SYSTEM_INITIALIZED
     
     logger.info("🚀 Initializing Revolutionary Multi-Agent Voice AI System for RunPod...")
     start_time = time.time()
     
     try:
-        # Validate environment
-        BASE_URL = os.getenv('BASE_URL')
-        if not BASE_URL:
-            logger.warning("⚠️ BASE_URL not set, using default")
-            BASE_URL = "http://localhost:5000"
+        # Fix OpenAI configuration and setup NLTK
+        logger.info("🔧 Step 0a: Fixing OpenAI authentication...")
+        fix_openai_configuration()
+        
+        logger.info("🔧 Step 0b: Setting up NLTK data...")
+        setup_nltk_data()
         
         # ENHANCED: Install missing services for RunPod
-        logger.info("🔧 Step 0: Installing missing services...")
+        logger.info("🔧 Step 0c: Installing missing services...")
         await service_manager.install_missing_services()
         
         # Auto-start services with enhanced RunPod support
@@ -1263,12 +530,12 @@ async def initialize_revolutionary_system():
         redis_success = await service_manager.ensure_redis_running()
         config_manager.services_started['redis'] = redis_success
         
-        logger.info("🗄️ Step 2: Auto-starting Qdrant...")
-        qdrant_success = await service_manager.ensure_qdrant_running()
-        config_manager.services_started['qdrant'] = qdrant_success
+        # ChromaDB doesn't need separate service startup
+        logger.info("🗄️ Step 2: ChromaDB ready (no service startup required)")
+        config_manager.services_started['chromadb'] = True
         
-        # Step 3: Initialize Hybrid Vector System with improved error handling
-        logger.info("📊 Step 3: Initializing hybrid vector architecture...")
+        # Step 3: Initialize Hybrid Vector System with ChromaDB
+        logger.info("📊 Step 3: Initializing hybrid vector architecture with ChromaDB...")
         
         try:
             hybrid_vector_system = HybridVectorSystem(
@@ -1286,42 +553,19 @@ async def initialize_revolutionary_system():
                     "promotion_threshold": 25,  # Reduced for RunPod
                     "index_type": "HNSW"
                 },
-                qdrant_config={
-                    "host": "localhost" if qdrant_success else ":memory:",
-                    "port": 6333 if qdrant_success else None,
-                    "grpc_port": 6334 if qdrant_success else None,
-                    "prefer_grpc": False,
-                    "timeout": 15.0,
-                    "fallback_to_memory": True
+                chromadb_config={
+                    "persist_directory": str(PROJECT_ROOT / "chromadb_storage"),
+                    "vector_dimension": 1536,
+                    "distance_metric": "cosine"
                 }
             )
             
             await hybrid_vector_system.initialize()
-            logger.info("✅ Hybrid vector system initialized")
+            logger.info("✅ Hybrid vector system with ChromaDB initialized")
             
         except Exception as vector_error:
             logger.error(f"❌ Vector system failed: {vector_error}")
-            logger.info("🔄 Using minimal in-memory vector system")
-            
-            hybrid_vector_system = HybridVectorSystem(
-                redis_config={
-                    "host": ":memory:",
-                    "port": None,
-                    "cache_size": 500,  # Very small for fallback
-                    "fallback_to_memory": True
-                },
-                faiss_config={
-                    "memory_limit_gb": 0.5,  # Very small for fallback
-                    "promotion_threshold": 10
-                },
-                qdrant_config={
-                    "host": ":memory:",
-                    "port": None,
-                    "fallback_to_memory": True
-                }
-            )
-            await hybrid_vector_system.initialize()
-            logger.info("✅ Fallback vector system initialized")
+            raise
         
         # 4. Initialize Enhanced STT System
         logger.info("🎤 Step 4: Initializing enhanced STT system...")
@@ -1375,8 +619,17 @@ async def initialize_revolutionary_system():
         except Exception as e:
             logger.error(f"❌ Agent registry initialization failed: {e}")
         
-        # 8. Initialize Agent Router
-        logger.info("🧠 Step 8: Initializing intelligent agent router...")
+        # 8. Initialize LLM-based Router (NEW!)
+        logger.info("🧠 Step 8: Initializing LLM-based intelligent router...")
+        try:
+            llm_router = LLMIntelligentRouter(agent_registry=agent_registry)
+            await llm_router.initialize()
+            logger.info("✅ LLM router initialized")
+        except Exception as e:
+            logger.error(f"❌ LLM router initialization failed: {e}")
+        
+        # 9. Initialize Traditional Agent Router (fallback)
+        logger.info("🔧 Step 9: Initializing traditional agent router (fallback)...")
         if agent_registry:
             try:
                 agent_router = IntelligentAgentRouter(
@@ -1387,12 +640,12 @@ async def initialize_revolutionary_system():
                     enable_ml_routing=True
                 )
                 await agent_router.initialize()
-                logger.info("✅ Agent router initialized")
+                logger.info("✅ Traditional agent router initialized")
             except Exception as e:
-                logger.error(f"❌ Agent router initialization failed: {e}")
+                logger.error(f"❌ Traditional agent router initialization failed: {e}")
         
-        # 9. Initialize State Manager
-        logger.info("💾 Step 9: Initializing conversation state manager...")
+        # 10. Initialize State Manager
+        logger.info("💾 Step 10: Initializing conversation state manager...")
         try:
             state_manager = ConversationStateManager(
                 redis_client=hybrid_vector_system.redis_cache.client if hybrid_vector_system.redis_cache else None,
@@ -1405,13 +658,13 @@ async def initialize_revolutionary_system():
         except Exception as e:
             logger.error(f"❌ State manager initialization failed: {e}")
         
-        # 10. Initialize Orchestrator
-        logger.info("🎭 Step 10: Initializing multi-agent orchestrator...")
-        if agent_registry and agent_router:
+        # 11. Initialize Orchestrator
+        logger.info("🎭 Step 11: Initializing multi-agent orchestrator...")
+        if agent_registry and (llm_router or agent_router):
             try:
                 orchestrator = MultiAgentOrchestrator(
                     agent_registry=agent_registry,
-                    agent_router=agent_router,
+                    agent_router=llm_router or agent_router,  # Prefer LLM router
                     state_manager=state_manager,
                     hybrid_vector_system=hybrid_vector_system,
                     stt_system=stt_system,
@@ -1424,8 +677,8 @@ async def initialize_revolutionary_system():
             except Exception as e:
                 logger.error(f"❌ Orchestrator initialization failed: {e}")
         
-        # 11. Initialize Health Monitor
-        logger.info("📈 Step 11: Initializing system health monitor...")
+        # 12. Initialize Health Monitor
+        logger.info("📈 Step 12: Initializing system health monitor...")
         try:
             health_monitor = SystemHealthMonitor(
                 orchestrator=orchestrator,
@@ -1443,8 +696,8 @@ async def initialize_revolutionary_system():
         except Exception as e:
             logger.error(f"❌ Health monitor initialization failed: {e}")
         
-        # 12. Deploy agents from YAML configs
-        logger.info("🚀 Step 12: Deploying specialized agents...")
+        # 13. Deploy agents from YAML configs
+        logger.info("🚀 Step 13: Deploying specialized agents...")
         if agent_registry:
             try:
                 await deploy_agents_from_yaml()
@@ -1458,8 +711,10 @@ async def initialize_revolutionary_system():
         logger.info(f"✅ Revolutionary Multi-Agent System initialized in {initialization_time:.2f}s")
         logger.info(f"🎯 Target end-to-end latency: <400ms (RunPod optimized)")
         logger.info(f"📊 Redis: {'✅' if redis_success else '⚠️ (in-memory)'}")
-        logger.info(f"🗄️ Qdrant: {'✅' if qdrant_success else '🔄 (in-memory)'}")
-        logger.info(f"🔗 WebSocket Integration: ✅ Enhanced with Configuration-Driven Agents")
+        logger.info(f"🗄️ ChromaDB: ✅ (persistent storage)")  
+        logger.info(f"🧠 LLM Router: {'✅' if llm_router else '⚠️ (fallback)'}")
+        logger.info(f"🌐 External URL: {BASE_URL}")
+        logger.info(f"🔗 WebSocket Integration: ✅ Enhanced with LLM routing")
         
         if agent_registry:
             agent_count = len(await agent_registry.list_active_agents())
@@ -1579,9 +834,9 @@ async def cleanup_system():
 
 # FastAPI app
 app = FastAPI(
-    title="Revolutionary Multi-Agent Voice AI System - RunPod Optimized",
-    description="Ultra-low latency multi-agent conversation system optimized for RunPod deployment",
-    version="2.1.0-runpod",
+    title="Revolutionary Multi-Agent Voice AI System - RunPod ChromaDB",
+    description="Ultra-low latency multi-agent conversation system optimized for RunPod with ChromaDB",
+    version="2.1.0-runpod-chromadb",
     lifespan=lifespan,
     docs_url="/docs" if os.getenv("DEBUG", "false").lower() == "true" else None,
     redoc_url="/redoc" if os.getenv("DEBUG", "false").lower() == "true" else None
@@ -1616,14 +871,416 @@ async def ensure_system_initialized():
         )
 
 # ============================================================================
+# ENHANCED WEBSOCKET HANDLER WITH PROPER INTEGRATION
+# ============================================================================
+
+class EnhancedWebSocketHandler:
+    """
+    Enhanced WebSocket Handler with proper orchestrator integration
+    """
+    
+    def __init__(self, call_sid: str, orchestrator=None, state_manager=None):
+        self.call_sid = call_sid
+        self.orchestrator = orchestrator
+        self.state_manager = state_manager
+        
+        # Get project ID
+        self.project_id = self._get_project_id()
+        
+        # Session management
+        self.session_id = f"ws_{call_sid}"
+        self.conversation_active = True
+        self.is_speaking = False
+        self.call_ended = False
+        
+        # Audio processing
+        self.audio_buffer = bytearray()
+        self.last_audio_time = time.time()
+        self.last_tts_time = None
+        
+        # Performance tracking
+        self.session_start_time = time.time()
+        self.audio_received = 0
+        self.transcriptions = 0
+        self.responses_sent = 0
+        self.echo_detections = 0
+        
+        # WebSocket reference
+        self._ws = None
+        
+        logger.info(f"Enhanced WebSocket handler initialized for {call_sid}")
+    
+    def _get_project_id(self) -> str:
+        """Get project ID with fallback."""
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+        if project_id:
+            return project_id
+        
+        credentials_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if credentials_file and os.path.exists(credentials_file):
+            try:
+                with open(credentials_file, 'r') as f:
+                    creds_data = json.load(f)
+                    return creds_data.get('project_id', 'fallback-project')
+            except Exception:
+                pass
+        
+        return 'fallback-project'
+    
+    async def handle_websocket_session(self, websocket: WebSocket):
+        """Main WebSocket session handler."""
+        logger.info(f"🔗 WebSocket session for call: {self.call_sid}")
+        
+        self._ws = websocket
+        
+        try:
+            # Initialize conversation state in state manager
+            if self.state_manager:
+                await self.state_manager.create_conversation_state(
+                    session_id=self.session_id,
+                    initial_context={
+                        "call_sid": self.call_sid,
+                        "media_format": "twilio_websocket",
+                        "platform": "runpod_chromadb"
+                    }
+                )
+            
+            # Start STT streaming
+            if stt_system and not stt_system.is_streaming:
+                await stt_system.start_streaming(
+                    callback=self._handle_transcription_callback
+                )
+            
+            # Main message processing loop
+            async for message in websocket.iter_text():
+                await self._process_twilio_message(message)
+                
+        except WebSocketDisconnect:
+            logger.info(f"📞 WebSocket disconnected: {self.call_sid}")
+        except Exception as e:
+            logger.error(f"❌ WebSocket error: {e}", exc_info=True)
+        finally:
+            await self._cleanup()
+    
+    async def _process_twilio_message(self, message: str):
+        """Process Twilio WebSocket messages."""
+        try:
+            data = json.loads(message)
+            event = data.get('event')
+            
+            if event == 'connected':
+                logger.info(f"WebSocket connected for {self.call_sid}")
+                
+            elif event == 'start':
+                self.stream_sid = data.get('streamSid')
+                logger.info(f"Stream started: {self.stream_sid}")
+                await self._start_conversation()
+                
+            elif event == 'media':
+                await self._handle_audio_data(data)
+                
+            elif event == 'stop':
+                logger.info(f"Stream stopped for {self.call_sid}")
+                await self._cleanup()
+                
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON: {e}")
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+    
+    async def _handle_audio_data(self, data: Dict[str, Any]):
+        """Handle audio data with enhanced processing."""
+        if self.call_ended or self.is_speaking:
+            return
+        
+        media = data.get('media', {})
+        payload = media.get('payload')
+        
+        if not payload:
+            return
+        
+        try:
+            # Decode audio
+            audio_data = base64.b64decode(payload)
+            self.audio_received += 1
+            self.last_audio_time = time.time()
+            
+            # Skip if too close to TTS output (echo prevention)
+            if self.last_tts_time and (time.time() - self.last_tts_time) < 2.0:
+                return
+            
+            # Process through STT system
+            if stt_system:
+                await stt_system.process_audio_chunk(
+                    audio_data,
+                    callback=self._handle_transcription_callback
+                )
+                
+        except Exception as e:
+            logger.error(f"Error processing audio: {e}")
+    
+    async def _handle_transcription_callback(self, result):
+        """Handle STT transcription results."""
+        if not result or not result.is_final or not result.text.strip():
+            return
+        
+        transcription = result.text.strip()
+        confidence = getattr(result, 'confidence', 0.0)
+        
+        logger.info(f"Transcription: '{transcription}' (conf: {confidence:.2f})")
+        
+        # Validate transcription
+        if not self._is_valid_transcription(transcription, confidence):
+            return
+        
+        # Process through orchestrator
+        await self._process_with_orchestrator(transcription)
+    
+    def _is_valid_transcription(self, transcription: str, confidence: float) -> bool:
+        """Validate transcription with echo detection."""
+        # Basic validation
+        if len(transcription) < 2 or confidence < 0.3:
+            return False
+        
+        # Echo detection
+        if self._is_likely_echo(transcription):
+            self.echo_detections += 1
+            return False
+        
+        # Skip common filler words
+        skip_patterns = ['um', 'uh', 'hmm', 'okay', 'yes', 'no']
+        if transcription.lower().strip() in skip_patterns:
+            return False
+        
+        return True
+    
+    def _is_likely_echo(self, transcription: str) -> bool:
+        """Detect potential echo."""
+        # Check timing
+        if self.last_tts_time and (time.time() - self.last_tts_time) < 3.0:
+            return True
+        
+        # Check against system phrases
+        system_phrases = ["ready to help", "how can i help", "what would you like"]
+        for phrase in system_phrases:
+            if phrase in transcription.lower():
+                return True
+        
+        return False
+    
+    async def _process_with_orchestrator(self, transcription: str):
+        """Process transcription through orchestrator with LLM routing."""
+        self.transcriptions += 1
+        self.is_speaking = True
+        
+        try:
+            logger.info(f"🎯 Processing with LLM routing: '{transcription}'")
+            
+            # ENHANCED: Use LLM router for intelligent routing
+            routing_result = None
+            if llm_router:
+                try:
+                    routing_result = await llm_router.route_intelligently(
+                        user_input=transcription,
+                        context={
+                            "call_sid": self.call_sid,
+                            "platform": "voice",
+                            "input_mode": "voice_websocket"
+                        }
+                    )
+                    logger.info(f"🧠 LLM routing: {routing_result.agent_id} (confidence: {routing_result.confidence:.2f})")
+                    logger.info(f"   Reasoning: {routing_result.reasoning}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ LLM routing failed: {e}")
+                    routing_result = None
+            
+            # Process through orchestrator with routing preference
+            if self.orchestrator:
+                result = await self.orchestrator.process_conversation(
+                    session_id=self.session_id,
+                    input_text=transcription,
+                    context={
+                        "call_sid": self.call_sid,
+                        "input_mode": "voice_websocket",
+                        "platform": "runpod_chromadb",
+                        "llm_routing": routing_result.__dict__ if routing_result else None
+                    },
+                    preferred_agent_id=routing_result.agent_id if routing_result else None
+                )
+                
+                if result and hasattr(result, 'success') and result.success and result.response:
+                    logger.info(f"✅ Orchestrator success with agent: {result.agent_id}")
+                    await self._send_tts_response(result.response)
+                else:
+                    # Fallback response based on routing
+                    if routing_result:
+                        fallback_response = self._generate_agent_specific_response(routing_result, transcription)
+                    else:
+                        fallback_response = "I understand what you said, but I'm having trouble processing that request."
+                    await self._send_tts_response(fallback_response)
+            else:
+                # Direct LLM-based response if no orchestrator
+                if routing_result:
+                    response = self._generate_agent_specific_response(routing_result, transcription)
+                else:
+                    response = "I understand. How can I help you today?"
+                await self._send_tts_response(response)
+            
+        except Exception as e:
+            logger.error(f"❌ Processing error: {e}")
+            await self._send_tts_response("I apologize for the technical difficulty. How can I help you today?")
+        finally:
+            self.is_speaking = False
+    
+    def _generate_agent_specific_response(self, routing_result, transcription: str) -> str:
+        """Generate agent-specific response based on LLM routing."""
+        agent_id = routing_result.agent_id
+        intent = routing_result.intent
+        urgency = routing_result.urgency
+        
+        if "roadside" in agent_id.lower():
+            if urgency in ["high", "critical"]:
+                return "I understand this is an emergency situation. I'm your roadside assistance specialist and I'm here to help immediately. Can you tell me your exact location and what type of vehicle assistance you need?"
+            else:
+                return "I'm your roadside assistance specialist. I can help you with towing, jump starts, tire changes, and other vehicle emergencies. What type of assistance do you need today?"
+        
+        elif "billing" in agent_id.lower():
+            return "I'm your billing support specialist. I can help you with payments, refunds, account questions, and billing issues. What can I assist you with regarding your account?"
+        
+        elif "technical" in agent_id.lower():
+            return "I'm your technical support specialist. I can help you troubleshoot issues, guide you through setup processes, and resolve technical problems step by step. What technical issue can I help you with?"
+        
+        else:
+            return f"I understand you need help with {intent}. Let me connect you with the right assistance. How can I help you today?"
+    
+    async def _send_tts_response(self, text: str):
+        """Send TTS response using the enhanced TTS engine."""
+        if not text.strip() or self.call_ended:
+            return
+        
+        try:
+            logger.info(f"Sending TTS response: '{text}'")
+            
+            # Add to STT for echo prevention
+            if stt_system and hasattr(stt_system, 'add_tts_output'):
+                stt_system.add_tts_output(text)
+            
+            # Generate voice parameters
+            if tts_engine:
+                voice_params = create_voice_params_for_agent(
+                    "general",
+                    urgency="normal"
+                )
+                
+                # Generate audio using streaming TTS
+                audio_chunks = []
+                async for chunk in tts_engine.synthesize_streaming(
+                    text=text,
+                    voice_params=voice_params,
+                    streaming_mode=StreamingMode.DUAL_STREAMING
+                ):
+                    audio_chunks.append(chunk.audio_data)
+                
+                if audio_chunks:
+                    # Combine chunks and send
+                    combined_audio = b''.join(audio_chunks)
+                    await self._send_audio_chunks(combined_audio)
+                    self.responses_sent += 1
+                    self.last_tts_time = time.time()
+                    
+            else:
+                logger.warning("TTS engine not available")
+                
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+    
+    async def _send_audio_chunks(self, audio_data: bytes):
+        """Send audio chunks to Twilio."""
+        if not hasattr(self, 'stream_sid') or not self.stream_sid or not self._ws:
+            return
+        
+        chunk_size = 160  # 20ms chunks for smooth playback
+        
+        for i in range(0, len(audio_data), chunk_size):
+            chunk = audio_data[i:i+chunk_size]
+            
+            try:
+                audio_base64 = base64.b64encode(chunk).decode('utf-8')
+                
+                message = {
+                    "event": "media",
+                    "streamSid": self.stream_sid,
+                    "media": {"payload": audio_base64}
+                }
+                
+                await self._ws.send_text(json.dumps(message))
+                await asyncio.sleep(0.020)  # 20ms delay matches chunk size
+                
+            except Exception as e:
+                logger.error(f"Error sending audio chunk: {e}")
+                break
+    
+    async def _start_conversation(self):
+        """Start the conversation."""
+        await asyncio.sleep(0.1)  # Let connection stabilize
+        await self._send_tts_response(
+            "Hello! I'm your AI assistant powered by ChromaDB. How can I help you today?"
+        )
+    
+    async def _cleanup(self):
+        """Cleanup resources."""
+        try:
+            self.call_ended = True
+            self.conversation_active = False
+            
+            # Stop STT
+            if stt_system and stt_system.is_streaming:
+                await stt_system.stop_streaming()
+            
+            # End conversation in state manager
+            if self.state_manager:
+                await self.state_manager.end_conversation(
+                    session_id=self.session_id,
+                    resolution_status="call_ended"
+                )
+            
+            # Log stats
+            duration = time.time() - self.session_start_time
+            logger.info(f"Call completed: {self.call_sid}, "
+                       f"Duration: {duration:.1f}s, "
+                       f"Transcriptions: {self.transcriptions}, "
+                       f"Responses: {self.responses_sent}")
+                       
+        except Exception as e:
+            logger.error(f"Cleanup error: {e}")
+    
+    def get_stats(self):
+        """Get session statistics."""
+        duration = time.time() - self.session_start_time
+        
+        return {
+            "call_sid": self.call_sid,
+            "stream_sid": getattr(self, 'stream_sid', None),
+            "session_id": self.session_id,
+            "duration": round(duration, 2),
+            "audio_received": self.audio_received,
+            "transcriptions": self.transcriptions,
+            "responses_sent": self.responses_sent,
+            "echo_detections": self.echo_detections,
+            "conversation_active": self.conversation_active,
+            "is_speaking": self.is_speaking
+        }
+
+# ============================================================================
 # ENHANCED WEBSOCKET ENDPOINTS
 # ============================================================================
 
 @app.websocket("/ws/stream/{call_sid}")
 async def enhanced_websocket_stream(websocket: WebSocket, call_sid: str):
-    """Enhanced WebSocket endpoint integrated with configuration-driven multi-agent system."""
+    """Enhanced WebSocket endpoint with ChromaDB integration."""
     
-    logger.info(f"🔗 Configuration-driven WebSocket connection for call: {call_sid}")
+    logger.info(f"🔗 ChromaDB WebSocket connection for call: {call_sid}")
     
     try:
         await websocket.accept()
@@ -1636,7 +1293,7 @@ async def enhanced_websocket_stream(websocket: WebSocket, call_sid: str):
             await websocket.close()
             return
         
-        # Create enhanced handler with configuration-driven conversation system
+        # Create enhanced handler
         handler = EnhancedWebSocketHandler(
             call_sid=call_sid,
             orchestrator=orchestrator,
@@ -1652,9 +1309,9 @@ async def enhanced_websocket_stream(websocket: WebSocket, call_sid: str):
         await handler.handle_websocket_session(websocket)
         
     except WebSocketDisconnect:
-        logger.info(f"📞 Configuration-driven WebSocket disconnected: {call_sid}")
+        logger.info(f"📞 ChromaDB WebSocket disconnected: {call_sid}")
     except Exception as e:
-        logger.error(f"❌ Configuration-driven WebSocket error: {e}", exc_info=True)
+        logger.error(f"❌ ChromaDB WebSocket error: {e}", exc_info=True)
     finally:
         # Cleanup
         if call_sid in active_sessions:
@@ -1666,7 +1323,7 @@ async def enhanced_websocket_stream(websocket: WebSocket, call_sid: str):
                 logger.error(f"Cleanup error: {cleanup_error}")
 
 # ============================================================================
-# TWILIO VOICE WEBHOOKS - WEBSOCKET INTEGRATION
+# TWILIO VOICE WEBHOOKS WITH RUNPOD URL
 # ============================================================================
 
 @app.post("/voice/incoming")
@@ -1678,9 +1335,10 @@ async def handle_incoming_call(
     CallStatus: str = Form(...),
     _: None = Depends(ensure_system_initialized)
 ):
-    """Handle incoming calls from Twilio - matches your webhook configuration"""
+    """Handle incoming calls from Twilio with proper RunPod URL"""
     
     logger.info(f"📞 Incoming call: {CallSid} from {From} to {To} (Status: {CallStatus})")
+    logger.info(f"🌐 Using BASE_URL: {BASE_URL}")
     
     try:
         # Log the full request for debugging
@@ -1689,7 +1347,7 @@ async def handle_incoming_call(
         
         response = VoiceResponse()
         
-        # Create WebSocket connection
+        # Create WebSocket connection with proper RunPod URL
         ws_url = f'{BASE_URL.replace("http", "ws")}/ws/stream/{CallSid}'
         logger.info(f"🔗 WebSocket URL: {ws_url}")
         
@@ -1710,7 +1368,7 @@ async def handle_incoming_call(
         logger.error(f"❌ Incoming call error: {e}", exc_info=True)
         
         response = VoiceResponse()
-        response.say("Hello! Thank you for calling. Our system is ready to help you.")
+        response.say("Hello! Thank you for calling. Our ChromaDB system is ready to help you.")
         response.say("Please wait a moment while I connect you.")
         response.hangup()
         
@@ -1761,18 +1419,20 @@ async def handle_call_status(
 async def root():
     """System status and welcome endpoint."""
     return {
-        "system": "Revolutionary Multi-Agent Voice AI System - RunPod Optimized",
-        "version": "2.1.0-runpod",
+        "system": "Revolutionary Multi-Agent Voice AI System - RunPod ChromaDB",
+        "version": "2.1.0-runpod-chromadb",
         "status": "operational" if SYSTEM_INITIALIZED else "initializing",
-        "deployment": "runpod_optimized",
+        "deployment": "runpod_chromadb_optimized",
         "features": [
             "✅ RunPod cloud environment optimized",
+            "✅ ChromaDB persistent vector storage", 
+            "✅ LLM-based intelligent agent routing (no hardcoded patterns)",
             "✅ Enhanced service auto-startup",
-            "✅ Robust fallback mechanisms",
+            "✅ Robust fallback mechanisms", 
             "✅ Configuration-driven agent system",
             "✅ Real-time WebSocket streaming with Twilio",
-            "✅ OpenAI-only LLM integration (Anthropic removed)",
-            "✅ Docker-based Qdrant deployment",
+            "✅ OpenAI integration (organization header fixed)",
+            "✅ NLTK data auto-installation",
             "✅ Memory-optimized for cloud instances",
             "✅ Enhanced error recovery",
             "✅ Echo prevention and detection"
@@ -1781,19 +1441,22 @@ async def root():
         "active_sessions": len(active_sessions),
         "services": {
             "redis": service_manager.redis_running,
-            "qdrant": service_manager.qdrant_running
+            "chromadb": config_manager.services_started.get('chromadb', False),
+            "llm_router": llm_router is not None,
+            "openai_api": bool(os.getenv('OPENAI_API_KEY'))
         },
+        "external_url": BASE_URL,
         "websocket_integration": {
-            "webhook_url": f"{BASE_URL}/voice/incoming" if BASE_URL else "not_configured",
-            "status_callback_url": f"{BASE_URL}/voice/status" if BASE_URL else "not_configured",
-            "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}" if BASE_URL else "not_configured",
-            "status": "runpod_optimized_integration_active"
+            "webhook_url": f"{BASE_URL}/voice/incoming",
+            "status_callback_url": f"{BASE_URL}/voice/status",
+            "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}",
+            "status": "runpod_chromadb_integration_active"
         },
         "runpod_optimizations": {
+            "url_detection": "automatic",
+            "vector_database": "chromadb_persistent",
             "memory_usage": "optimized",
-            "service_startup": "enhanced_auto_discovery",
-            "docker_integration": "enabled",
-            "fallback_mechanisms": "robust"
+            "service_startup": "enhanced_auto_discovery"
         },
         "port": 5000,
         "timestamp": time.time()
@@ -1803,7 +1466,7 @@ async def root():
 async def comprehensive_health_check(
     _: None = Depends(ensure_system_initialized)
 ):
-    """Comprehensive system health check with detailed metrics."""
+    """Comprehensive system health check with ChromaDB."""
     try:
         if health_monitor:
             health_data = await health_monitor.get_comprehensive_health()
@@ -1814,9 +1477,8 @@ async def comprehensive_health_check(
                 "components": {
                     "system": "operational",
                     "runpod_environment": "optimized",
-                    "configuration_driven_agents": "operational",
+                    "chromadb": "operational",
                     "redis": "operational" if service_manager.redis_running else "degraded",
-                    "qdrant": "operational" if service_manager.qdrant_running else "degraded",
                     "websocket_integration": "operational",
                     "stt_system": "operational" if stt_system else "degraded",
                     "tts_engine": "operational" if tts_engine else "degraded"
@@ -1855,11 +1517,11 @@ async def get_stats():
             "active_calls": len(active_sessions),
             "base_url": BASE_URL,
             "port": 5000,
-            "deployment": "runpod_optimized",
-            "integration_type": "configuration_driven_websocket_streaming",
+            "deployment": "runpod_chromadb_optimized",
+            "integration_type": "chromadb_websocket_streaming",
             "services": {
                 "redis": service_manager.redis_running,
-                "qdrant": service_manager.qdrant_running
+                "chromadb": config_manager.services_started.get('chromadb', False)
             },
             "project_root": str(PROJECT_ROOT),
             "config_path": str(config_manager.agents_config_path)
@@ -1867,9 +1529,9 @@ async def get_stats():
         "runpod_status": {
             "environment_detected": os.getenv('RUNPOD_POD_ID') is not None,
             "pod_id": os.getenv('RUNPOD_POD_ID', 'not_detected'),
+            "external_url_detected": BASE_URL != "http://localhost:5000",
             "optimizations_active": True,
-            "service_startup": "enhanced",
-            "docker_available": subprocess.run(['which', 'docker'], capture_output=True).returncode == 0
+            "vector_database": "chromadb"
         },
         "calls": {},
         "sessions": session_metrics
@@ -1895,7 +1557,7 @@ async def get_config():
     config = {
         "base_url": BASE_URL,
         "port": 5000,
-        "deployment": "runpod_optimized",
+        "deployment": "runpod_chromadb_optimized",
         "project_root": str(PROJECT_ROOT),
         "config_path": str(config_manager.config_base_path),
         "agents_config_path": str(config_manager.agents_config_path),
@@ -1904,19 +1566,20 @@ async def get_config():
         "openai_configured": bool(os.getenv('OPENAI_API_KEY')),
         "services": {
             "redis": service_manager.redis_running,
-            "qdrant": service_manager.qdrant_running
+            "chromadb": config_manager.services_started.get('chromadb', False)
         },
         "websocket_integration": {
-            "type": "configuration_driven_real_time_streaming",
-            "webhook_url": f"{BASE_URL}/voice/incoming" if BASE_URL else "not_configured",
-            "status_callback_url": f"{BASE_URL}/voice/status" if BASE_URL else "not_configured",
-            "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}" if BASE_URL else "not_configured",
-            "test_url": f"{BASE_URL}/voice/test-websocket-integration" if BASE_URL else "not_configured"
+            "type": "chromadb_real_time_streaming",
+            "webhook_url": f"{BASE_URL}/voice/incoming",
+            "status_callback_url": f"{BASE_URL}/voice/status",
+            "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}",
+            "test_url": f"{BASE_URL}/voice/test-websocket-integration"
         },
         "runpod_optimizations": {
+            "url_detection": "automatic_enhanced",
+            "vector_database": "chromadb_persistent_storage", 
             "memory_limits": "reduced_for_cloud",
             "service_discovery": "enhanced",
-            "docker_integration": "enabled",
             "fallback_strategies": "robust",
             "latency_target": "400ms"
         },
@@ -1932,26 +1595,26 @@ async def get_config():
 
 @app.get("/voice/test-websocket-integration")
 async def test_websocket_integration():
-    """Test the RunPod-optimized WebSocket integration."""
+    """Test the RunPod-optimized WebSocket integration with ChromaDB."""
     
     test_results = {
         "timestamp": time.time(),
         "system_status": SYSTEM_INITIALIZED,
-        "deployment": "runpod_optimized",
+        "deployment": "runpod_chromadb_optimized",
         "base_url": BASE_URL,
-        "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/test_call" if BASE_URL else "not_configured",
+        "websocket_url": f"{BASE_URL.replace('http', 'ws')}/ws/stream/test_call",
         
         "runpod_environment": {
             "detected": os.getenv('RUNPOD_POD_ID') is not None,
             "pod_id": os.getenv('RUNPOD_POD_ID', 'not_detected'),
-            "docker_available": subprocess.run(['which', 'docker'], capture_output=True).returncode == 0,
+            "external_url_detected": BASE_URL != "http://localhost:5000",
             "redis_running": service_manager.redis_running,
-            "qdrant_running": service_manager.qdrant_running
+            "chromadb_ready": config_manager.services_started.get('chromadb', False)
         },
         
         "components": {
             "orchestrator": {
-                "available": orchestrator is not None,
+                "available": orchestrator is not None, 
                 "initialized": getattr(orchestrator, 'initialized', False) if orchestrator else False
             },
             "state_manager": {
@@ -1968,36 +1631,39 @@ async def test_websocket_integration():
             "agent_registry": {
                 "available": agent_registry is not None,
                 "agents_count": len(await agent_registry.list_active_agents()) if agent_registry else 0
+            },
+            "hybrid_vector_system": {
+                "available": hybrid_vector_system is not None,
+                "vector_database": "chromadb"
             }
         },
         
         "integration_status": {
             "websocket_handler": "EnhancedWebSocketHandler",
-            "conversation_system": "ConfigurationDrivenConversationHandler",
-            "agent_matching": "ConfigurationDrivenAgentMatcher",
+            "vector_database": "ChromaDB with persistent storage",
             "stt_integration": "Enhanced STT System",
             "tts_integration": "Dual Streaming TTS Engine",
-            "orchestrator_integration": "Multi-Agent Orchestrator with Fallback",
+            "orchestrator_integration": "Multi-Agent Orchestrator",
             "echo_prevention": "Active",
             "session_management": "Enhanced"
         },
         
         "runpod_optimizations": {
+            "automatic_url_detection": "✅ Enhanced RunPod URL detection",
+            "chromadb_integration": "✅ Persistent vector storage",
             "memory_usage": "✅ Optimized for cloud instances",
-            "service_startup": "✅ Enhanced auto-discovery and Docker support",
+            "service_startup": "✅ Enhanced auto-discovery",
             "error_recovery": "✅ Robust fallback mechanisms",
-            "latency_optimization": "✅ 400ms target for cloud environment",
-            "resource_limits": "✅ Reduced for efficient cloud usage"
+            "openai_configuration": "✅ Fixed organization header issue"
         },
         
-        "test_recommendations": [
-            "1. Update Twilio webhook to your-runpod-url/voice/incoming",
-            "2. Update Twilio status callback to your-runpod-url/voice/status",
-            "3. Ensure BASE_URL environment variable is set to your RunPod URL",
-            "4. Test with different conversation types to see configuration-driven matching",
-            "5. Monitor logs for service startup and agent deployment",
-            "6. Verify Docker and Redis services are running on RunPod",
-            "7. Use /stats endpoint to monitor RunPod-specific metrics"
+        "twilio_setup_instructions": [
+            f"1. Set Twilio webhook URL to: {BASE_URL}/voice/incoming",
+            f"2. Set Twilio status callback URL to: {BASE_URL}/voice/status",
+            "3. Ensure webhook method is POST",
+            "4. Test with a phone call to verify ChromaDB integration",
+            "5. Monitor logs for vector database operations",
+            "6. Use /stats endpoint to monitor performance"
         ]
     }
     
@@ -2029,20 +1695,19 @@ signal.signal(signal.SIGTERM, handle_shutdown_signal)
 signal.signal(signal.SIGINT, handle_shutdown_signal)
 
 if __name__ == '__main__':
-    print("🚀 Starting Revolutionary Multi-Agent Voice AI System - RunPod Optimized...")
+    print("🚀 Starting Revolutionary Multi-Agent Voice AI System - RunPod ChromaDB...")
     print(f"🎯 Target latency: <400ms (RunPod optimized)")
     print(f"🔧 Project root: {PROJECT_ROOT}")
     print(f"🔧 Working directory: {os.getcwd()}")
-    print(f"📊 Vector DB: Hybrid 3-tier (Redis+FAISS+Qdrant) - RunPod optimized")
-    print(f"🤖 Agents: Configuration-Driven System with Zero Hardcoding")
+    print(f"📊 Vector DB: ChromaDB (persistent storage)")
+    print(f"🤖 Agents: Configuration-Driven System")
     print(f"🛠️ Tools: Comprehensive orchestration framework")
     print(f"📋 Config Directory: {config_manager.agents_config_path}")
     print(f"⚙️ Services: Enhanced auto-startup with RunPod integration")
-    print(f"📞 Voice Integration: Configuration-Driven WebSocket + Multi-Agent (RunPod optimized)")
     print(f"🌐 External URL: {BASE_URL}")
-    print(f"🔗 Primary Webhook: {BASE_URL}/voice/incoming" if BASE_URL else "Not configured")
-    print(f"📊 Status Callback: {BASE_URL}/voice/status" if BASE_URL else "Not configured")
-    print(f"🔗 WebSocket URL: {BASE_URL.replace('http', 'ws') if BASE_URL else 'Not configured'}/ws/stream/{{call_sid}}")
+    print(f"🔗 Primary Webhook: {BASE_URL}/voice/incoming")
+    print(f"📊 Status Callback: {BASE_URL}/voice/status")
+    print(f"🔗 WebSocket URL: {BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}")
     print(f"🚪 Port: 5000")
     print(f"🐳 RunPod Environment: {'✅ Detected' if os.getenv('RUNPOD_POD_ID') else '⚠️ Local'}")
     
@@ -2055,20 +1720,20 @@ if __name__ == '__main__':
     
     # Print RunPod-specific optimizations
     print("\n🎯 RunPod Optimizations Active:")
-    print("   ✅ Enhanced service auto-discovery and startup")
-    print("   ✅ Docker-based Qdrant deployment")
+    print("   ✅ Enhanced automatic URL detection")
+    print("   ✅ ChromaDB persistent vector storage")
     print("   ✅ Memory usage optimized for cloud instances")
     print("   ✅ Robust fallback mechanisms for cloud reliability")
-    print("   ✅ OpenAI-only LLM integration (Anthropic removed)")
+    print("   ✅ OpenAI integration (organization header fixed)")
     print("   ✅ Enhanced error recovery and resilience")
     
     # Print webhook configuration summary
     print("\n📞 Twilio Webhook Configuration:")
-    print(f"   Primary Webhook URL: {BASE_URL}/voice/incoming" if BASE_URL else "   Webhook URL: Not configured")
-    print(f"   Status Callback URL: {BASE_URL}/voice/status" if BASE_URL else "   Status Callback: Not configured")
+    print(f"   Primary Webhook URL: {BASE_URL}/voice/incoming")
+    print(f"   Status Callback URL: {BASE_URL}/voice/status")
     print(f"   Method: POST")
     print(f"   Content-Type: application/x-www-form-urlencoded")
-    print(f"   WebSocket Pattern: {BASE_URL.replace('http', 'ws') if BASE_URL else 'Not configured'}/ws/stream/{{call_sid}}")
+    print(f"   WebSocket Pattern: {BASE_URL.replace('http', 'ws')}/ws/stream/{{call_sid}}")
     
     # Create logs directory
     os.makedirs('./logs', exist_ok=True)
@@ -2086,6 +1751,7 @@ if __name__ == '__main__':
     print(f"   System Health: {BASE_URL}/health")
     print(f"   System Stats: {BASE_URL}/stats")
     print(f"   WebSocket Test: {BASE_URL}/voice/test-websocket-integration")
+    print(f"   LLM Routing Test: {BASE_URL}/voice/test-llm-routing")
     
     # Run with optimized settings for RunPod
     uvicorn.run(

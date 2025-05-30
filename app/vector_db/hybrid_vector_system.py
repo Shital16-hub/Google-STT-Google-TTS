@@ -1,6 +1,8 @@
 """
-Hybrid Vector System with Robust Fallback Mechanisms
-Fixed version with proper error handling and graceful degradation for RunPod deployment.
+Hybrid Vector System with ChromaDB (Qdrant Replacement)
+=======================================================
+
+Updated hybrid vector system using ChromaDB instead of Qdrant for better RunPod compatibility.
 """
 import asyncio
 import logging
@@ -10,6 +12,9 @@ from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass, field
 import numpy as np
 from pathlib import Path
+
+# Import the new ChromaDB manager
+from .chromadb_manager import ChromaDBManager
 
 logger = logging.getLogger(__name__)
 
@@ -261,256 +266,33 @@ class InMemoryFAISS:
             "index_built": self.index_built
         }
 
-class InMemoryQdrant:
-    """In-memory Qdrant implementation."""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.collections = {}
-        
-    async def initialize(self):
-        """Initialize in-memory Qdrant."""
-        logger.info("✅ In-memory Qdrant initialized")
-    
-    async def create_collection(self, collection_name: str, vector_size: int, distance: str = "cosine"):
-        """Create a collection."""
-        self.collections[collection_name] = {
-            "vectors": {},
-            "vector_size": vector_size,
-            "distance": distance
-        }
-        logger.debug(f"Created collection: {collection_name}")
-    
-    async def upsert_vectors(self, collection_name: str, vectors: List[Dict[str, Any]]):
-        """Upsert vectors to collection."""
-        if collection_name not in self.collections:
-            # Auto-create collection
-            if vectors:
-                vector_size = len(vectors[0]["vector"])
-                await self.create_collection(collection_name, vector_size)
-        
-        collection = self.collections[collection_name]
-        for vector_data in vectors:
-            vector_id = vector_data["id"]
-            collection["vectors"][vector_id] = vector_data
-        
-        logger.debug(f"Upserted {len(vectors)} vectors to {collection_name}")
-    
-    async def search(self, collection_name: str, query_vector: np.ndarray, 
-                    top_k: int = 10, score_threshold: float = 0.0) -> List[Dict[str, Any]]:
-        """Search vectors in collection."""
-        if collection_name not in self.collections:
-            return []
-        
-        collection = self.collections[collection_name]
-        similarities = []
-        
-        for vector_id, vector_data in collection["vectors"].items():
-            vector = np.array(vector_data["vector"])
-            similarity = self._cosine_similarity(query_vector, vector)
-            
-            if similarity >= score_threshold:
-                similarities.append({
-                    "id": vector_id,
-                    "score": similarity,
-                    "payload": vector_data.get("payload", {}),
-                    "vector": vector
-                })
-        
-        # Sort by similarity and return top_k
-        similarities.sort(key=lambda x: x["score"], reverse=True)
-        return similarities[:top_k]
-    
-    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """Calculate cosine similarity."""
-        dot_product = np.dot(vec1, vec2)
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        
-        return dot_product / (norm1 * norm2)
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get Qdrant statistics."""
-        total_vectors = sum(len(collection["vectors"]) for collection in self.collections.values())
-        return {
-            "type": "in_memory",
-            "collections": len(self.collections),
-            "total_vectors": total_vectors,
-            "collection_details": {
-                name: {
-                    "vector_count": len(collection["vectors"]),
-                    "vector_size": collection["vector_size"]
-                }
-                for name, collection in self.collections.items()
-            }
-        }
-
-class QdrantWrapper:
-    """Qdrant wrapper with fallback to in-memory."""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.client = None
-        self.fallback_qdrant = InMemoryQdrant(config)
-        self.use_fallback = config.get("fallback_to_memory", True)
-        self.qdrant_available = False
-        
-    async def initialize(self):
-        """Initialize Qdrant connection with fallback."""
-        if self.config.get("host") == ":memory:":
-            logger.info("Using in-memory Qdrant mode")
-            self.use_fallback = True
-            self.qdrant_available = False
-            await self.fallback_qdrant.initialize()
-            return
-        
-        try:
-            from qdrant_client import AsyncQdrantClient
-            from qdrant_client.http.exceptions import UnexpectedResponse
-            
-            # Create Qdrant client
-            self.client = AsyncQdrantClient(
-                host=self.config.get("host", "localhost"),
-                port=self.config.get("port", 6333),
-                grpc_port=self.config.get("grpc_port", 6334),
-                prefer_grpc=self.config.get("prefer_grpc", False),
-                timeout=self.config.get("timeout", 10.0)
-            )
-            
-            # Test connection
-            collections = await self.client.get_collections()
-            self.qdrant_available = True
-            logger.info("✅ Qdrant initialized successfully")
-            
-        except Exception as e:
-            logger.warning(f"❌ Qdrant connection failed: {e}")
-            
-            if self.use_fallback:
-                logger.info("🔄 Falling back to in-memory Qdrant")
-                self.qdrant_available = False
-                await self.fallback_qdrant.initialize()
-            else:
-                raise
-    
-    async def create_collection(self, collection_name: str, vector_size: int, distance: str = "cosine"):
-        """Create collection with fallback."""
-        if self.qdrant_available and self.client:
-            try:
-                from qdrant_client.http.models import Distance, VectorParams
-                
-                distance_map = {
-                    "cosine": Distance.COSINE,
-                    "euclidean": Distance.EUCLID,
-                    "dot": Distance.DOT
-                }
-                
-                await self.client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config=VectorParams(
-                        size=vector_size,
-                        distance=distance_map.get(distance, Distance.COSINE)
-                    )
-                )
-                return
-            except Exception as e:
-                logger.warning(f"Qdrant create_collection error: {e}")
-                if not self.use_fallback:
-                    raise
-        
-        # Fallback to in-memory
-        await self.fallback_qdrant.create_collection(collection_name, vector_size, distance)
-    
-    async def upsert_vectors(self, collection_name: str, vectors: List[Dict[str, Any]]):
-        """Upsert vectors with fallback."""
-        if self.qdrant_available and self.client:
-            try:
-                from qdrant_client.http.models import PointStruct
-                
-                points = []
-                for vector_data in vectors:
-                    point = PointStruct(
-                        id=vector_data["id"],
-                        vector=vector_data["vector"].tolist() if isinstance(vector_data["vector"], np.ndarray) else vector_data["vector"],
-                        payload=vector_data.get("payload", {})
-                    )
-                    points.append(point)
-                
-                await self.client.upsert(
-                    collection_name=collection_name,
-                    points=points
-                )
-                return
-            except Exception as e:
-                logger.warning(f"Qdrant upsert error: {e}")
-                if not self.use_fallback:
-                    raise
-        
-        # Fallback to in-memory
-        await self.fallback_qdrant.upsert_vectors(collection_name, vectors)
-    
-    async def search(self, collection_name: str, query_vector: np.ndarray, 
-                    top_k: int = 10, score_threshold: float = 0.0) -> List[Dict[str, Any]]:
-        """Search with fallback."""
-        if self.qdrant_available and self.client:
-            try:
-                results = await self.client.search(
-                    collection_name=collection_name,
-                    query_vector=query_vector.tolist() if isinstance(query_vector, np.ndarray) else query_vector,
-                    limit=top_k,
-                    score_threshold=score_threshold
-                )
-                
-                formatted_results = []
-                for result in results:
-                    formatted_results.append({
-                        "id": result.id,
-                        "score": result.score,
-                        "payload": result.payload,
-                        "vector": np.array(result.vector) if result.vector else None
-                    })
-                
-                return formatted_results
-            except Exception as e:
-                logger.warning(f"Qdrant search error: {e}")
-                if not self.use_fallback:
-                    raise
-        
-        # Fallback to in-memory
-        return await self.fallback_qdrant.search(collection_name, query_vector, top_k, score_threshold)
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get Qdrant statistics."""
-        stats = self.fallback_qdrant.get_stats()
-        stats.update({
-            "qdrant_available": self.qdrant_available,
-            "mode": "qdrant" if self.qdrant_available else "in_memory_fallback"
-        })
-        return stats
-
 class HybridVectorSystem:
     """
-    Hybrid 3-tier vector system with robust fallback mechanisms.
-    Fixed version for RunPod deployment with graceful degradation.
+    Hybrid 3-tier vector system using ChromaDB instead of Qdrant.
+    Optimized for RunPod deployment with better cloud compatibility.
     """
     
     def __init__(
         self,
         redis_config: Dict[str, Any],
         faiss_config: Dict[str, Any],
-        qdrant_config: Dict[str, Any]
+        chromadb_config: Dict[str, Any]
     ):
-        """Initialize hybrid vector system with fallback support."""
+        """Initialize hybrid vector system with ChromaDB."""
         self.redis_config = redis_config
         self.faiss_config = faiss_config
-        self.qdrant_config = qdrant_config
+        self.chromadb_config = chromadb_config
         
         # Initialize components
         self.redis_cache = RedisCacheWrapper(redis_config)
         self.faiss_hot_tier = InMemoryFAISS(faiss_config)
-        self.qdrant_manager = QdrantWrapper(qdrant_config)
+        
+        # Initialize ChromaDB manager instead of Qdrant
+        self.chromadb_manager = ChromaDBManager(
+            persist_directory=chromadb_config.get("persist_directory", "./chromadb_storage"),
+            vector_dimension=chromadb_config.get("vector_dimension", 1536),
+            distance_metric=chromadb_config.get("distance_metric", "cosine")
+        )
         
         # System state
         self.initialized = False
@@ -518,12 +300,12 @@ class HybridVectorSystem:
             "searches_performed": 0,
             "cache_hits": 0,
             "faiss_hits": 0,
-            "qdrant_hits": 0,
+            "chromadb_hits": 0,
             "average_search_time_ms": 0.0,
             "error_count": 0
         }
         
-        logger.info("HybridVectorSystem created with fallback support")
+        logger.info("HybridVectorSystem created with ChromaDB support")
 
     async def analyze_query_intent(
         self,
@@ -532,7 +314,6 @@ class HybridVectorSystem:
     ) -> Dict[str, Any]:
         """
         Analyze query intent using keyword patterns and context.
-        This method was missing and causing the orchestration error.
         """
         try:
             # Initialize analysis result
@@ -629,7 +410,6 @@ class HybridVectorSystem:
     ) -> Dict[str, Any]:
         """
         Get agent-specific context enrichment.
-        This method was missing and causing the orchestration error.
         """
         try:
             enriched_context = base_context.copy()
@@ -686,7 +466,7 @@ class HybridVectorSystem:
     
     async def initialize(self):
         """Initialize all tiers with error handling."""
-        logger.info("🚀 Initializing Hybrid Vector System...")
+        logger.info("🚀 Initializing Hybrid Vector System with ChromaDB...")
         
         initialization_errors = []
         
@@ -708,12 +488,12 @@ class HybridVectorSystem:
             logger.error(error_msg)
             initialization_errors.append(error_msg)
         
-        # Initialize Qdrant manager (Tier 3)
+        # Initialize ChromaDB manager (Tier 3)
         try:
-            await self.qdrant_manager.initialize()
-            logger.info("✅ Tier 3 (Qdrant Manager) initialized")
+            await self.chromadb_manager.initialize()
+            logger.info("✅ Tier 3 (ChromaDB Manager) initialized")
         except Exception as e:
-            error_msg = f"Tier 3 (Qdrant Manager) initialization failed: {e}"
+            error_msg = f"Tier 3 (ChromaDB Manager) initialization failed: {e}"
             logger.error(error_msg)
             initialization_errors.append(error_msg)
         
@@ -737,7 +517,7 @@ class HybridVectorSystem:
         filters: Optional[Dict[str, Any]] = None
     ) -> Optional[SearchResult]:
         """
-        Perform hybrid search across all available tiers with fallback.
+        Perform hybrid search across all available tiers with ChromaDB.
         """
         if not self.initialized:
             await self.initialize()
@@ -781,22 +561,22 @@ class HybridVectorSystem:
                     total_results=len(faiss_results)
                 )
             
-            # Tier 3: Qdrant Manager
-            qdrant_results = await self._search_qdrant(query_vector, agent_id, top_k, similarity_threshold, filters)
-            if qdrant_results:
+            # Tier 3: ChromaDB Manager
+            chromadb_results = await self._search_chromadb(query_vector, agent_id, top_k, similarity_threshold, filters)
+            if chromadb_results:
                 search_time = (time.time() - search_start) * 1000
-                self.performance_stats["qdrant_hits"] += 1
+                self.performance_stats["chromadb_hits"] += 1
                 self._update_average_search_time(search_time)
                 
                 # Cache results and promote to hot tier
-                await self._cache_search_results(cache_key, qdrant_results)
-                await self._promote_to_hot_tier(qdrant_results)
+                await self._cache_search_results(cache_key, chromadb_results)
+                await self._promote_to_hot_tier(chromadb_results)
                 
                 return SearchResult(
-                    vectors=qdrant_results,
+                    vectors=chromadb_results,
                     search_time_ms=search_time,
-                    tier_used="qdrant_manager",
-                    total_results=len(qdrant_results)
+                    tier_used="chromadb_manager",
+                    total_results=len(chromadb_results)
                 )
             
             # No results found
@@ -857,7 +637,7 @@ class HybridVectorSystem:
         
         return None
     
-    async def _search_qdrant(
+    async def _search_chromadb(
         self,
         query_vector: np.ndarray,
         agent_id: Optional[str],
@@ -865,30 +645,28 @@ class HybridVectorSystem:
         similarity_threshold: float,
         filters: Optional[Dict[str, Any]]
     ) -> Optional[List[Dict[str, Any]]]:
-        """Search Qdrant tier."""
+        """Search ChromaDB tier."""
         try:
             # Determine collection name
             collection_name = f"agent_{agent_id}" if agent_id else "default_collection"
             
             # Ensure collection exists
             try:
-                await self.qdrant_manager.create_collection(
-                    collection_name, 
-                    vector_size=len(query_vector)
-                )
+                await self.chromadb_manager.create_collection(collection_name)
             except:
                 pass  # Collection might already exist
             
-            results = await self.qdrant_manager.search(
-                collection_name=collection_name,
+            search_result = await self.chromadb_manager.search(
                 query_vector=query_vector,
+                collection_name=collection_name,
                 top_k=top_k,
-                score_threshold=similarity_threshold
+                score_threshold=similarity_threshold,
+                filters=filters
             )
             
-            return results if results else None
+            return search_result.vectors if search_result else None
         except Exception as e:
-            logger.debug(f"Qdrant search error: {e}")
+            logger.debug(f"ChromaDB search error: {e}")
         
         return None
     
@@ -969,8 +747,8 @@ class HybridVectorSystem:
         try:
             target_collection = collection_name or (f"agent_{agent_id}" if agent_id else "default_collection")
             
-            # Add to Qdrant (persistent storage)
-            await self.qdrant_manager.upsert_vectors(target_collection, vectors)
+            # Add to ChromaDB (persistent storage)
+            await self.chromadb_manager.add_vectors(vectors, target_collection)
             
             # Optionally add to hot tier for immediate access
             hot_vectors = {}
@@ -999,7 +777,7 @@ class HybridVectorSystem:
             "tier_performance": {
                 "cache_hits": self.performance_stats["cache_hits"],
                 "faiss_hits": self.performance_stats["faiss_hits"],
-                "qdrant_hits": self.performance_stats["qdrant_hits"]
+                "chromadb_hits": self.performance_stats["chromadb_hits"]
             },
             "tier_stats": {}
         }
@@ -1016,9 +794,9 @@ class HybridVectorSystem:
             stats["tier_stats"]["faiss_hot_tier"] = {"error": "stats unavailable"}
         
         try:
-            stats["tier_stats"]["qdrant_manager"] = self.qdrant_manager.get_stats()
+            stats["tier_stats"]["chromadb_manager"] = self.chromadb_manager.get_stats()
         except:
-            stats["tier_stats"]["qdrant_manager"] = {"error": "stats unavailable"}
+            stats["tier_stats"]["chromadb_manager"] = {"error": "stats unavailable"}
         
         return stats
     
@@ -1055,15 +833,15 @@ class HybridVectorSystem:
                 "error": str(e)
             }
         
-        # Check Qdrant manager
+        # Check ChromaDB manager
         try:
-            qdrant_stats = self.qdrant_manager.get_stats()
-            health_status["tiers"]["qdrant_manager"] = {
-                "status": "healthy" if qdrant_stats.get("qdrant_available", False) else "degraded",
-                "mode": qdrant_stats.get("mode", "unknown")
+            chromadb_stats = self.chromadb_manager.get_stats()
+            health_status["tiers"]["chromadb_manager"] = {
+                "status": "healthy" if self.chromadb_manager.is_healthy() else "degraded",
+                "collections": len(chromadb_stats.get("collections", {}))
             }
         except Exception as e:
-            health_status["tiers"]["qdrant_manager"] = {
+            health_status["tiers"]["chromadb_manager"] = {
                 "status": "error",
                 "error": str(e)
             }
@@ -1086,9 +864,8 @@ class HybridVectorSystem:
             if hasattr(self.redis_cache, 'client') and self.redis_cache.client:
                 await self.redis_cache.client.close()
             
-            # Close Qdrant connection
-            if hasattr(self.qdrant_manager, 'client') and self.qdrant_manager.client:
-                await self.qdrant_manager.client.close()
+            # Close ChromaDB connection
+            await self.chromadb_manager.shutdown()
             
             self.initialized = False
             logger.info("✅ Hybrid Vector System shutdown complete")
