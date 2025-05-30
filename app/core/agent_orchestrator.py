@@ -5,6 +5,7 @@
 FIXED: Enhanced Multi-Agent Orchestrator with Integrated LLM System
 Combines existing orchestration with advanced LLM context management and routing
 """
+import os
 import asyncio
 import logging
 import time
