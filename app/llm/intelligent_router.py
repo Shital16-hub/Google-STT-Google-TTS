@@ -553,50 +553,41 @@ class IntelligentLLMRouter:
             supports_streaming=True,
             context_window=128000
         )
-        
-        # GPT-4o with higher quality settings
-        self.model_configs['gpt-4o-quality'] = ModelConfig(
-            model_id='gpt-4o',
-            provider=LLMProvider.OPENAI,
-            model_type=ModelType.HIGH_QUALITY,
-            max_tokens=400,
-            temperature=0.5,  # Lower temperature for more consistent quality
-            cost_per_1k_tokens=0.005,
-            avg_latency_ms=350,
-            quality_score=0.97,
-            supports_streaming=True,
-            context_window=128000
-        )
     
     async def initialize(self):
-        """Initialize the router and all components - FIXED VERSION"""
+        """FIXED: Initialize the router with proper OpenAI client setup"""
         if self.initialized:
             return
         
         logger.info("🚀 Initializing Intelligent LLM Router (OpenAI Only)...")
         
         try:
-            # Initialize OpenAI client if not provided
-            if not self.openai_client:
-                api_key = os.getenv('OPENAI_API_KEY')
-                if not api_key:
-                    logger.warning("⚠️ OPENAI_API_KEY not found in environment")
-                    # Continue anyway, might be set elsewhere
-                
-                self.openai_client = AsyncOpenAI(api_key=api_key)
+            # Initialize OpenAI client with clean configuration
+            api_key = os.getenv('OPENAI_API_KEY')
+            if not api_key:
+                logger.error("❌ OPENAI_API_KEY not found in environment")
+                raise Exception("OpenAI API key required")
             
-            # Test OpenAI connection
+            # Create client with ONLY the API key - no organization headers
+            self.openai_client = AsyncOpenAI(
+                api_key=api_key,
+                # Explicitly don't set organization to avoid auth issues
+                # organization=None  # This is the default anyway
+            )
+            
+            # Test OpenAI connection with minimal request
             try:
-                # Simple test call to verify API key works
                 test_response = await self.openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[{"role": "user", "content": "test"}],
-                    max_tokens=1
+                    max_tokens=1,
+                    timeout=10  # Add timeout for faster failure detection
                 )
-                logger.info("✅ OpenAI connection verified")
+                logger.info("✅ OpenAI connection verified successfully")
             except Exception as e:
-                logger.warning(f"⚠️ OpenAI connection test failed: {e}")
-                # Continue anyway, might work during actual usage
+                logger.error(f"❌ OpenAI connection test failed: {e}")
+                # Don't raise here - continue with degraded functionality
+                logger.warning("⚠️ Continuing with degraded LLM functionality")
             
             # Start background tasks
             asyncio.create_task(self._background_cache_cleanup())
@@ -607,7 +598,7 @@ class IntelligentLLMRouter:
             
         except Exception as e:
             logger.error(f"❌ LLM Router initialization failed: {e}")
-            # Continue with degraded functionality
+            # Set initialized to True anyway to prevent blocking
             self.initialized = True
             logger.warning("⚠️ Running with degraded LLM functionality")
     

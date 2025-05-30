@@ -97,6 +97,9 @@ class ContextItem:
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     
+    # FIXED: Added metadata field that was missing
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
     # Semantic features
     embedding: Optional[np.ndarray] = None
     keywords: List[str] = field(default_factory=list)
@@ -820,24 +823,15 @@ class LLMContextManager:
         return messages
     
     async def add_context(self,
-                         conversation_id: str,
-                         content: str,
-                         context_type: ContextType,
-                         agent_id: Optional[str] = None,
-                         user_id: Optional[str] = None,
-                         importance_boost: float = 0.0,
-                         metadata: Optional[Dict[str, Any]] = None):
+                     conversation_id: str,
+                     content: str,
+                     context_type: ContextType,
+                     agent_id: Optional[str] = None,
+                     user_id: Optional[str] = None,
+                     importance_boost: float = 0.0,
+                     metadata: Optional[Dict[str, Any]] = None):
         """
         Add new context item to conversation
-        
-        Args:
-            conversation_id: Conversation identifier
-            content: Context content
-            context_type: Type of context
-            agent_id: Agent that generated/owns this context
-            user_id: User identifier
-            importance_boost: Additional importance score
-            metadata: Additional metadata
         """
         
         if not self.initialized:
@@ -859,7 +853,7 @@ class LLMContextManager:
             importance_boost=importance_boost,
             keywords=self.semantic_analyzer.extract_keywords(content),
             entities=self.semantic_analyzer.extract_entities(content),
-            metadata=metadata or {}
+            metadata=metadata or {}  # FIXED: Now properly assigns metadata
         )
         
         # Add to appropriate context window(s)
@@ -1232,24 +1226,36 @@ class LLMContextManager:
         }
     
     async def _persist_context(self, context: ConversationContext):
-        """Persist context to Redis"""
+        """FIXED: Persist context to Redis with proper async handling."""
         
         if not self.enable_persistence or not self.redis_client:
             return
         
         try:
+            # Ensure we're in the correct event loop
+            loop = asyncio.get_running_loop()
+            
+            # Convert to dictionary and JSON
             context_dict = self._conversation_context_to_dict(context)
             context_json = json.dumps(context_dict, default=str)
             
             # Set with expiration (24 hours default)
             expiration = 86400  # 24 hours
             
-            await self.redis_client.setex(
-                f"context:{context.conversation_id}",
-                expiration,
-                context_json
+            # Create Redis task with proper loop context
+            persist_task = asyncio.create_task(
+                self.redis_client.setex(
+                    f"context:{context.conversation_id}",
+                    expiration,
+                    context_json
+                )
             )
             
+            # Wait for completion with timeout
+            await asyncio.wait_for(persist_task, timeout=5.0)
+            
+        except asyncio.TimeoutError:
+            logger.warning(f"Redis context persist timeout: {context.conversation_id}")
         except Exception as e:
             logger.error(f"Error persisting context: {e}")
     

@@ -34,9 +34,17 @@ class LLMIntelligentRouter:
     """
     
     def __init__(self, agent_registry=None):
-        """Initialize LLM router."""
+        """Initialize LLM router with proper OpenAI client setup."""
         self.agent_registry = agent_registry
-        self.client = AsyncOpenAI()
+        
+        # FIXED: Create OpenAI client with clean configuration
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            logger.error("❌ OPENAI_API_KEY not found for LLM router")
+            self.client = None
+        else:
+            # Create client with ONLY API key - no organization
+            self.client = AsyncOpenAI(api_key=api_key)
         
         # Available agents (loaded from registry)
         self.available_agents = {}
@@ -53,6 +61,7 @@ class LLMIntelligentRouter:
         }
         
         logger.info("LLM Intelligent Router initialized")
+
     
     async def initialize(self):
         """Initialize router with agent information."""
@@ -154,17 +163,16 @@ class LLMIntelligentRouter:
         context: Dict[str, Any] = None,
         conversation_history: List[Dict[str, str]] = None
     ) -> str:
-        """Build intelligent routing prompt for LLM."""
+        """FIXED: Pure LLM routing - ZERO hardcoded patterns."""
         
         # Agent descriptions for LLM
         agent_descriptions = []
         for agent_id, agent_info in self.available_agents.items():
             description = f"""
-Agent: {agent_info['name']} (ID: {agent_id})
-- Description: {agent_info['description']}
-- Domain: {agent_info['domain']}
-- Capabilities: {', '.join(agent_info.get('tools', []))}
-"""
+    Agent: {agent_info['name']} (ID: {agent_id})
+    - Description: {agent_info['description']}
+    - Specialization: {agent_info.get('domain', 'General assistance')}
+    """
             agent_descriptions.append(description)
         
         agents_text = "\n".join(agent_descriptions)
@@ -173,60 +181,44 @@ Agent: {agent_info['name']} (ID: {agent_id})
         context_text = ""
         if conversation_history:
             context_text = "\nConversation History:\n"
-            for msg in conversation_history[-3:]:  # Last 3 messages
+            for msg in conversation_history[-3:]:
                 context_text += f"- {msg.get('role', 'user')}: {msg.get('content', '')}\n"
         
-        # Additional context
-        additional_context = ""
-        if context:
-            if context.get('platform') == 'voice':
-                additional_context += "\n- This is a voice call (urgent situations may need immediate attention)"
-            if context.get('call_sid'):
-                additional_context += f"\n- Call ID: {context['call_sid']}"
-        
-        prompt = f"""You are an intelligent agent router for a customer service system. Your job is to analyze the user's request and route them to the most appropriate specialized agent.
-
-Available Agents:
-{agents_text}
-
-User's Current Request: "{user_input}"
-{context_text}{additional_context}
-
-Please analyze the user's request and determine:
-1. Which agent is BEST suited to handle this request
-2. The user's intent and urgency level
-3. Any specific entities mentioned (locations, phone numbers, etc.)
-4. Whether tools/actions will be needed
-
-Respond in the following JSON format:
-{{
-    "agent_id": "exact_agent_id_from_list",
-    "confidence": 0.0-1.0,
-    "reasoning": "clear explanation of why this agent was chosen",
-    "intent": "brief description of user's intent",
-    "urgency": "low|normal|high|critical",
-    "entities": [
-        {{"type": "entity_type", "value": "extracted_value"}}
-    ],
-    "requires_tools": true/false
-}}
-
-Important Guidelines:
-- For vehicle problems, breakdowns, towing, accidents → roadside-assistance-v2
-- For billing, payments, refunds, charges, invoices → billing-support-v2  
-- For technical issues, setup, troubleshooting, errors → technical-support-v2
-- Emergency situations should be marked as "critical" urgency
-- Be confident in your routing decision
-- Extract specific entities like locations, phone numbers, amounts
-"""
+        prompt = f"""You are an intelligent customer service router. Analyze the user's request and determine the most appropriate agent.
+    
+                Available Agents:
+                {agents_text}
+                
+                User's Request: "{user_input}"
+                {context_text}
+                
+                Your task is to understand the user's intent and match it to the agent who can best help them.
+                
+                Respond in JSON format:
+                {{
+                    "agent_id": "exact_agent_id_from_list_or_base_agent",
+                    "confidence": 0.0-1.0,
+                    "reasoning": "why this agent is the best choice",
+                    "intent": "what the user needs",
+                    "urgency": "low|normal|high|critical",
+                    "needs_clarification": false
+                }}
+                
+                IMPORTANT: 
+                - If confidence is below 0.7, set "needs_clarification": true
+                - If unsure, choose "base_agent" for general assistance
+                - Do NOT guess - analyze the actual request"""
         
         return prompt
     
     async def _get_llm_routing_decision(self, prompt: str) -> str:
-        """Get routing decision from LLM."""
+        """FIXED: Get routing decision from LLM with error handling."""
+        if not self.client:
+            raise Exception("OpenAI client not available")
+        
         try:
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",  # Use faster model for routing
                 messages=[
                     {
                         "role": "system",
@@ -238,17 +230,18 @@ Important Guidelines:
                     }
                 ],
                 max_tokens=500,
-                temperature=0.1  # Low temperature for consistent routing
+                temperature=0.1,  # Low temperature for consistent routing
+                timeout=10  # Add timeout
             )
             
             return response.choices[0].message.content.strip()
-            
+        
         except Exception as e:
             logger.error(f"❌ LLM API call failed: {e}")
             raise
     
     def _parse_llm_response(self, llm_response: str, user_input: str) -> RoutingResult:
-        """Parse LLM response into routing result."""
+        """FIXED: Parse LLM response with proper fallback strategy."""
         try:
             # Try to extract JSON from response
             json_start = llm_response.find('{')
@@ -260,22 +253,35 @@ Important Guidelines:
             else:
                 raise ValueError("No JSON found in LLM response")
             
-            # Validate agent_id
-            agent_id = routing_data.get("agent_id", "")
-            if agent_id not in self.available_agents:
+            # Get routing decision
+            agent_id = routing_data.get("agent_id", "base_agent")
+            confidence = float(routing_data.get("confidence", 0.5))
+            needs_clarification = routing_data.get("needs_clarification", False)
+            
+            # Validate agent_id - including base_agent
+            valid_agents = list(self.available_agents.keys()) + ["base_agent"]
+            if agent_id not in valid_agents:
                 logger.warning(f"⚠️ Invalid agent_id from LLM: {agent_id}")
-                agent_id = self._get_fallback_agent(user_input)
+                agent_id = "base_agent"
+                confidence = 0.4
+                needs_clarification = True
             
             # Create routing result
             result = RoutingResult(
                 agent_id=agent_id,
-                confidence=float(routing_data.get("confidence", 0.8)),
+                confidence=confidence,
                 reasoning=routing_data.get("reasoning", "LLM routing decision"),
                 intent=routing_data.get("intent", "general_inquiry"),
                 urgency=routing_data.get("urgency", "normal"),
                 entities=routing_data.get("entities", []),
-                requires_tools=routing_data.get("requires_tools", False)
+                requires_tools=routing_data.get("requires_tools", False),
+                fallback_used=False
             )
+            
+            # If needs clarification, modify response
+            if needs_clarification or confidence < 0.7:
+                result.agent_id = "base_agent"  # Use base agent for clarification
+                result.needs_clarification = True
             
             return result
             
@@ -283,8 +289,23 @@ Important Guidelines:
             logger.error(f"❌ Error parsing LLM response: {e}")
             logger.debug(f"LLM response was: {llm_response}")
             
-            # Return fallback result
-            return self._fallback_routing(user_input)
+            # Return base agent fallback - NOT technical support
+            return self._intelligent_fallback(user_input)
+
+    def _intelligent_fallback(self, user_input: str) -> RoutingResult:
+        """FIXED: Intelligent fallback using BaseAgent for clarification."""
+        
+        return RoutingResult(
+            agent_id="base_agent",  # Use BaseAgent, not technical support
+            confidence=0.3,
+            reasoning="LLM routing failed - using base agent for clarification",
+            intent="needs_clarification",
+            urgency="normal",
+            entities=[],
+            requires_tools=False,
+            fallback_used=True,
+            needs_clarification=True
+        )
     
     def _fallback_routing(self, user_input: str) -> RoutingResult:
         """Fallback routing when LLM fails."""
@@ -303,22 +324,7 @@ Important Guidelines:
             fallback_used=True
         )
     
-    def _get_fallback_agent(self, user_input: str) -> str:
-        """Simple fallback routing logic."""
-        user_lower = user_input.lower()
-        
-        # Emergency/roadside keywords
-        roadside_words = ["tow", "stuck", "breakdown", "accident", "emergency", "car", "vehicle", "roadside"]
-        if any(word in user_lower for word in roadside_words):
-            return "roadside-assistance-v2"
-        
-        # Billing keywords  
-        billing_words = ["bill", "payment", "charge", "refund", "money", "invoice", "pay"]
-        if any(word in user_lower for word in billing_words):
-            return "billing-support-v2"
-        
-        # Default to technical support
-        return "technical-support-v2"
+    
     
     def _update_routing_stats(self, result: RoutingResult, response_time_ms: float):
         """Update routing statistics."""

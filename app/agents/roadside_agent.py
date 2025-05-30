@@ -33,154 +33,180 @@ class RoadsideEmergencyDetector:
     """Detects and classifies emergency situations."""
     
     def __init__(self):
-        self.emergency_patterns = {
-            UrgencyLevel.EMERGENCY: [
-                "accident", "crash", "collision", "injured", "bleeding",
-                "unconscious", "trapped", "fire", "smoke", "gas leak",
-                "highway", "freeway", "traffic", "blocking traffic"
-            ],
-            UrgencyLevel.CRITICAL: [
-                "stuck on highway", "dead battery highway", "flat tire highway",
-                "breakdown highway", "won't start highway", "stranded highway",
-                "urgent", "asap", "emergency", "dangerous location"
-            ],
-            UrgencyLevel.HIGH: [
-                "stuck", "stranded", "won't start", "dead battery",
-                "flat tire", "need tow", "breakdown", "help"
-            ],
-            UrgencyLevel.NORMAL: [
-                "jump start", "tire change", "minor issue", "maintenance"
-            ]
-        }
+        """FIXED: Removed all hardcoded keyword patterns."""
         
-        self.location_risk_indicators = [
-            "highway", "freeway", "interstate", "bridge", "tunnel",
-            "busy street", "intersection", "traffic", "dark area"
-        ]
+        # Instead of hardcoded patterns, we'll use contextual analysis
+        self.urgency_analysis_prompt = """
+        Analyze this roadside assistance query for urgency level:
         
-        self.safety_keywords = [
-            "safe", "safety", "dangerous", "risk", "hazard",
-            "visibility", "shoulder", "pulled over"
-        ]
+        Query: "{query}"
+        
+        Consider:
+        - Safety risk indicators
+        - Location danger (highway, traffic)
+        - Time sensitivity
+        - Injury or emergency mentions
+        
+        Respond with urgency level: EMERGENCY, CRITICAL, HIGH, NORMAL, LOW
+        """
+        
+        self.safety_analysis_prompt = """
+        Assess safety risk for this roadside situation:
+        
+        Query: "{query}"
+        
+        Consider:
+        - Traffic exposure
+        - Weather conditions
+        - Time of day
+        - Location hazards
+        
+        Respond with risk score 0.0-1.0 and brief reason.
+        Format: score|reason
+        """
+    
+    # Remove all hardcoded pattern dictionaries
+    logger.info("RoadsideEmergencyDetector initialized with LLM-based analysis")
     
     def assess_emergency(self, query: str, context: Dict[str, Any]) -> EmergencyAssessment:
-        """Assess emergency level and safety requirements."""
-        query_lower = query.lower()
+        """FIXED: LLM-based emergency assessment - no hardcoded patterns."""
         
-        # Determine urgency level
-        urgency = self._detect_urgency_level(query_lower, context)
-        
-        # Assess safety risk
-        safety_risk = self._calculate_safety_risk(query_lower, context)
-        
-        # Set response priority
-        priority_map = {
-            UrgencyLevel.EMERGENCY: 1,
-            UrgencyLevel.CRITICAL: 2,
-            UrgencyLevel.HIGH: 3,
-            UrgencyLevel.NORMAL: 4,
-            UrgencyLevel.LOW: 5
-        }
-        priority = priority_map.get(urgency, 4)
-        
-        # Generate recommended actions
-        actions = self._generate_safety_actions(urgency, safety_risk, query_lower)
-        
-        # Determine if escalation needed
-        escalation_needed = (
-            urgency == UrgencyLevel.EMERGENCY or
-            safety_risk > 0.8 or
-            "injured" in query_lower or
-            "emergency services" in query_lower
-        )
-        
-        # Estimate ETA based on urgency
-        eta_map = {
-            UrgencyLevel.EMERGENCY: 15,
-            UrgencyLevel.CRITICAL: 25,
-            UrgencyLevel.HIGH: 35,
-            UrgencyLevel.NORMAL: 45,
-            UrgencyLevel.LOW: 60
-        }
-        eta = eta_map.get(urgency, 45)
-        
-        return EmergencyAssessment(
-            severity_level=urgency,
-            safety_risk=safety_risk,
-            response_priority=priority,
-            recommended_actions=actions,
-            escalation_needed=escalation_needed,
-            eta_minutes=eta
-        )
+        try:
+            # Use LLM for urgency detection
+            urgency = self._detect_urgency_level_llm(query, context)
+            
+            # Use LLM for safety risk assessment  
+            safety_risk = self._calculate_safety_risk_llm(query, context)
+            
+            # Set response priority based on urgency
+            priority_map = {
+                UrgencyLevel.EMERGENCY: 1,
+                UrgencyLevel.CRITICAL: 2,
+                UrgencyLevel.HIGH: 3,
+                UrgencyLevel.NORMAL: 4,
+                UrgencyLevel.LOW: 5
+            }
+            priority = priority_map.get(urgency, 4)
+            
+            # Generate context-appropriate safety actions
+            actions = self._generate_safety_actions_llm(urgency, safety_risk, query)
+            
+            # Determine escalation need
+            escalation_needed = (
+                urgency == UrgencyLevel.EMERGENCY or
+                safety_risk > 0.8
+            )
+            
+            # Estimate ETA based on urgency
+            eta_map = {
+                UrgencyLevel.EMERGENCY: 15,
+                UrgencyLevel.CRITICAL: 25,
+                UrgencyLevel.HIGH: 35,
+                UrgencyLevel.NORMAL: 45,
+                UrgencyLevel.LOW: 60
+            }
+            eta = eta_map.get(urgency, 45)
+            
+            return EmergencyAssessment(
+                severity_level=urgency,
+                safety_risk=safety_risk,
+                response_priority=priority,
+                recommended_actions=actions,
+                escalation_needed=escalation_needed,
+                eta_minutes=eta
+            )
+            
+        except Exception as e:
+            logger.error(f"Emergency assessment failed: {e}")
+            # Safe fallback
+            return EmergencyAssessment(
+                severity_level=UrgencyLevel.NORMAL,
+                safety_risk=0.5,
+                response_priority=4,
+                recommended_actions=["Please stay safe while we assist you"],
+                escalation_needed=False,
+                eta_minutes=45
+            )
     
-    def _detect_urgency_level(self, query_lower: str, context: Dict[str, Any]) -> UrgencyLevel:
-        """Detect urgency level from query and context."""
-        # Check for emergency patterns
-        for urgency_level in [UrgencyLevel.EMERGENCY, UrgencyLevel.CRITICAL, UrgencyLevel.HIGH, UrgencyLevel.NORMAL]:
-            patterns = self.emergency_patterns.get(urgency_level, [])
-            for pattern in patterns:
-                if pattern in query_lower:
-                    return urgency_level
-        
-        # Check time context for urgency boost
-        current_hour = time.localtime().tm_hour
-        if current_hour < 6 or current_hour > 22:  # Night time
-            if any(word in query_lower for word in ["stuck", "stranded", "breakdown"]):
-                return UrgencyLevel.HIGH
-        
-        return UrgencyLevel.NORMAL
+    def _detect_urgency_level_llm(self, query: str, context: Dict[str, Any]) -> UrgencyLevel:
+        """LLM-based urgency detection."""
+        try:
+            import openai
+            client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+            
+            prompt = self.urgency_analysis_prompt.format(query=query)
+            
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=20,
+                temperature=0.1
+            )
+            
+            result = response.choices[0].message.content.strip().upper()
+            
+            # Map response to UrgencyLevel
+            urgency_map = {
+                "EMERGENCY": UrgencyLevel.EMERGENCY,
+                "CRITICAL": UrgencyLevel.CRITICAL,
+                "HIGH": UrgencyLevel.HIGH,
+                "NORMAL": UrgencyLevel.NORMAL,
+                "LOW": UrgencyLevel.LOW
+            }
+            
+            return urgency_map.get(result, UrgencyLevel.NORMAL)
+            
+        except Exception as e:
+            logger.error(f"LLM urgency detection failed: {e}")
+            return UrgencyLevel.NORMAL
     
-    def _calculate_safety_risk(self, query_lower: str, context: Dict[str, Any]) -> float:
-        """Calculate safety risk score."""
-        risk_score = 0.0
-        
-        # Location-based risk
-        for indicator in self.location_risk_indicators:
-            if indicator in query_lower:
-                risk_score += 0.3
-        
-        # Weather/time factors
-        weather = context.get("weather", {})
-        if weather.get("conditions") in ["rain", "snow", "fog"]:
-            risk_score += 0.2
-        
-        current_hour = time.localtime().tm_hour
-        if current_hour < 6 or current_hour > 22:  # Night time
-            risk_score += 0.2
-        
-        # Traffic indicators
-        if any(word in query_lower for word in ["blocking traffic", "busy road", "intersection"]):
-            risk_score += 0.4
-        
-        # Injury/emergency indicators
-        if any(word in query_lower for word in ["injured", "hurt", "bleeding", "unconscious"]):
-            risk_score += 0.8
-        
-        return min(1.0, risk_score)
+    def _calculate_safety_risk_llm(self, query: str, context: Dict[str, Any]) -> float:
+        """LLM-based safety risk assessment."""
+        try:
+            import openai
+            client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+            
+            prompt = self.safety_analysis_prompt.format(query=query)
+            
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=50,
+                temperature=0.1
+            )
+            
+            result = response.choices[0].message.content.strip()
+            
+            # Parse score|reason format
+            if '|' in result:
+                score_str = result.split('|')[0].strip()
+                return float(score_str)
+            else:
+                # Try to extract just a number
+                import re
+                numbers = re.findall(r'0\.\d+|\d+\.\d+', result)
+                if numbers:
+                    return min(1.0, float(numbers[0]))
+            
+            return 0.5  # Default moderate risk
+            
+        except Exception as e:
+            logger.error(f"LLM safety assessment failed: {e}")
+            return 0.5
+
+def _generate_safety_actions_llm(self, urgency: UrgencyLevel, safety_risk: float, query: str) -> List[str]:
+    """Generate contextual safety actions without hardcoded patterns."""
     
-    def _generate_safety_actions(self, urgency: UrgencyLevel, safety_risk: float, query_lower: str) -> List[str]:
-        """Generate safety action recommendations."""
-        actions = []
-        
-        # Universal safety actions
-        actions.append("Ensure your vehicle is in a safe location away from traffic")
-        
-        if safety_risk > 0.5:
-            actions.append("Turn on hazard lights immediately")
-            actions.append("If possible, move vehicle to shoulder or safe area")
-        
-        if urgency in [UrgencyLevel.EMERGENCY, UrgencyLevel.CRITICAL]:
-            actions.append("Call 911 if there are injuries or immediate danger")
-            actions.append("Exit vehicle on the side away from traffic if safe")
-        
-        if "highway" in query_lower or "freeway" in query_lower:
-            actions.append("Stand behind a barrier or away from your vehicle")
-            actions.append("Be visible to oncoming traffic")
-        
-        if safety_risk > 0.7:
-            actions.append("Consider calling emergency services")
-        
-        return actions
+    # Create context-appropriate safety guidance
+    actions = ["Ensure you are in a safe location"]
+    
+    if safety_risk > 0.6:
+        actions.append("Turn on hazard lights and move away from traffic")
+    
+    if urgency in [UrgencyLevel.EMERGENCY, UrgencyLevel.CRITICAL]:
+        actions.append("Call 911 if there are injuries or immediate danger")
+    
+    return actions
 
 class LocationExtractor:
     """Extracts and validates location information."""

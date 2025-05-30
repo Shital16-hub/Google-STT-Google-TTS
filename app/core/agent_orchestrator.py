@@ -155,16 +155,34 @@ class EnhancedMultiAgentOrchestrator:
             logger.info(f"✅ Agent routing decision: {selected_agent_id}")
             
             # Step 2: Get Agent and Validate
-            agent = await self.agent_registry.get_agent(selected_agent_id)
-            if not agent:
-                # FALLBACK: Try to get any available agent
-                available_agents = await self.agent_registry.list_active_agents()
-                if available_agents:
-                    agent = available_agents[0]
-                    selected_agent_id = agent.agent_id
-                    logger.warning(f"⚠️ Using fallback agent: {selected_agent_id}")
-                else:
-                    raise Exception("No active agents available")
+            if selected_agent_id == "base_agent":
+                # Handle BaseAgent specially
+                agent = await self._get_or_create_base_agent()
+                if not agent:
+                    # If we can't create BaseAgent, use any available agent
+                    available_agents = await self.agent_registry.list_active_agents()
+                    if available_agents:
+                        agent = available_agents[0]
+                        selected_agent_id = agent.agent_id
+                        logger.warning(f"⚠️ BaseAgent unavailable, using fallback: {selected_agent_id}")
+                    else:
+                        raise Exception("No agents available including BaseAgent")
+            else:
+                # Handle regular specialized agents
+                agent = await self.agent_registry.get_agent(selected_agent_id)
+                if not agent:
+                    # FALLBACK: Try to get any available agent or BaseAgent
+                    available_agents = await self.agent_registry.list_active_agents()
+                    if available_agents:
+                        agent = available_agents[0]
+                        selected_agent_id = agent.agent_id
+                        logger.warning(f"⚠️ Using fallback agent: {selected_agent_id}")
+                    else:
+                        # Last resort - try BaseAgent
+                        agent = await self._get_or_create_base_agent()
+                        selected_agent_id = "base_agent"
+                        if not agent:
+                            raise Exception("No active agents available")
             
             # Step 3: Prepare Enhanced Context with LLM Integration
             enhanced_context = await self._prepare_enhanced_context(
@@ -238,13 +256,22 @@ class EnhancedMultiAgentOrchestrator:
         context: Dict[str, Any], 
         preferred_agent_id: Optional[str]
     ) -> RoutingResult:
-        """FIXED: Proper agent routing with fallback"""
+        """FIXED: Proper routing with BaseAgent support."""
         
         try:
             # Use preferred agent if specified and valid
             if preferred_agent_id:
-                agent = await self.agent_registry.get_agent(preferred_agent_id)
-                if agent and agent.status.value == "active":
+                if preferred_agent_id == "base_agent":
+                    return RoutingResult(
+                        selected_agent_id="base_agent",
+                        confidence=1.0,
+                        routing_time_ms=5.0,
+                        strategy_used="preferred_base_agent",
+                        decision_type="direct_match",
+                        alternatives=[],
+                        routing_factors={"preferred": True}
+                    )
+                elif await self._agent_exists(preferred_agent_id):
                     return RoutingResult(
                         selected_agent_id=preferred_agent_id,
                         confidence=1.0,
@@ -255,73 +282,221 @@ class EnhancedMultiAgentOrchestrator:
                         routing_factors={"preferred": True}
                     )
             
-            # Use intelligent agent router
-            if self.agent_router and self.agent_router.initialized:
-                routing_result = await self.agent_router.route_query(
-                    query=input_text,
-                    context=context,
-                    preferred_agent_id=preferred_agent_id
-                )
-                
-                # Validate the routing result
-                if routing_result.selected_agent_id:
-                    agent = await self.agent_registry.get_agent(routing_result.selected_agent_id)
-                    if agent and agent.status.value == "active":
-                        logger.info(f"🎯 Intelligent routing selected: {routing_result.selected_agent_id}")
-                        return routing_result
+            # Use LLM router if available
+            if self.llm_router and self.llm_router.initialized:
+                try:
+                    routing_result = await self.llm_router.route_intelligently(
+                        user_input=input_text,
+                        context=context
+                    )
+                    
+                    # Check if routing suggests clarification
+                    if (hasattr(routing_result, 'needs_clarification') and routing_result.needs_clarification) or routing_result.confidence < 0.7:
+                        return RoutingResult(
+                            selected_agent_id="base_agent",
+                            confidence=0.6,
+                            routing_time_ms=10.0,
+                            strategy_used="clarification_needed",
+                            decision_type="llm_uncertain",
+                            alternatives=[],
+                            routing_factors={
+                                "needs_clarification": True, 
+                                "original_intent": getattr(routing_result, 'intent', 'unclear'),
+                                "llm_confidence": routing_result.confidence
+                            }
+                        )
+                    
+                    # Return the LLM routing decision
+                    return RoutingResult(
+                        selected_agent_id=routing_result.agent_id,
+                        confidence=routing_result.confidence,
+                        routing_time_ms=10.0,
+                        strategy_used="llm_intelligent",  
+                        decision_type="ai_analysis",
+                        alternatives=[],
+                        routing_factors={"llm_reasoning": routing_result.reasoning}
+                    )
+                    
+                except Exception as llm_error:
+                    logger.error(f"LLM routing failed: {llm_error}")
             
-            # Fallback to simple keyword-based routing
-            return await self._simple_keyword_routing(input_text, context)
+            # Fallback to BaseAgent when other routing fails
+            logger.info("Using BaseAgent fallback for clarification")
+            return RoutingResult(
+                selected_agent_id="base_agent",
+                confidence=0.5,
+                routing_time_ms=2.0,
+                strategy_used="base_agent_fallback",
+                decision_type="system_fallback",
+                alternatives=[],
+                routing_factors={"reason": "routing_system_fallback"}
+            )
             
         except Exception as e:
             logger.error(f"Agent routing error: {e}")
-            return await self._simple_keyword_routing(input_text, context)
+            return RoutingResult(
+                selected_agent_id="base_agent",
+                confidence=0.4,
+                routing_time_ms=1.0,
+                strategy_used="error_fallback",
+                decision_type="error_recovery",
+                alternatives=[],
+                routing_factors={"error": str(e)}
+            )
+
+    async def _agent_exists(self, agent_id: str) -> bool:
+        """Check if agent exists in registry."""
+        if agent_id == "base_agent":
+            return True  # Base agent always exists
+        
+        try:
+            agent = await self.agent_registry.get_agent(agent_id)
+            return agent is not None and agent.status.value == "active"
+        except:
+            return False
+    
+    async def _get_or_create_base_agent(self) -> 'BaseAgent':
+        """Get or create BaseAgent for clarification."""
+        
+        try:
+            # Try to get BaseAgent from registry first
+            base_agent = await self.agent_registry.get_agent("base_agent")
+            if base_agent:
+                return base_agent
+            
+            # If not found, create a temporary BaseAgent
+            logger.info("Creating temporary BaseAgent for clarification")
+            
+            from app.agents.base_agent import BaseAgent, AgentConfiguration
+            
+            base_config = AgentConfiguration(
+                agent_id="base_agent",
+                version="1.0.0",
+                specialization={
+                    "domain_expertise": "general_assistance_and_clarification",
+                    "personality_profile": {
+                        "traits": ["helpful", "clarifying", "patient"],
+                        "communication_style": "conversational and clarifying"
+                    }
+                },
+                voice_settings={
+                    "tts_voice": "en-US-Standard-A",
+                    "speaking_rate": 1.0,
+                    "pitch": 0.0
+                },
+                tools=[],
+                routing={
+                    "primary_keywords": [],
+                    "confidence_threshold": 0.3,
+                    "fallback_responses": True
+                }
+            )
+            
+            base_agent = BaseAgent(
+                agent_id="base_agent",
+                config=base_config,
+                hybrid_vector_system=self.hybrid_vector_system,
+                tool_orchestrator=self.tool_orchestrator
+            )
+            
+            await base_agent.initialize()
+            
+            logger.info("✅ Temporary BaseAgent created")
+            return base_agent
+            
+        except Exception as e:
+            logger.error(f"Error creating BaseAgent: {e}")
+            # Return None - we'll handle this in the calling code
+            return None
     
     async def _simple_keyword_routing(self, input_text: str, context: Dict[str, Any]) -> RoutingResult:
-        """Simple keyword-based routing as fallback"""
+        """FIXED: Pure LLM-based routing - NO hardcoded keywords."""
         
-        input_lower = input_text.lower()
-        
-        # Roadside assistance keywords
-        if any(word in input_lower for word in [
-            'tow', 'stuck', 'breakdown', 'accident', 'emergency', 'help', 
-            'roadside', 'car', 'vehicle', 'stranded'
-        ]):
-            selected_agent = "roadside-assistance-v2"
-            confidence = 0.9
-        
-        # Billing support keywords  
-        elif any(word in input_lower for word in [
-            'bill', 'payment', 'charge', 'refund', 'invoice', 'money', 
-            'cost', 'subscription', 'account'
-        ]):
-            selected_agent = "billing-support-v2"
-            confidence = 0.8
-        
-        # Technical support keywords
-        elif any(word in input_lower for word in [
-            'error', 'problem', 'not working', 'bug', 'install', 'setup', 
-            'login', 'technical', 'support'
-        ]):
-            selected_agent = "technical-support-v2"
-            confidence = 0.8
-        
-        else:
-            # Default to technical support for unknown queries
-            selected_agent = "technical-support-v2"
-            confidence = 0.5
-        
-        logger.info(f"🔄 Simple routing selected: {selected_agent} (confidence: {confidence})")
-        
-        return RoutingResult(
-            selected_agent_id=selected_agent,
-            confidence=confidence,
-            routing_time_ms=2.0,
-            strategy_used="keyword_fallback",
-            decision_type="fallback",
-            alternatives=[],
-            routing_factors={"keywords": True}
-        )
+        try:
+            # Use a simple, direct LLM call for routing when main LLM router fails
+            routing_prompt = f"""
+                            You are an intelligent customer service router. Route this customer query to the most appropriate agent.
+                            
+                            Customer Query: "{input_text}"
+                            
+                            Available Agents:
+                            - roadside-assistance-v2: Vehicle emergencies, breakdowns, towing, accidents
+                            - billing-support-v2: Billing, payments, refunds, account issues  
+                            - technical-support-v2: Technical problems, setup, troubleshooting
+                            
+                            Respond with just the agent ID and confidence (0-1):
+                            Format: agent_id|confidence
+                            
+                            Example: roadside-assistance-v2|0.95
+                            """
+            
+            # Create a simple OpenAI client for this specific routing call
+            try:
+                import openai
+                client = openai.AsyncOpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+                
+                response = await client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": routing_prompt}],
+                    max_tokens=50,
+                    temperature=0.1,
+                    timeout=5
+                )
+                
+                result_text = response.choices[0].message.content.strip()
+                
+                # Parse the result
+                if '|' in result_text:
+                    agent_id, confidence_str = result_text.split('|', 1)
+                    agent_id = agent_id.strip()
+                    confidence = float(confidence_str.strip())
+                else:
+                    # Fallback parsing
+                    agent_id = result_text.strip()
+                    confidence = 0.8
+                
+                # Validate agent_id
+                valid_agents = ["roadside-assistance-v2", "billing-support-v2", "technical-support-v2"]
+                if agent_id not in valid_agents:
+                    agent_id = "technical-support-v2"  # Safe default
+                    confidence = 0.5
+                
+                logger.info(f"🤖 LLM-based routing selected: {agent_id} (confidence: {confidence})")
+                
+                return RoutingResult(
+                    selected_agent_id=agent_id,
+                    confidence=confidence,
+                    routing_time_ms=2.0,
+                    strategy_used="llm_based_routing",
+                    decision_type="intelligent_analysis",
+                    alternatives=[],
+                    routing_factors={"method": "pure_llm"}
+                )
+                
+            except Exception as llm_error:
+                logger.error(f"LLM-based routing failed: {llm_error}")
+                # Only as absolute last resort - use safest default
+                return RoutingResult(
+                    selected_agent_id="technical-support-v2",
+                    confidence=0.4,
+                    routing_time_ms=1.0,
+                    strategy_used="emergency_fallback",
+                    decision_type="safe_default",
+                    alternatives=[],
+                    routing_factors={"method": "safe_fallback", "reason": str(llm_error)}
+                )
+                
+        except Exception as e:
+            logger.error(f"Routing completely failed: {e}")
+            return RoutingResult(
+                selected_agent_id="technical-support-v2",
+                confidence=0.3,
+                routing_time_ms=1.0,
+                strategy_used="error_fallback",
+                decision_type="error_recovery",
+                alternatives=[],
+                routing_factors={"error": str(e)}
+            )
     
     async def _prepare_enhanced_context(
         self,
@@ -381,54 +556,56 @@ class EnhancedMultiAgentOrchestrator:
         agent_id: str,
         agent
     ) -> Dict[str, Any]:
-        """Generate response using LLM integration"""
+        """FIXED: Generate response with proper error handling for OpenAI failures"""
         
         llm_start = time.time()
         
         try:
-            # Get LLM messages
-            messages = enhanced_context.get('llm_messages', [])
+            # Check if LLM router is available and working
+            if self.llm_router and self.llm_router.initialized:
+                try:
+                    # Route to optimal LLM model
+                    llm_response = await self.llm_router.route_and_generate(
+                        query=input_text,
+                        context=enhanced_context,
+                        agent_id=agent_id,
+                        streaming=False,
+                        max_tokens=300
+                    )
+                    
+                    llm_latency = (time.time() - llm_start) * 1000
+                    
+                    # Add response to context
+                    if self.llm_context_manager:
+                        await self.llm_context_manager.add_context(
+                            conversation_id=session_id,
+                            content=f"Assistant: {llm_response.content}",
+                            context_type=ContextType.CONVERSATION,
+                            agent_id=agent_id
+                        )
+                    
+                    return {
+                        'response': llm_response.content,
+                        'llm_model': llm_response.model_id,
+                        'llm_latency_ms': llm_latency,
+                        'context_tokens': llm_response.token_count,
+                        'quality_score': llm_response.quality_score,
+                        'tools_used': [],
+                        'sources': [],
+                        'streaming_enabled': llm_response.is_streaming
+                    }
+                    
+                except Exception as llm_error:
+                    logger.error(f"LLM generation failed: {llm_error}")
+                    # Fall through to agent fallback
             
-            # Route to optimal LLM model
-            llm_response = await self.llm_router.route_and_generate(
-                query=input_text,
-                context=enhanced_context,
-                agent_id=agent_id,
-                streaming=False,  # For now, use non-streaming
-                max_tokens=300
-            )
-            
-            llm_latency = (time.time() - llm_start) * 1000
-            
-            # Add response to context
-            await self.llm_context_manager.add_context(
-                conversation_id=session_id,
-                content=f"Assistant: {llm_response.content}",
-                context_type=ContextType.CONVERSATION,
-                agent_id=agent_id
-            )
-            
-            return {
-                'response': llm_response.content,
-                'llm_model': llm_response.model_id,
-                'llm_latency_ms': llm_latency,
-                'context_tokens': llm_response.token_count,
-                'quality_score': llm_response.quality_score,
-                'tools_used': [],
-                'sources': [],
-                'streaming_enabled': llm_response.is_streaming
-            }
-            
-        except Exception as e:
-            logger.error(f"LLM generation error: {e}")
-            
-            # Fallback to agent's default response or simple response
+            # Fallback to agent's direct response or simple response
             try:
                 if agent and hasattr(agent, 'generate_response'):
                     agent_response = await agent.generate_response(input_text, enhanced_context)
                     return {
                         'response': agent_response,
-                        'llm_model': 'agent_fallback',
+                        'llm_model': 'agent_direct',
                         'llm_latency_ms': (time.time() - llm_start) * 1000,
                         'context_tokens': 0,
                         'quality_score': 0.7,
@@ -436,10 +613,14 @@ class EnhancedMultiAgentOrchestrator:
                         'sources': [],
                         'streaming_enabled': False
                     }
-            except:
-                pass
+            except Exception as agent_error:
+                logger.error(f"Agent response failed: {agent_error}")
             
-            # Ultimate fallback
+            # Ultimate fallback - agent-specific responses
+            return await self._get_agent_specific_fallback(agent_id, input_text)
+            
+        except Exception as e:
+            logger.error(f"❌ Response generation completely failed: {e}")
             return await self._get_agent_specific_fallback(agent_id, input_text)
     
     async def _get_agent_specific_fallback(self, agent_id: str, input_text: str) -> Dict[str, Any]:

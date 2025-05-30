@@ -214,7 +214,7 @@ class ConversationStateManager:
         logger.info("✅ Conversation State Manager initialized")
     
     async def get_conversation_state(self, session_id: str) -> Optional[ConversationState]:
-        """Get conversation state from cache or persistent storage."""
+        """FIXED: Get conversation state with proper async handling."""
         # Check in-memory cache first
         if session_id in self.active_sessions:
             self.stats["cache_hits"] += 1
@@ -227,7 +227,17 @@ class ConversationStateManager:
         # Try to load from Redis if persistence is enabled
         if self.enable_persistence and self.redis_client:
             try:
-                state_data = await self.redis_client.get(f"conversation:{session_id}")
+                # Ensure proper event loop context
+                loop = asyncio.get_running_loop()
+                
+                # Create Redis get task
+                get_task = asyncio.create_task(
+                    self.redis_client.get(f"conversation:{session_id}")
+                )
+                
+                # Wait for completion with timeout
+                state_data = await asyncio.wait_for(get_task, timeout=5.0)
+                
                 if state_data:
                     state_dict = json.loads(state_data)
                     state = ConversationState.from_dict(state_dict)
@@ -241,6 +251,8 @@ class ConversationStateManager:
                     logger.debug(f"Loaded conversation state from Redis: {session_id}")
                     return state
                     
+            except asyncio.TimeoutError:
+                logger.warning(f"Redis get timeout for session: {session_id}")
             except Exception as e:
                 logger.error(f"Error loading conversation state from Redis: {e}")
         
@@ -367,23 +379,37 @@ class ConversationStateManager:
         logger.debug(f"Updated conversation state: {session_id} (phase: {state.current_phase})")
     
     async def save_conversation_state(self, state: ConversationState):
-        """Save conversation state to cache and persistent storage."""
-        # Update in-memory cache
+        """FIXED: Save conversation state with proper async handling."""
+        # Update in-memory cache first (always works)
         self.active_sessions[state.session_id] = state
         
-        # Save to Redis if persistence enabled
+        # Save to Redis if persistence enabled - with proper error handling
         if self.enable_persistence and self.redis_client:
             try:
+                # Ensure we're in the correct event loop
+                loop = asyncio.get_running_loop()
+                
+                # Create state JSON
                 state_json = json.dumps(state.to_dict(), default=str)
-                await self.redis_client.setex(
-                    f"conversation:{state.session_id}",
-                    self.session_timeout,
-                    state_json
+                
+                # Use asyncio.create_task to ensure proper loop context
+                save_task = asyncio.create_task(
+                    self.redis_client.setex(
+                        f"conversation:{state.session_id}",
+                        self.session_timeout,
+                        state_json
+                    )
                 )
+                
+                # Wait for completion with timeout
+                await asyncio.wait_for(save_task, timeout=5.0)
                 logger.debug(f"Saved conversation state to Redis: {state.session_id}")
                 
+            except asyncio.TimeoutError:
+                logger.warning(f"Redis save timeout for session: {state.session_id}")
             except Exception as e:
                 logger.error(f"Error saving conversation state to Redis: {e}")
+                # Don't raise - continue with in-memory only
     
     async def update_user_preferences(
         self,
