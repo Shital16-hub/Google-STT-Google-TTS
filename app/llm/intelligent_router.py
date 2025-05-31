@@ -13,7 +13,9 @@ import uuid
 import hashlib
 import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Union, Tuple, AsyncIterator
+from typing import Dict, List, Any, Optional, Union, Tuple, AsyncIterator, TYPE_CHECKING
+if TYPE_CHECKING:
+    from app.agents.router import RoutingResult
 from dataclasses import dataclass, field
 from enum import Enum
 import numpy as np
@@ -691,6 +693,185 @@ class IntelligentLLMRouter:
                 ),
                 error=str(e)
             )
+
+    async def route_intelligently(self,
+                            user_input: str,
+                            context: Dict[str, Any] = None,
+                            available_agents: Optional[List[str]] = None) -> 'RoutingResult':
+        """
+        PURE LLM-BASED ROUTING: No hardcoded keywords, full AI decision making
+        
+        Args:
+            user_input: User's natural language input
+            context: Additional context for routing decision
+            available_agents: List of available agent IDs
+            
+        Returns:
+            RoutingResult with selected agent and metadata
+        """
+        if not self.initialized:
+            await self.initialize()
+        
+        routing_start = time.time()
+        context = context or {}
+        
+        try:
+            # Create routing-specific prompt for the LLM
+            routing_prompt = self._create_routing_prompt(user_input, context)
+            
+            # Use OpenAI to make routing decision
+            routing_response = await self._get_llm_routing_decision(routing_prompt)
+            
+            # Parse the LLM's routing decision
+            selected_agent_id, confidence, reasoning = self._parse_routing_response(routing_response)
+            
+            routing_time = (time.time() - routing_start) * 1000
+            
+            # Import RoutingResult
+            from app.agents.router import RoutingResult
+            
+            return RoutingResult(
+                selected_agent_id=selected_agent_id,
+                confidence=confidence,
+                routing_time_ms=routing_time,
+                strategy_used="pure_llm_routing",
+                decision_type="ai_intelligence",
+                alternatives=[],
+                routing_factors={
+                    "llm_reasoning": reasoning,
+                    "user_input": user_input[:100],  # First 100 chars for context
+                    "routing_method": "pure_ai_decision"
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Pure LLM routing failed: {e}")
+            
+            # Fallback to base_agent (for clarification)
+            routing_time = (time.time() - routing_start) * 1000
+            
+            from app.agents.router import RoutingResult
+            
+            return RoutingResult(
+                selected_agent_id="base_agent",
+                confidence=0.3,
+                routing_time_ms=routing_time,
+                strategy_used="fallback_routing",
+                decision_type="error_recovery", 
+                alternatives=[],
+                routing_factors={"error": str(e), "fallback_reason": "llm_routing_failed"}
+            )
+    
+    def _create_routing_prompt(self, user_input: str, context: Dict[str, Any]) -> str:
+        """Create LLM prompt for intelligent agent routing."""
+        
+        prompt = f"""You are an intelligent customer service router. Analyze the customer's request and determine which specialist can best help them.
+    
+    Customer Request: "{user_input}"
+    
+    Available Specialists:
+    1. roadside-assistance-v2: Handles vehicle emergencies, breakdowns, towing, accidents, battery issues, tire problems, fuel delivery, lockouts
+    2. billing-support-v2: Handles billing questions, payment issues, refunds, account problems, charges, subscriptions, invoices
+    3. technical-support-v2: Handles technical problems, app issues, login problems, system errors, setup assistance, troubleshooting
+    4. base_agent: For clarification when the request is unclear or doesn't fit other categories
+    
+    Instructions:
+    - Analyze the customer's intent and situation
+    - Consider the emotional context and urgency
+    - Choose the BEST specialist for their specific need
+    - If unclear, choose base_agent for clarification
+    
+    Respond ONLY with this format:
+    AGENT: [agent_id]
+    CONFIDENCE: [0.0-1.0]
+    REASONING: [brief explanation of why this agent was chosen]
+    
+    Example:
+    AGENT: roadside-assistance-v2
+    CONFIDENCE: 0.95
+    REASONING: Customer has a vehicle breakdown and needs immediate roadside assistance."""
+    
+        return prompt
+    
+    async def _get_llm_routing_decision(self, prompt: str) -> str:
+        """Get routing decision from LLM."""
+        
+        try:
+            # Use the existing OpenAI client from the router
+            if not self.openai_client:
+                raise Exception("OpenAI client not initialized")
+            
+            response = await self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",  # Fast model for routing
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You are an expert customer service router. Make accurate routing decisions based on customer needs."
+                    },
+                    {
+                        "role": "user", 
+                        "content": prompt
+                    }
+                ],
+                max_tokens=150,
+                temperature=0.1,  # Low temperature for consistent routing
+                timeout=10  # Quick timeout for routing decisions
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"LLM routing call failed: {e}")
+            raise
+    
+    def _parse_routing_response(self, llm_response: str) -> Tuple[str, float, str]:
+        """Parse LLM routing response into components."""
+        
+        try:
+            lines = llm_response.strip().split('\n')
+            
+            agent_id = "base_agent"  # Default
+            confidence = 0.5  # Default
+            reasoning = "LLM analysis"  # Default
+            
+            for line in lines:
+                line = line.strip()
+                
+                if line.startswith("AGENT:"):
+                    agent_id = line.replace("AGENT:", "").strip()
+                    
+                elif line.startswith("CONFIDENCE:"):
+                    try:
+                        confidence = float(line.replace("CONFIDENCE:", "").strip())
+                        confidence = max(0.0, min(1.0, confidence))  # Clamp to 0-1
+                    except ValueError:
+                        confidence = 0.5
+                        
+                elif line.startswith("REASONING:"):
+                    reasoning = line.replace("REASONING:", "").strip()
+            
+            # Validate agent_id
+            valid_agents = [
+                "roadside-assistance-v2", 
+                "billing-support-v2", 
+                "technical-support-v2", 
+                "base_agent"
+            ]
+            
+            if agent_id not in valid_agents:
+                logger.warning(f"Invalid agent_id from LLM: {agent_id}, using base_agent")
+                agent_id = "base_agent"
+                confidence = 0.3  # Lower confidence for fallback
+                reasoning = f"Invalid agent suggested, using base_agent for clarification"
+            
+            logger.info(f"LLM Routing Decision: {agent_id} (confidence: {confidence})")
+            logger.debug(f"LLM Reasoning: {reasoning}")
+            
+            return agent_id, confidence, reasoning
+            
+        except Exception as e:
+            logger.error(f"Error parsing LLM routing response: {e}")
+            return "base_agent", 0.3, f"Parsing error: {str(e)}"
     
     async def _make_routing_decision(self,
                                    query: str,
